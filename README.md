@@ -1,6 +1,7 @@
-# LF Labs: Ferramentas PyRevit para Eletrodutos e Elétrica no Revit
+# LF Labs: Ferramentas PyRevit para Revit
 
-Bem-vindo ao **LF Labs**, uma coleção de ferramentas PyRevit de código aberto projetadas para aprimorar e automatizar fluxos de trabalho de modelagem de eletrodutos e sistemas elétricos no Autodesk Revit. Nosso objetivo é capacitar profissionais de BIM, economizando tempo em tarefas repetitivas e aumentando a precisão em projetos de sistemas elétricos.
+Bem-vindo ao **LF Labs**, uma coleção de ferramentas PyRevit projetadas para aprimorar e automatizar fluxos de trabalho de modelagem elétricos no Autodesk Revit. 
+Meu objetivo é permitir que profissionais do BIM Elétrica tenham mais poder nas sua rotina, economizando tempo em tarefas repetitivas e aumentando a precisão em projetos de sistemas elétricos.
 
 ---
 
