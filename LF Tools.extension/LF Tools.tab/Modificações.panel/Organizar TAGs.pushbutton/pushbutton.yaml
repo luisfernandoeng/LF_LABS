@@ -1,0 +1,5 @@
+title: Organizar Tags
+tooltip: Alinha tags automaticamente na vista ativa.
+author: Luís Fernando + Revit Wizard
+script: script.py
+icon: icon.png

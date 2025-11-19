@@ -1,0 +1,4 @@
+tooltip: Cria eletroduto entre duas caixas elétricas selecionadas
+icon: icon.png
+long_description: >
+    Selecione duas caixas com ponto de elevação. O script cria conduíte flexível de 20mm entre elas e ativa curva com maior raio disponível.
