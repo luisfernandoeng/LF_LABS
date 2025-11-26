@@ -1,99 +1,122 @@
-# LF Labs: Ferramentas PyRevit para Revit
+## 🛠️ LF Tools Extension
 
-Bem-vindo ao **LF Labs**, uma coleção de ferramentas PyRevit projetadas para aprimorar e automatizar fluxos de trabalho de modelagem elétricos no Autodesk Revit. 
-Meu objetivo é permitir que profissionais do BIM Elétrica tenham mais poder nas sua rotina, economizando tempo em tarefas repetitivas e aumentando a precisão em projetos de sistemas elétricos.
+Opa! Se você trabalha com projetos de **engenharia, arquitetura ou automação residencial**, sabe que tem um monte de tarefa repetitiva que só atrapalha o fluxo. Esta extensão nasceu justamente para isso: **facilitar minha vida e, agora, a sua também!**
 
----
+Aqui eu junto um conjunto de *plugins* que desenvolvi para **automatizar e integrar processos específicos** no meu dia a dia. Chega de perder tempo com cliques desnecessários!
 
-## 🌟 **Principais Recursos**
+### ✨ O que essa extensão faz?
 
-### **1. Filtrar Avançado (Advanced Filter)**
-- Filtra elementos do Revit dinamicamente com base em critérios definidos pelo usuário.
-- Melhora a seleção de elementos, controle de visibilidade e eficiência no gerenciamento de dados.
-
-### **2. Ligar Caixas (Connect Conduits)**
-- Conecta eletrodutos a equipamentos elétricos ou outros conduítes automaticamente.
-- Gera conexões, como curvas e uniões, mantendo a integridade do sistema elétrico.
+* **Automação na veia:** Plugins variados que acabam com as tarefas mais chatas e repetitivas.
+* **Integração:** Conexão fácil com outras ferramentas e APIs que eu uso.
+* **Fluxo de Trabalho Personalizado:** Você ganha mais liberdade para focar no que realmente importa no seu projeto.
 
 ---
 
-## 🛠️ **Guia de Instalação**
+### 🚀 Plugins Inclusos (Por enquanto)
 
-### **Pré-requisitos**
-- **PyRevit** instalado e configurado para sua versão do Autodesk Revit.
+Dá uma olhada no que já está rodando por aqui:
 
-### **Método 1: Instalação Manual**
-1. **Clone o Repositório**:
-   - Clone este repositório para a pasta de extensões do PyRevit:
-     ```
-     C:\Users\<SeuUsuário>\AppData\Roaming\pyRevit\Extensions
-     ```
-2. **Renomeie a Pasta**:
-   - Certifique-se de nomear a pasta como `LF_lab.extension` para que o PyRevit reconheça corretamente.
-3. **Reinicie o Revit**:
-   - Feche e reabra o Autodesk Revit para ver a aba "LF Labs" na interface.
+#### 1. Filtro Avançado
 
-### **Método 2: Gerenciador de Pacotes PyRevit (Planejado)**
-- No futuro, planejamos disponibilizar o LF Labs por meio do **Gerenciador de Pacotes PyRevit**, facilitando a instalação para usuários finais.
+Ele te ajuda a **filtrar elementos** no projeto sem precisar de seleção prévia.
 
----
+* Funciona com **múltiplos parâmetros** no mesmo filtro.
+* Você filtra elementos com caracteristicas específicas.
+* A lógica é igualzinha aos filtros de vista do Revit: você pode filtrar por **"igual a", "contém", "diferente de"**, etc. É só usar a criatividade!
 
-## 📖 **Instruções de Uso**
+#### 2. Filtrar Elétrica
 
-### **Acesso Geral**
-- Após a instalação, acesse as ferramentas na aba **LF Labs** na faixa de opções do Revit.
+Um dos que eu mais **amo**!
 
-### **1. Filtrar Avançado**
-- **Como usar**:
-  - Acesse a aba **LF Labs** e clique no botão "Filtrar Avançado" no painel **Filtros Luis**.
-- **Resultado esperado**:
-  - A ferramenta seleciona elementos com base nos critérios definidos pelo usuário.
+* Você seleciona o **quadro** primeiro, depois roda o plugin.
+* Ele **seleciona todos os circuitos** ligados naquele quadro.
+* Eu uso ele para copiar elementos de um pavimento para outro sem perder o circuito.
+* *Obs.:* Por enquanto, os interruptores perdem o `Switch ID`, mas **já estou de olho para resolver isso!**
 
-### **2. Ligar Caixas**
-- **Como usar**:
-  - Acesse a aba **LF Labs** e clique no botão "Ligar Caixas" no painel **Elétrica**.
-  - Selecione dois eletrodutos ou um eletroduto e um equipamento elétrico.
-- **Resultado esperado**:
-  - A ferramenta conecta os elementos selecionados, criando curvas ou uniões automaticamente.
+#### 3. Overkill
 
----
+Esse é fácil: é o **Overkill do CAD**, mas no Revit!
 
-## 🤝 **Como Contribuir**
+* Você seleciona o que quer "limpar".
+* Diz se quer **deletar os duplicados** ou **apenas selecioná-los** para saber onde estão.
+* *Atenção:* Por enquanto, tem poucas categorias, mas vou colocando mais conforme a **necessidade aparecer!**
 
-O LF Labs é um projeto de código aberto que prospera com a comunidade! Contribuições são bem-vindas, seja em forma de código, relatórios de bugs ou sugestões de melhorias.
+#### 4. Gerar Folhas
 
-### **Passos para Contribuir**
-1. **Faça um Fork**:
-   - Crie um fork do repositório e clone-o localmente.
-2. **Crie uma Ramificação**:
-   - Sempre use uma nova ramificação para suas alterações.
-3. **Siga os Padrões de Codificação**:
-   - Use **snake_case** para variáveis e **CamelCase** para nomes de scripts.
-   - Inclua docstrings e comentários claros para facilitar o entendimento do código.
-4. **Envie um Pull Request**:
-   - Explique claramente as alterações realizadas, incluindo o problema resolvido e os testes executados.
+**Esse deu trabalho! e vai ser o queridinho de muita gente** É um gerador automático de folhas que salva a pátria na hora de entregar o projeto.
 
-### **Melhores Práticas**
-- **Qualidade do Código**:
-  - Scripts devem ter tratamento de erros robusto e fornecer feedback claro ao usuário.
-- **Documentação**:
-  - Todo novo script deve incluir docstrings explicativas e seguir as diretrizes de estilo.
+* Faz o **PDF e DWG de várias folhas de uma vez**.
+* Ele pega o nome do arquivo a partir de um parâmetro seu (eu uso o `NOME-FOLHA`, que é o padrão da construtora).
+* Na hora de salvar, o DWG **já sai sem aquelas vistas anexadas**, gerando um arquivo único e limpo.
+* **Configuração é simples:** Você escolhe a pasta de saída, marca as folhas que quer na primeira aba e ajusta as opções de PDF/DWG na segunda.
 
-### **Dica Bônus**:
-- Altere `.com` para `.dev` em qualquer URL do GitHub para abrir o código no VS Code Web!
+#### 5. Inspecionar Tipo
 
----
+Basicamente, um **detetive de elementos**.
 
-## 📜 **Licença**
+* Quer saber **o que cada elemento é**? Quais **parâmetros** ele tem?
+* É só selecionar uma tomada, por exemplo, e ele te diz qual o nome, se tem conector elétrico, e todos os parâmetros internos.
 
-O **LF Labs** é distribuído sob a licença **GPL-3.0**, garantindo direitos de uso, modificação e distribuição. Para mais informações, consulte o arquivo `LICENSE`.
+#### 6. Inverter Anotação
 
----
+Sabe quando você usa o `mirror` e aquelas anotações genéricas **insistem em ficar espelhadas/invertidas**?
 
-## ✨ **Contribuidores**
+* Você seleciona as anotações caprichosas e ele **espelha todas de uma vez**, resolvendo o problema rapidinho.
 
-Agradecemos a todos os colaboradores que tornam o LF Labs possível. Junte-se a nós e ajude a construir ferramentas que impactam diretamente o setor de BIM!
+#### 7. Renomear+
+
+Esse é para quem precisa de **edição de texto em massa** nos parâmetros!
+
+* **Exemplo:** Trocar o nome de vários elementos ou re-numerar folhas seguindo um padrão (tipo `UN-01`, `UN-02`, etc.).
+* Tem um texto que você tem que substituir em varios elementos, procurar e substituir por aqui.
+* *Em progresso:* Estou tentando implementar **expressões regulares (`regex`) para o plugin**, mas ainda sem sucesso. Quem quiser testar, sinta-se à vontade!
+
+#### 8. Renumerar
+
+Mais focado em **numeração sequencial** de elementos.
+
+* Você seleciona os elementos que quer numerar (exemplo: preencher o parâmetro **"marca"**).
+* Ele pede onde você quer **começar** (do 1, do 10, do 20) e segue a ordem: `01, 02, 03`, etc.
+* **Importante:** A numeração é feita na **ordem em que você clicou/selecionou**.
+
+#### 9. Soma Dist
+
+Simples e direto!
+
+* Precisa saber a **distância total** de um trecho de eletroduto?
+* Você seleciona os elementos e ele te retorna **a contagem/distância total**.
 
 ---
 
-Aproveite as ferramentas do **LF Labs** e contribua para tornar o processo de modelagem elétrica ainda mais eficiente no Revit!
+### ⚙️ Como a mágica acontece?
+
+Cada plugin é um arquivo específico que contém os *scripts* e configurações para rodar. 
+Eles são carregados e usados via plataforma compatível (se precisar de detalhes de como carregar na sua plataforma, me avisa!).
+
+### 📥 Como Instalar (Para usuários **pyRevit**)
+
+**Pré-requisito:** Você precisa ter o **![pyRevit](https://github.com/pyrevitlabs/pyRevit/releases)** instalado.
+
+1.  **Baixe ou Clone:** Clone o repositório ou baixe o arquivo ZIP da pasta principal `LF Tools.extension`.
+2.  **Acesse a pasta de extensões:**
+    * Abra o menu **Executar** do Windows (`Win` + `R`).
+    * Digite `%appdata%` e pressione **Enter**.
+    * Navegue até a pasta `...\pyRevit\Extensions`.
+    * *(O caminho completo deve ser algo como: `C:\Users\[SeuUsuario]\AppData\Roaming\pyRevit\Extensions`)*
+3.  **Mova a pasta:** Copie a pasta `LF Tools.extension` e cole dentro da pasta `Extensions`.
+4.  **Reinicie o Revit:** Feche e abra o Revit (ou a aba pyRevit) para que a extensão seja carregada. Pronto!
+
+### ⌨️ Como Usar
+
+1.  Abra a ferramenta/interface correspondente na sua plataforma.
+2.  Carregue o plugin desejado (`Filtro Avançado`, `Gerar Folhas`, etc.).
+3.  Configure as opções que ele pedir (se houver).
+4.  Execute e veja a mágica acontecer!
+
+### 🤝 Contribuições
+
+Curtiu? Acha que pode melhorar algo? Se quiser contribuir, por favor, **envie um *pull request*** ou **abra uma *issue*** para melhorias e correções. Todo *feedback* é bem-vindo!
+
+### 📧 Contato
+
+Para dúvidas, sugestões ou só para mandar um "e aí", me envie um e-mail: **[lufe.machado@gmail.com]**
