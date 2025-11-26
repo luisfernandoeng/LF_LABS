@@ -1,0 +1,190 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Filtro Avançado - LF Tools" 
+        Height="650" 
+        Width="500" 
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        Background="#F0F0F0">
+    
+    <Window.Resources>
+        <Style TargetType="TextBlock">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Margin" Value="0,0,10,0"/>
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Height" Value="25"/>
+            <Setter Property="Margin" Value="0,0,0,5"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Height" Value="25"/>
+            <Setter Property="Margin" Value="0,0,0,5"/>
+        </Style>
+        <Style TargetType="Button">
+            <Setter Property="Width" Value="80"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="Margin" Value="5,0,0,0"/>
+        </Style>
+        <Style TargetType="GroupBox">
+            <Setter Property="Margin" Value="0,5,0,5"/>
+            <Setter Property="Padding" Value="5"/>
+        </Style>
+    </Window.Resources>
+    
+    <Grid Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        
+        <!-- Cabeçalho -->
+        <TextBlock Grid.Row="0" Text="FILTRO AVANÇADO" FontSize="16" FontWeight="Bold" 
+                   HorizontalAlignment="Center" Margin="0,0,0,15" Foreground="#2C3E50"/>
+        
+        <!-- Configurações Básicas -->
+        <GroupBox Grid.Row="1" Header="Configurações Básicas" Background="White" BorderBrush="#CCCCCC">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Categoria:"/>
+                <ComboBox Grid.Row="0" Grid.Column="1" x:Name="ComboBox_Categoria"/>
+                
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="Escopo:"/>
+                <ComboBox Grid.Row="1" Grid.Column="1" x:Name="ComboBox_Escopo">
+                    <ComboBoxItem Content="Somente na Vista Atual" IsSelected="True"/>
+                    <ComboBoxItem Content="Projeto Inteiro"/>
+                </ComboBox>
+            </Grid>
+        </GroupBox>
+
+        <!-- Primeiro Filtro -->
+        <GroupBox Grid.Row="2" Header="Primeiro Filtro" Background="White" BorderBrush="#CCCCCC">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Parâmetro:"/>
+                <ComboBox Grid.Row="0" Grid.Column="1" x:Name="ComboBox_Parametro1"/>
+                
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="Condição:"/>
+                <ComboBox Grid.Row="1" Grid.Column="1" x:Name="ComboBox_Condicao1">
+                    <ComboBoxItem Content="Igual a" IsSelected="True"/>
+                    <ComboBoxItem Content="Contém"/>
+                    <ComboBoxItem Content="Diferente de"/>
+                    <ComboBoxItem Content="Começa com"/>
+                    <ComboBoxItem Content="Termina com"/>
+                    <ComboBoxItem Content="Em branco"/>
+                    <ComboBoxItem Content="Não em branco"/>
+                </ComboBox>
+                
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="Valor:"/>
+                <TextBox Grid.Row="2" Grid.Column="1" x:Name="TextBox_Valor1"/>
+            </Grid>
+        </GroupBox>
+
+        <!-- Segundo Filtro (Opcional) -->
+        <GroupBox Grid.Row="3" Header="Segundo Filtro (Opcional)" Background="White" BorderBrush="#CCCCCC">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                
+                <CheckBox Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" x:Name="CheckBox_UsarSegundoFiltro" 
+                         Content="Usar segundo filtro" Margin="0,0,0,5"/>
+                
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="Parâmetro:"/>
+                <ComboBox Grid.Row="1" Grid.Column="1" x:Name="ComboBox_Parametro2" IsEnabled="False"/>
+                
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="Condição:"/>
+                <ComboBox Grid.Row="2" Grid.Column="1" x:Name="ComboBox_Condicao2" IsEnabled="False">
+                    <ComboBoxItem Content="Igual a" IsSelected="True"/>
+                    <ComboBoxItem Content="Contém"/>
+                    <ComboBoxItem Content="Diferente de"/>
+                    <ComboBoxItem Content="Começa com"/>
+                    <ComboBoxItem Content="Termina com"/>
+                    <ComboBoxItem Content="Em branco"/>
+                    <ComboBoxItem Content="Não em branco"/>
+                </ComboBox>
+                
+                <TextBlock Grid.Row="3" Grid.Column="0" Text="Valor:"/>
+                <TextBox Grid.Row="3" Grid.Column="1" x:Name="TextBox_Valor2" IsEnabled="False"/>
+            </Grid>
+        </GroupBox>
+
+        <!-- Operador Lógico -->
+        <GroupBox Grid.Row="4" Header="Operador Lógico" Background="White" BorderBrush="#CCCCCC">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                
+                <TextBlock Grid.Column="0" Text="Operador:"/>
+                <ComboBox Grid.Column="1" x:Name="ComboBox_Operador">
+                    <ComboBoxItem Content="E (ambos devem ser verdadeiros)" IsSelected="True"/>
+                    <ComboBoxItem Content="OU (pelo menos um deve ser verdadeiro)"/>
+                </ComboBox>
+            </Grid>
+        </GroupBox>
+
+        <!-- Botão Aplicar Filtro - DESTAQUADO -->
+        <Border Grid.Row="5" Background="#E8F4FD" BorderBrush="#27AE60" BorderThickness="2" 
+                Margin="0,15,0,10" CornerRadius="5" Padding="10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                
+                <StackPanel Grid.Column="0" Orientation="Vertical">
+                    <TextBlock Text="Configurações do Filtro Prontas!" FontWeight="Bold" Foreground="#2C3E50"/>
+                    <TextBlock Text="Clique em 'Aplicar Filtro' para selecionar os elementos no Revit" 
+                              FontSize="11" Foreground="#7F8C8D" Margin="0,2,0,0"/>
+                </StackPanel>
+                
+                <Button Grid.Column="1" x:Name="Button_AplicarFiltro" Content="APLICAR FILTRO" 
+                       Background="#27AE60" Foreground="White" FontWeight="Bold" 
+                       Width="120" Height="35" FontSize="12"/>
+            </Grid>
+        </Border>
+
+        <!-- Área de Status -->
+        <Border Grid.Row="6" Background="#F8F9FA" BorderBrush="#B8D9F0" BorderThickness="1" 
+                Margin="0,0,0,10" CornerRadius="3">
+            <TextBlock x:Name="TextBlock_Status" Text="Selecione uma categoria para começar..." 
+                      Margin="10,8" TextWrapping="Wrap" Foreground="#2C3E50"/>
+        </Border>
+
+        <!-- Botões de Ação -->
+        <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="Button_Fechar" Content="Fechar" Background="#95A5A6" Foreground="White"/>
+        </StackPanel>
+    </Grid>
+</Window>
