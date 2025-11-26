@@ -1,0 +1,326 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Renomear+ - Revit"
+        Height="750" Width="1100"
+        Background="#1E1E1E"
+        Foreground="#F1F1F1"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="CanResizeWithGrip">
+
+    <Window.Resources>
+        <SolidColorBrush x:Key="BgDark" Color="#1E1E1E"/>
+        <SolidColorBrush x:Key="BgPanel" Color="#252526"/>
+        <SolidColorBrush x:Key="ControlNormal" Color="#333337"/>
+        <SolidColorBrush x:Key="BorderNormal" Color="#434346"/>
+        <SolidColorBrush x:Key="AccentColor" Color="#007ACC"/>
+        <SolidColorBrush x:Key="TextPrimary" Color="#F1F1F1"/>
+        <SolidColorBrush x:Key="TextSecondary" Color="#AAAAAA"/>
+        
+        <SolidColorBrush x:Key="{x:Static SystemColors.WindowBrushKey}" Color="#333337"/>
+        <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#007ACC"/>
+
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="{StaticResource ControlNormal}"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderNormal}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border Background="{TemplateBinding Background}" 
+                                BorderBrush="{TemplateBinding BorderBrush}" 
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4">
+                            <ScrollViewer x:Name="PART_ContentHost"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ComboBoxItem" x:Key="CbItemStyle">
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="Foreground" Value="#F1F1F1"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderThickness="0" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentColor}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentColor}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ComboBox">
+            <Setter Property="Foreground" Value="#222222"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderNormal}"/>
+            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="ItemContainerStyle" Value="{StaticResource CbItemStyle}"/>
+        </Style>
+
+        <Style TargetType="Button" x:Key="BaseBtn">
+            <Setter Property="Background" Value="{StaticResource ControlNormal}"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderNormal}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="15,8"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="4">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#3E3E42"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="Button" x:Key="ActionBtn" BasedOn="{StaticResource BaseBtn}">
+            <Setter Property="Background" Value="{StaticResource AccentColor}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource AccentColor}"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#0090F0"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style TargetType="TextBlock" x:Key="SectionHeader">
+            <Setter Property="Foreground" Value="{StaticResource AccentColor}"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Margin" Value="0,15,0,5"/>
+            <Setter Property="Opacity" Value="0.9"/>
+        </Style>
+        
+        <Style TargetType="DataGrid">
+            <Setter Property="Background" Value="{StaticResource BgPanel}"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="RowBackground" Value="{StaticResource BgPanel}"/>
+            <Setter Property="AlternatingRowBackground" Value="#2D2D30"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="#3E3E42"/>
+            <Setter Property="VerticalGridLinesBrush" Value="Transparent"/>
+            <Setter Property="RowHeight" Value="28"/>
+            <Setter Property="HeadersVisibility" Value="Column"/>
+        </Style>
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="{StaticResource BgDark}"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+            <Setter Property="BorderThickness" Value="0,0,0,1"/>
+            <Setter Property="BorderBrush" Value="#3E3E42"/>
+            <Setter Property="Padding" Value="10,8"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style TargetType="DataGridCell">
+            <Setter Property="Padding" Value="8,0"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DataGridCell">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+                            <ContentPresenter VerticalAlignment="Center" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#007ACC"/>
+                    <Setter Property="Foreground" Value="White"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
+    <Grid Background="{StaticResource BgDark}">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="320"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <Border Grid.Column="0" Background="{StaticResource BgPanel}" BorderBrush="#333" BorderThickness="0,0,1,0">
+            <Grid Margin="20">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0" Margin="0,0,0,10">
+                    <TextBlock Text="Renomear+" FontSize="18" FontWeight="Bold" Foreground="#44D7B6"/>
+                    <TextBlock Text="Edição Híbrida (Tipo e Instância)" FontSize="12" Foreground="{StaticResource TextSecondary}" Margin="0,2,0,0"/>
+                    <Separator Background="#3E3E42" Margin="0,15"/>
+                </StackPanel>
+
+                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="0,0,10,0">
+                    <StackPanel>
+                        <TextBlock Text="PARÂMETRO ALVO" Style="{StaticResource SectionHeader}" Margin="0,0,0,5"/>
+                        <ComboBox x:Name="param_cb" Margin="0,0,0,8"/>
+                        
+                        <CheckBox x:Name="use_selection_cb" Content="Carregar da seleção atual" 
+                                  IsChecked="True"
+                                  Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="2,0,0,5"/>
+                        
+                        <CheckBox x:Name="itemize_cb" Content="Listar cada instância individualmente" 
+                                  ToolTip="Se marcado, cada porta/tomada aparece numa linha separada. Útil para numeração sequencial."
+                                  Foreground="#44D7B6" FontSize="11" FontWeight="SemiBold" Margin="2,0,0,15"/>
+
+                        <TextBlock Text="SUBSTITUIÇÃO" Style="{StaticResource SectionHeader}"/>
+                        <Grid Margin="0,5">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="10"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <Label Content="Procurar:" Foreground="{StaticResource TextSecondary}" Padding="0,0,0,2" FontSize="11"/>
+                                <TextBox x:Name="find_simple_tb"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="2">
+                                <Label Content="Substituir:" Foreground="{StaticResource TextSecondary}" Padding="0,0,0,2" FontSize="11"/>
+                                <TextBox x:Name="replace_simple_tb"/>
+                            </StackPanel>
+                        </Grid>
+
+                        <TextBlock Text="TEXTO E SUFIXOS" Style="{StaticResource SectionHeader}"/>
+                        <Grid Margin="0,5">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="10"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <Label Content="Prefixo:" Foreground="{StaticResource TextSecondary}" Padding="0,0,0,2" FontSize="11"/>
+                                <TextBox x:Name="prefix_tb"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="2">
+                                <Label Content="Sufixo:" Foreground="{StaticResource TextSecondary}" Padding="0,0,0,2" FontSize="11"/>
+                                <TextBox x:Name="suffix_tb"/>
+                            </StackPanel>
+                        </Grid>
+                        
+                        <Border Background="#333337" CornerRadius="4" Padding="8" Margin="0,15,0,0">
+                            <StackPanel>
+                                <CheckBox x:Name="numbering_cb" Content="Adicionar numeração sequencial" 
+                                          Foreground="White" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                                
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="10"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    
+                                    <StackPanel Grid.Column="0">
+                                        <Label Content="Separador:" Foreground="{StaticResource TextSecondary}" Padding="0" FontSize="10"/>
+                                        <TextBox x:Name="num_separator_tb" Text="-" ToolTip="Ex: - ou _ ou ." Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                    
+                                    <StackPanel Grid.Column="2">
+                                        <Label Content="Começar em:" Foreground="{StaticResource TextSecondary}" Padding="0" FontSize="10"/>
+                                        <TextBox x:Name="start_num_tb" Text="1" ToolTip="Número inicial" Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock Text="Ex: Nome-01, Nome-02..." FontSize="10" Foreground="#888" Margin="0,5,0,0" HorizontalAlignment="Right"/>
+                            </StackPanel>
+                        </Border>
+
+                        <TextBlock Text="AVANÇADO (REGEX)" Style="{StaticResource SectionHeader}"/>
+                        <Border Background="#333337" CornerRadius="4" Padding="10">
+                            <StackPanel>
+                                <Label Content="Padrão Regex:" Foreground="{StaticResource TextSecondary}" Padding="0" FontSize="11"/>
+                                <TextBox x:Name="old_format_tb" Margin="0,4,0,8" FontFamily="Consolas"/>
+                                <Label Content="Novo Formato:" Foreground="{StaticResource TextSecondary}" Padding="0" FontSize="11"/>
+                                <TextBox x:Name="new_format_tb" Margin="0,4,0,0" FontFamily="Consolas"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <StackPanel Grid.Row="2" Margin="0,20,0,0">
+                    <Button x:Name="update_btn" Content="Atualizar Lista" Style="{StaticResource BaseBtn}" Margin="0,0,0,10"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="10"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Button x:Name="cancel_btn" Grid.Column="0" Content="Fechar" Style="{StaticResource BaseBtn}"/>
+                        <Button x:Name="apply_btn" Grid.Column="2" Content="APLICAR" Style="{StaticResource ActionBtn}"/>
+                    </Grid>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Column="1" Margin="20">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0" Margin="0,0,0,15">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                
+                <StackPanel Orientation="Horizontal" Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock Text="Filtro:" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <TextBox x:Name="filter_tb" Width="200"/>
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal" Grid.Column="2">
+                    <Button x:Name="select_all_btn" Content="Todos" Height="28" Padding="10,0" Style="{StaticResource BaseBtn}" Margin="0,0,5,0" FontSize="11"/>
+                    <Button x:Name="select_none_btn" Content="Nenhum" Height="28" Padding="10,0" Style="{StaticResource BaseBtn}" FontSize="11"/>
+                </StackPanel>
+            </Grid>
+
+            <Border Grid.Row="1" Background="{StaticResource BgPanel}" CornerRadius="4" ClipToBounds="True">
+                <DataGrid x:Name="preview_dg"
+                          AutoGenerateColumns="False"
+                          CanUserAddRows="False"
+                          SelectionMode="Extended"
+                          BorderThickness="0">
+                    <DataGrid.Columns>
+                        <DataGridCheckBoxColumn Header="Sel." Binding="{Binding is_selected}" Width="40" CanUserResize="False"/>
+                        <DataGridTextColumn Header="ID" Binding="{Binding elem_id}" Width="60" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="Categoria" Binding="{Binding category}" Width="120" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="Elemento / Tipo" Binding="{Binding elem_name}" Width="*" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="Valor Atual" Binding="{Binding original}" Width="150" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="Novo Valor" Binding="{Binding new}" Width="150" IsReadOnly="True"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Border>
+            
+            <TextBlock Grid.Row="2" Text="* Dica: Use a opção 'Listar cada instância' para numerar portas, eixos ou vagas individualmente." 
+                       FontSize="11" FontWeight="Bold" Foreground="#44D7B6" 
+                       HorizontalAlignment="Right" Margin="0,8,0,0"/>
+        </Grid>
+    </Grid>
+</Window>
