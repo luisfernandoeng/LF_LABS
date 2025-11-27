@@ -86,6 +86,12 @@ Simples e direto!
 * Precisa saber a **distância total** de um trecho de eletroduto?
 * Você seleciona os elementos e ele te retorna **a contagem/distância total**.
 
+#### 10. To Excel
+
+Simples e direto!
+
+* Precisa alterar tabelas ou parametros no revit em massa?
+* Você seleciona as tabelas que quer alaterar e manda elas pro excel e depois importa de volta
 ---
 
 ### ⚙️ Como a mágica acontece?
