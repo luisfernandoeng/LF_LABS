@@ -222,12 +222,32 @@ def export_xls(src_elements, selected_params, file_path):
     workbook = xlsxwriter.Workbook(file_path)
     worksheet = workbook.add_worksheet("Export")
 
+    # Formatos de célula
     bold = workbook.add_format({"bold": True})
     unlocked = workbook.add_format({"locked": False})
-    locked = workbook.add_format({"locked": True})
+    
+    # CORREÇÃO: Formato vermelho para parâmetros read-only
+    locked_readonly = workbook.add_format({
+        "locked": True, 
+        "font_color": "#C0504D",  # Vermelho escuro
+        "italic": True
+    })
+    
+    locked_elementid = workbook.add_format({
+        "locked": True,
+        "font_color": "#95B3D7",  # Azul acinzentado
+        "italic": True
+    })
 
     worksheet.freeze_panes(1, 0)
-    worksheet.write(0, 0, "ElementId", bold)
+    
+    # Cabeçalho ElementId com cor especial
+    header_elementid = workbook.add_format({
+        "bold": True, 
+        "bg_color": "#DCE6F1",  # Azul claro
+        "font_color": "#1F4E78"  # Azul escuro
+    })
+    worksheet.write(0, 0, "ElementId", header_elementid)
 
     valid_params = []
     for param in selected_params:
@@ -238,10 +258,17 @@ def export_xls(src_elements, selected_params, file_path):
     for col_idx, param in enumerate(valid_params):
         postfix = ""
         header_format = bold
+        
+        # Cabeçalho com cores diferentes por tipo
         if param.storagetype == DB.StorageType.ElementId:
             header_format = workbook.add_format({"bold": True, "bg_color": "#FFBD80"})
-        if param.isreadonly:
-            header_format = workbook.add_format({"bold": True, "bg_color": "#FF3131"})
+        elif param.isreadonly:
+            # CORREÇÃO: Cabeçalho vermelho para read-only
+            header_format = workbook.add_format({
+                "bold": True, 
+                "bg_color": "#FFC7CE",  # Rosa claro
+                "font_color": "#9C0006"  # Vermelho escuro
+            })
 
         forge_type_id = get_parameter_data_type(param.definition)
         if forge_type_id and DB.UnitUtils.IsMeasurableSpec(forge_type_id):
@@ -255,13 +282,15 @@ def export_xls(src_elements, selected_params, file_path):
     max_widths = [len("ElementId")] + [len(p.name) for p in valid_params]
 
     for row_idx, el in enumerate(src_elements, start=1):
-        worksheet.write(row_idx, 0, str(get_elementid_value(el.Id)), locked)
+        # ElementId sempre bloqueado com formato especial
+        worksheet.write(row_idx, 0, str(get_elementid_value(el.Id)), locked_elementid)
 
         for col_idx, param in enumerate(valid_params):
             param_name = param.name
             param_val = el.LookupParameter(param_name)
             val = ""
-            cell_format = locked
+            cell_format = unlocked  # Padrão: editável
+            
             if param_val and param_val.HasValue:
                 try:
                     if param_val.StorageType == DB.StorageType.Double:
@@ -282,8 +311,9 @@ def export_xls(src_elements, selected_params, file_path):
                 except:
                     val = "Error"
                 
-                if not param.isreadonly:
-                    cell_format = unlocked
+                # CORREÇÃO: Aplicar formato read-only se necessário
+                if param.isreadonly:
+                    cell_format = locked_readonly
 
             worksheet.write(row_idx, col_idx + 1, val, cell_format)
             length = len(str(val)) if val else 0
@@ -294,7 +324,11 @@ def export_xls(src_elements, selected_params, file_path):
         worksheet.set_column(col_idx, col_idx, width + 3)
 
     worksheet.autofilter(0, 0, len(src_elements), len(valid_params))
-    worksheet.protect("", {"autofilter": True, "sort": True, "format_cells": True, "select_locked_cells": True, "select_unlocked_cells": True})
+    
+    # CORREÇÃO: Remover proteção da planilha
+    # worksheet.protect() estava bloqueando tudo
+    # Agora a proteção vem apenas dos formatos locked/unlocked
+    
     workbook.close()
 
 # ==================== FUNÇÃO DE IMPORTAÇÃO ====================
@@ -362,7 +396,7 @@ class ExportImportWindow(forms.WPFWindow):
         
         self.export_path = None
         self.import_path = None
-        self.schedules = [] # Armazena as tabelas encontradas
+        self.schedules = []
         
         # Eventos
         self.Button_BrowseExport.Click += self.browse_export
@@ -370,11 +404,11 @@ class ExportImportWindow(forms.WPFWindow):
         self.Button_Export.Click += self.do_export
         self.Button_Import.Click += self.do_import
         self.Button_Close.Click += self.close_clicked
-        self.ComboBox_ExportMode.SelectionChanged += self.mode_changed # Novo evento
+        self.ComboBox_ExportMode.SelectionChanged += self.mode_changed
         
         # Inicialização
         self.load_schedules()
-        self.mode_changed(None, None) # Forçar atualização inicial
+        self.mode_changed(None, None)
         self.update_status("Selecione uma operação acima para começar.")
 
     def update_status(self, message):
@@ -385,8 +419,7 @@ class ExportImportWindow(forms.WPFWindow):
         all_schedules = DB.FilteredElementCollector(doc).OfClass(DB.ViewSchedule).ToElements()
         self.schedules = []
         for s in all_schedules:
-            if s.IsTemplate: continue # Pula templates de tabela
-            # [FIX] Removido s.IsTitleblock que causava erro
+            if s.IsTemplate: continue
             if hasattr(s.Definition, "IsInternalKeynoteSchedule") and s.Definition.IsInternalKeynoteSchedule: continue
             if hasattr(s.Definition, "IsRevisionSchedule") and s.Definition.IsRevisionSchedule: continue
             self.schedules.append(s)
@@ -396,10 +429,9 @@ class ExportImportWindow(forms.WPFWindow):
         """Atualiza a UI baseada no modo selecionado."""
         mode_idx = self.ComboBox_ExportMode.SelectedIndex
         
-        # Limpar dropdown secundário
         self.ComboBox_SubSelection.Items.Clear()
         
-        if mode_idx == 0: # Tabelas
+        if mode_idx == 0:
             self.ComboBox_SubSelection.IsEnabled = True
             if not self.schedules:
                 self.ComboBox_SubSelection.Items.Add("Nenhuma tabela encontrada")
@@ -439,8 +471,7 @@ class ExportImportWindow(forms.WPFWindow):
             src_elements = []
             selected_params = []
 
-            # Lógica de seleção baseada no índice do dropdown
-            if mode_idx == 0: # Tabelas
+            if mode_idx == 0:
                 if not self.schedules:
                     self.update_status("ERRO - Nenhuma tabela disponível.")
                     return
@@ -452,29 +483,29 @@ class ExportImportWindow(forms.WPFWindow):
                 schedule = self.schedules[selected_schedule_idx]
                 src_elements, selected_params = get_schedule_elements_and_params(schedule)
 
-            elif mode_idx == 1: # Vista Atual
+            elif mode_idx == 1:
                 elements = revit.query.get_all_elements_in_view(active_view)
                 src_elements = select_elements(elements)
                 if src_elements: selected_params = select_parameters(src_elements)
 
-            elif mode_idx == 2: # Todo Projeto (Tipos)
+            elif mode_idx == 2:
                 elements = revit.query.get_all_elements(doc)
                 type_filter = DB.ElementIsElementTypeFilter()
                 elements = [el for el in elements if type_filter.PassesFilter(el)]
                 src_elements = select_elements(elements)
                 if src_elements: selected_params = select_parameters(src_elements)
 
-            elif mode_idx == 3: # Todo Projeto (Instancias)
+            elif mode_idx == 3:
                 elements = revit.query.get_all_elements(doc)
-                type_filter = DB.ElementIsElementTypeFilter(True) # Inverted = Instancias
+                type_filter = DB.ElementIsElementTypeFilter(True)
                 elements = [el for el in elements if type_filter.PassesFilter(el)]
                 src_elements = select_elements(elements)
                 if src_elements: selected_params = select_parameters(src_elements)
 
-            elif mode_idx == 4: # Seleção Manual
+            elif mode_idx == 4:
                 elements = revit.get_selection()
                 if not elements:
-                    self.Hide() # Esconde janela para selecionar
+                    self.Hide()
                     with forms.WarningBar(title="Selecione elementos no Revit"):
                         elements = revit.pick_elements(message="Selecione elementos")
                     self.Show()
