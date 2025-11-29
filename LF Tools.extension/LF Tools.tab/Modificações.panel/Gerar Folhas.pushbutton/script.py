@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-EXPORTADOR PRO | LUÍS FERNANDO
-Versão sem Progresso Individual
+EXPORTADOR PRO | LUIS FERNANDO
+Versao sem Progresso Individual
 """
 import clr
 import System
@@ -20,7 +20,7 @@ import time
 doc = revit.doc
 uidoc = revit.uidoc
 
-# --- DETECÇÃO DE VERSÃO ---
+# --- DETECAO DE VERSAO ---
 REVIT_YEAR = int(doc.Application.VersionNumber)
 HAS_PDF_SUPPORT = REVIT_YEAR >= 2022
 
@@ -37,7 +37,7 @@ class SheetItem(object):
         self.PdfFileName = self._generate_pdf_filename(sheet, param_name)
 
     def _generate_filename(self, sheet, param_name):
-        """Gera nome para exportação"""
+        """Gera nome para exportacao"""
         val = ""
         try:
             param = sheet.LookupParameter(param_name)
@@ -63,7 +63,7 @@ class SheetItem(object):
         return self._generate_filename(sheet, param_name)
     
     def update_filename(self, param_name):
-        """Atualiza o nome do arquivo baseado em novo parâmetro"""
+        """Atualiza o nome do arquivo baseado em novo parametro"""
         self.param_name = param_name
         self.FileName = self._generate_filename(self.Element, param_name)
         self.PdfFileName = self._generate_pdf_filename(self.Element, param_name)
@@ -77,10 +77,6 @@ class LuisExporterWindow(forms.WPFWindow):
         self.sheet_items = ObservableCollection[SheetItem]()
         self.dg_Sheets.ItemsSource = self.sheet_items
         
-        # O DataGrid de progresso foi removido do XAML e, portanto, esta linha foi removida:
-        # self.progress_items = ObservableCollection[ProgressItem]()
-        # self.dg_Progress.ItemsSource = self.progress_items
-        
         self.btn_SelectFolder.Click += self.pick_folder
         self.btn_Start.Click += self.run_export
         self.btn_Cancel.Click += self.cancel_export
@@ -89,7 +85,7 @@ class LuisExporterWindow(forms.WPFWindow):
         # Flag de cancelamento
         self.is_cancelled = False
         
-        # Configurações iniciais
+        # Configuracoes iniciais
         self.rb_ZoomFit.IsChecked = True
         self.chk_ExportDWG.IsChecked = True
         
@@ -109,7 +105,7 @@ class LuisExporterWindow(forms.WPFWindow):
             self.pnl_PDFSettings.IsEnabled = False
 
     def load_sheet_parameters(self):
-        """Carrega parâmetros disponíveis nas folhas"""
+        """Carrega parametros disponiveis nas folhas"""
         try:
             self.cb_SheetParameters.Items.Clear()
             
@@ -133,12 +129,12 @@ class LuisExporterWindow(forms.WPFWindow):
                     self.cb_SheetParameters.SelectedIndex = 0
                     
         except Exception as ex:
-            print("Erro ao carregar parâmetros: {}".format(str(ex)))
+            print("Erro ao carregar parametros: {}".format(str(ex)))
             self.cb_SheetParameters.Items.Add("C-NOME-FOLHA")
             self.cb_SheetParameters.SelectedIndex = 0
 
     def on_parameter_changed(self, sender, args):
-        """Atualiza nomes dos arquivos quando o parâmetro muda"""
+        """Atualiza nomes dos arquivos quando o parametro muda"""
         if not self.cb_SheetParameters.SelectedItem:
             return
             
@@ -169,7 +165,7 @@ class LuisExporterWindow(forms.WPFWindow):
             forms.alert("Erro ao carregar folhas: " + str(e))
 
     def load_dwg_setups(self):
-        """Carrega configurações DWG"""
+        """Carrega configuracoes DWG"""
         try:
             setups = DB.FilteredElementCollector(doc).OfClass(DB.ExportDWGSettings).ToElements()
             self.cb_DWGSetups.Items.Clear()
@@ -186,13 +182,12 @@ class LuisExporterWindow(forms.WPFWindow):
             self.txt_OutputFolder.Text = folder
     
     def cancel_export(self, sender, args):
-        """Cancela a exportação em andamento"""
-        if forms.alert("Deseja realmente cancelar a exportação?", yes=True, no=True):
+        """Cancela a exportacao em andamento"""
+        if forms.alert("Deseja realmente cancelar a exportacao?", yes=True, no=True):
             self.is_cancelled = True
-            # self.txt_ProgressSubtitle.Text = "Cancelando... aguarde" # Removido por remover a aba de progresso
 
     def create_pdf_options(self):
-        """Cria opções de PDF"""
+        """Cria opcoes de PDF"""
         pdf_opts = DB.PDFExportOptions()
         pdf_opts.Combine = False
         
@@ -210,7 +205,7 @@ class LuisExporterWindow(forms.WPFWindow):
         return pdf_opts
 
     def create_dwg_options_compatible(self):
-        """Cria opções de DWG compatíveis"""
+        """Cria opcoes de DWG compativeis"""
         dwg_opts = DB.DWGExportOptions()
         dwg_opts.MergedViews = True
         
@@ -239,7 +234,7 @@ class LuisExporterWindow(forms.WPFWindow):
         return False
     
     def format_time(self, seconds):
-        """Formata tempo em segundos para string legível"""
+        """Formata tempo em segundos para string legivel"""
         if seconds < 60:
             return "{:.0f}s".format(seconds)
         elif seconds < 3600:
@@ -250,10 +245,10 @@ class LuisExporterWindow(forms.WPFWindow):
             return "{:.1f}h".format(hours)
 
     def run_export(self, sender, args):
-        """Executa a exportação"""
+        """Executa a exportacao"""
         folder = self.txt_OutputFolder.Text
         if not folder or not os.path.exists(folder):
-            forms.alert("Selecione uma pasta de destino válida.")
+            forms.alert("Selecione uma pasta de destino valida.")
             return
 
         selected_items = [i for i in self.sheet_items if i.IsSelected]
@@ -265,17 +260,17 @@ class LuisExporterWindow(forms.WPFWindow):
         do_dwg = self.chk_ExportDWG.IsChecked
         
         if not do_pdf and not do_dwg:
-            forms.alert("Ative pelo menos uma opção de exportação (PDF ou DWG).")
+            forms.alert("Ative pelo menos uma opcao de exportacao (PDF ou DWG).")
             return
         
         # Prepara a contagem total para o resumo final
         total_sheets = len(selected_items)
         total_exports = total_sheets * (1 if do_pdf else 0) + total_sheets * (1 if do_dwg else 0)
         
-        # Desativa/Ativa botões e UI
+        # Desativa/Ativa botoes e UI
         self.btn_Start.IsEnabled = False
         self.btn_Cancel.Visibility = System.Windows.Visibility.Visible
-        self.tab_Main.SelectedIndex = 1 # Garante que está na aba de configs para não travar
+        self.tab_Main.SelectedIndex = 1
         self.UpdateLayout()
         time.sleep(0.2)
         
@@ -296,7 +291,7 @@ class LuisExporterWindow(forms.WPFWindow):
                 # Exportar PDF
                 if do_pdf and HAS_PDF_SUPPORT and not self.is_cancelled:
                     try:
-                        print("Exporting PDF: {}".format(item.FileName)) # Log simples
+                        print("Exporting PDF: {}".format(item.FileName))
                         
                         pdf_opts = self.create_pdf_options()
                         pdf_files_before = set([f for f in os.listdir(folder) if f.lower().endswith('.pdf')])
@@ -341,7 +336,7 @@ class LuisExporterWindow(forms.WPFWindow):
                 # Exportar DWG
                 if do_dwg and not self.is_cancelled:
                     try:
-                        print("Exporting DWG: {}".format(item.FileName)) # Log simples
+                        print("Exporting DWG: {}".format(item.FileName))
                         
                         dwg_opts = None
                         if self.cb_DWGSetups.SelectedItem:
@@ -386,7 +381,6 @@ class LuisExporterWindow(forms.WPFWindow):
                             error_count += 1
                             print("Erro DWG {}: {}".format(item.FileName, str(ex)))
                 
-                # Pequena pausa para garantir que a UI não trave completamente (embora o processo seja single-threaded)
                 time.sleep(0.05) 
                 
             except Exception as ex:
@@ -394,20 +388,20 @@ class LuisExporterWindow(forms.WPFWindow):
                     print("Erro geral {}: {}".format(item.Number, str(ex)))
                     error_count += 1
         
-        # Finalização
+        # Finalizacao
         total_time = time.time() - start_time
         self.btn_Start.IsEnabled = True
         self.btn_Cancel.Visibility = System.Windows.Visibility.Collapsed
         
         # Mensagens de resultado final
         if self.is_cancelled:
-            forms.alert("Exportação cancelada!\n{} arquivos foram exportados.".format(success_count))
+            forms.alert("Exportacao cancelada!\n{} arquivos foram exportados.".format(success_count))
         elif error_count == 0:
-            forms.alert("✅ Exportação concluída!\n{} arquivos em {}.".format(success_count, self.format_time(total_time)))
+            forms.alert("Exportacao concluida!\n{} arquivos em {}.".format(success_count, self.format_time(total_time)))
         else:
-            forms.alert("⚠ Finalizado com {} erros.\n{} arquivos exportados.".format(error_count, success_count))
+            forms.alert("Finalizado com {} erros.\n{} arquivos exportados.".format(error_count, success_count))
 
-# --- EXECUÇÃO PRINCIPAL ---
+# --- EXECUCAO PRINCIPAL ---
 try:
     LuisExporterWindow().ShowDialog()
 except Exception as e:
