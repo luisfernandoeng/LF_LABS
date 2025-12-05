@@ -69,10 +69,11 @@
                     <ColumnDefinition Width="90"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                 
+                
                 <TextBlock Grid.Row="0" Grid.Column="0" Text="Origem:" FontWeight="SemiBold"/>
                 <ComboBox Grid.Row="0" Grid.Column="1" x:Name="ComboBox_ExportMode">
-                    <ComboBoxItem Content="Tabelas do Revit (Schedules)" IsSelected="True"/>
+                    <ComboBoxItem Content="Tabelas do Revit (Geral)" IsSelected="True"/>
+                    <ComboBoxItem Content="Quadros de Cargas (Elétrica)"/>
                     <ComboBoxItem Content="Elementos na Vista Atual"/>
                     <ComboBoxItem Content="Todo o Projeto (Tipos)"/>
                     <ComboBoxItem Content="Todo o Projeto (Instâncias)"/>
@@ -92,7 +93,7 @@
                     <TextBox Grid.Column="0" x:Name="TextBox_ExportPath" IsReadOnly="True" 
                             Background="#F8F9FA" Margin="0,0,8,8"/>
                     <Button Grid.Column="1" x:Name="Button_BrowseExport" Content="..." Width="35" 
-                           Background="#ECF0F1" Foreground="#2C3E50" Margin="0,0,0,8"/>
+                            Background="#ECF0F1" Foreground="#2C3E50" Margin="0,0,0,8"/>
                 </Grid>
                 
                 <Button Grid.Row="3" Grid.Column="1" x:Name="Button_Export" Content="EXPORTAR PARA EXCEL" 
@@ -131,11 +132,11 @@
                 
                 <Border Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" 
                        Background="#F8F9FA" BorderBrush="#E1E8ED" BorderThickness="1" 
-                        CornerRadius="4" Padding="12">
+                       CornerRadius="4" Padding="12">
                     <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="120">
                         <TextBlock x:Name="TextBlock_Status" 
-                                  Text="Selecione uma operação acima para começar." 
-                                  TextWrapping="Wrap" FontSize="11" Foreground="#7F8C8D"/>
+                         Text="Selecione uma operação acima para começar."
+                         TextWrapping="Wrap" FontSize="11" Foreground="#7F8C8D"/>
                     </ScrollViewer>
                 </Border>
             </Grid>
@@ -147,7 +148,7 @@
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             
-            <TextBlock Grid.Column="0" Text="v2.0 - LF Tools" FontSize="10" 
+            <TextBlock Grid.Column="0" Text="v2.1 - LF Tools" FontSize="10" 
                       Foreground="#95A5A6" VerticalAlignment="Center"/>
             
             <Button Grid.Column="1" x:Name="Button_Close" Content="FECHAR" Width="100" 
