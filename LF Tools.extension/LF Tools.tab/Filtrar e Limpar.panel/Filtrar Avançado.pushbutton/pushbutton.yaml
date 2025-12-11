@@ -1,6 +1,0 @@
-tooltip: Filtrar elementos com base em parâmetros
-help_url: https://www.revitwizard.ai
-icon: icon.png
-long_description: >
-    Script para selecionar elementos com base em parâmetros personalizados.
-    Permite escolha de categoria, valor do parâmetro, e escopo (vista ou projeto).
