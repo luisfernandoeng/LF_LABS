@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """LF Electrical - Automação BIM (Versão Final + Regeneração Forçada)
-Autor: Luís Fernando + Gemini
+Autor: Luís Fernando
 Correção: Força o Revit a ler a voltagem 220V antes de criar o circuito."""
 
 __title__ = "LF Electrical"
@@ -245,53 +245,52 @@ def create_individual_circuits():
             t.RollBack()
             forms.alert("Erro: " + str(e))
 
-# ==================== ASSOCIAR INTERRUPTORES ====================
+# ==================== NOMEAR INTERRUPTORES (A, B, C...) ====================
 
-def link_switches():
-    SWITCHING_SYSTEM_TYPE_VALUE = 3 
-    try:
-        forms.toast("Selecione LUMINÁRIAS...")
-        refs_lum = uidoc.Selection.PickObjects(ObjectType.Element, CategoryFilter(BuiltInCategory.OST_LightingFixtures), "Selecione Luminárias")
-        if not refs_lum: return
+def name_switch():
+    """
+    Permite nomear interruptores em sequência alfabética.
+    O usuário informa a letra inicial e o script atribui A, B, C... aos interruptores selecionados.
+    """
+    start_letter_str = forms.ask_for_string(
+        default="A", 
+        prompt="Letra inicial (ex: A, C, T):", 
+        title="Nomear Interruptores"
+    )
+    if not start_letter_str or len(start_letter_str) != 1:
+        return
+
+    start_letter = start_letter_str.upper()
+    if not start_letter.isalpha():
+        forms.alert("Por favor, insira uma única letra do alfabeto.")
+        return
+
+    # Calcula o contador inicial baseado na letra (A=0, B=1, etc.)
+    counter = ord(start_letter) - ord('A')
+
+    while True:
+        try:
+            next_letter = chr(ord('A') + counter)
+            ref = uidoc.Selection.PickObject(ObjectType.Element, CategoryFilter(BuiltInCategory.OST_LightingDevices), "Selecione o INTERRUPTOR para nomear como: " + next_letter + " (ESC para sair)")
+            interruptor = doc.GetElement(ref.ElementId)
             
-        lum_conns = List[Connector]()
-        for r in refs_lum:
-            lum = doc.GetElement(r.ElementId)
-            if hasattr(lum, "MEPModel") and lum.MEPModel:
-                for c in lum.MEPModel.ConnectorManager.Connectors:
-                    if c.Domain == Domain.DomainElectrical:
-                        lum_conns.Add(c)
-                        break 
-        
-        if not lum_conns:
-             forms.alert("Sem conectores nas luminárias.")
-             return
+            with Transaction(doc, "Nomear Interruptor") as t:
+                t.Start()
+                # AQUI ESTÁ A AÇÃO: define o parâmetro "ID do comando" com a letra
+                success = set_param(interruptor, ["ID do comando"], next_letter)
+                t.Commit()
 
-        forms.toast("Selecione INTERRUPTOR...")
-        ref_int = uidoc.Selection.PickObject(ObjectType.Element, CategoryFilter(BuiltInCategory.OST_LightingDevices), "Clique no interruptor")
-        interruptor = doc.GetElement(ref_int.ElementId)
-        
-        switch_conn = None
-        if hasattr(interruptor, "MEPModel") and interruptor.MEPModel:
-            for c in interruptor.MEPModel.ConnectorManager.Connectors:
-                if c.Domain == Domain.DomainElectrical and c.Direction == FlowDirectionType.Out:
-                    switch_conn = c
-                    break
-        
-        if not switch_conn:
-            forms.alert("Interruptor sem saída.")
-            return
+            if success:
+                # Formato de string compatível com IronPython 2.7
+                forms.toast("Interruptor nomeado como: {}".format(next_letter))
+                counter += 1
+            else:
+                forms.alert("Não foi possível encontrar o parâmetro 'ID do comando' no interruptor selecionado.")
+                break
 
-        with Transaction(doc, "Associar Interruptor") as t:
-            t.Start()
-            sys = ElectricalSystem.Create(doc, lum_conns, SWITCHING_SYSTEM_TYPE_VALUE)
-            sys.ConnectTo(switch_conn) 
-            set_param(sys, ["Comando", "Switch ID", "Marca"], get_panel_name(interruptor))
-            t.Commit()
-            forms.alert("Sucesso! Comando: " + get_panel_name(interruptor))
-
-    except Exception as e:
-        forms.alert("Erro: " + str(e))
+        except Exception:
+            # Usuário pressionou ESC ou fechou a janela
+            break
 
 # ==================== MENU ====================
 
@@ -317,26 +316,20 @@ def main_menu():
         status = "Quadro: " + (get_panel_name(quadro) if quadro else "NENHUM")
 
         def call_ilum():
-            nome = forms.ask_for_string(default="Iluminação", prompt="Nome:", title="Iluminação")
+            nome = forms.ask_for_string(default="1", prompt="Nome:", title="Iluminação")
             if nome: create_grouped_circuit(BuiltInCategory.OST_LightingFixtures, nome)
 
         def call_tomada():
-            nome = forms.ask_for_string(default="Tomadas", prompt="Nome:", title="Tomadas Gerais")
-            if not nome: return
-            res = forms.CommandSwitchWindow.show(
-                ["1 Polo (127V)", "2 Polos (220V)"], message="Selecione Fases:"
-            )
-            if res:
-                # Corrigido: Garante que o valor é passado como número inteiro
-                volt = 127 if "1 Polo" in res else 220
-                create_grouped_circuit(BuiltInCategory.OST_ElectricalFixtures, nome, target_voltage=volt)
+            nome = forms.ask_for_string(default="T", prompt="Nome:", title="Tomadas Gerais")
+            if nome:
+                create_grouped_circuit(BuiltInCategory.OST_ElectricalFixtures, nome, target_voltage=None)
 
         opcoes = {
             "1. Selecionar/Configurar Quadro": select_and_configure_panel,
             "2. Criar Circuito Iluminação (Geral)": call_ilum,
-            "3. Criar Circuito Tomadas (Geral 1F/2F)": call_tomada,
-            "4. Criar Circuitos Específicos (AC/CH)": create_individual_circuits,
-            "5. Associar Interruptores": link_switches,
+            "3. Comando interruptor" :name_switch,
+            "4. Criar Circuito Tomadas (Geral 1F/2F)": call_tomada,
+            "5. Criar Circuitos Específicos (AC/CH)": create_individual_circuits,
             "6. Sair": lambda: None
         }
 
