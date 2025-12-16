@@ -1,0 +1,6 @@
+# Configuração do botão no ribbon do pyRevit
+tooltip: Exportar parametros e tabelas para o excel e importar pro revit de volta!
+icon: icon.png
+script: script.py
+long_description: >
+    Ele exporta e importa parametros do excel, dai da pra alterar coisas no excel e etrazer pro revit sem complicações

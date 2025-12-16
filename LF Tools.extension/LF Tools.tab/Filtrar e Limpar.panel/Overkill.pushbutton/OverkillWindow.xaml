@@ -1,0 +1,343 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Overkill - Limpeza de Duplicados"
+        Height="780" Width="600"
+        Background="#FF1E1E1E"
+        Foreground="#FFF1F1F1"
+        WindowStartupLocation="CenterScreen"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display"
+        ResizeMode="CanResizeWithGrip">
+
+    <Window.Resources>
+        <SolidColorBrush x:Key="PanelColor" Color="#FF252526"/>
+        <SolidColorBrush x:Key="BorderColor" Color="#FF3F3F46"/>
+        <SolidColorBrush x:Key="InputColor" Color="#FF333337"/>
+        <SolidColorBrush x:Key="AccentBlue" Color="#FF569CD6"/>
+        <SolidColorBrush x:Key="AccentTeal" Color="#FF4EC9B0"/>
+        <SolidColorBrush x:Key="AccentGreen" Color="#FF4EC99B"/>
+        <SolidColorBrush x:Key="TextPrimary" Color="#FFF1F1F1"/>
+        <SolidColorBrush x:Key="TextSecondary" Color="#FFCCCCCC"/>
+        <SolidColorBrush x:Key="Warning" Color="#FFD7BA7D"/>
+        <SolidColorBrush x:Key="Danger" Color="#FFD25555"/>
+
+        <Style x:Key="SectionHeader" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="Segoe UI"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="{StaticResource AccentBlue}"/>
+            <Setter Property="Margin" Value="0,0,0,10"/>
+        </Style>
+
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="Segoe UI"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+
+        <Style x:Key="StandardPanel" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource PanelColor}"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Padding" Value="15"/>
+            <Setter Property="Margin" Value="0,0,0,15"/>
+        </Style>
+
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="{StaticResource InputColor}"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}"/>
+            <Setter Property="Padding" Value="8,0"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border Background="{TemplateBinding Background}" 
+                                BorderBrush="{TemplateBinding BorderBrush}" 
+                                BorderThickness="1" 
+                                CornerRadius="3">
+                            <ScrollViewer x:Name="PART_ContentHost" VerticalAlignment="Center" Margin="4,0"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ModernRadioButton" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Margin" Value="0,4"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Grid Background="Transparent">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="RadioBorder" Width="16" Height="16" BorderThickness="2" BorderBrush="{StaticResource BorderColor}" CornerRadius="8" Margin="0,0,8,0" VerticalAlignment="Center">
+                                <Ellipse x:Name="RadioDot" Width="6" Height="6" Fill="{StaticResource AccentBlue}" Visibility="Collapsed"/>
+                            </Border>
+                            <ContentPresenter Grid.Column="1" VerticalAlignment="Center" Content="{TemplateBinding Content}"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="RadioDot" Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="RadioBorder" Property="BorderBrush" Value="{StaticResource AccentBlue}"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="RadioBorder" Property="BorderBrush" Value="{StaticResource AccentBlue}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ModernCheckBox" TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Margin" Value="0,4"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <Grid Background="Transparent">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="CheckBorder" Width="16" Height="16" BorderThickness="2" BorderBrush="{StaticResource BorderColor}" CornerRadius="2" Margin="0,0,8,0" VerticalAlignment="Center">
+                                <Path x:Name="CheckMark" Width="10" Height="10" Stretch="Uniform" Fill="{StaticResource AccentBlue}" Data="M 0,4 L 3,7 L 8,0" StrokeThickness="2" Stroke="{StaticResource AccentBlue}" Visibility="Collapsed"/>
+                            </Border>
+                            <ContentPresenter Grid.Column="1" VerticalAlignment="Center" Content="{TemplateBinding Content}"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="CheckMark" Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="CheckBorder" Property="BorderBrush" Value="{StaticResource AccentBlue}"/>
+                                <Setter TargetName="CheckBorder" Property="Background" Value="{StaticResource AccentBlue}"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="CheckBorder" Property="BorderBrush" Value="{StaticResource AccentBlue}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="PrimaryActionButton" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource AccentGreen}"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Height" Value="38"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" CornerRadius="3" BorderThickness="0">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Opacity" Value="0.9"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="border" Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SecondaryActionButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#33FFFFFF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ListBoxItem">
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border Background="Transparent" Padding="2">
+                            <ContentPresenter/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+    </Window.Resources>
+
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,20">
+            <TextBlock Text="OVERKILL REVIT" 
+                       FontSize="20" 
+                       FontWeight="Normal" 
+                       Foreground="{StaticResource AccentTeal}" 
+                       HorizontalAlignment="Center"/>
+            <TextBlock Text="Limpeza de elementos duplicados e sobrepostos" 
+                       FontSize="12" 
+                       Foreground="{StaticResource TextSecondary}" 
+                       HorizontalAlignment="Center" 
+                       Margin="0,5,0,0"/>
+        </StackPanel>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="20"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0">
+                <TextBlock Text="ESCOPO" Style="{StaticResource SectionHeader}"/>
+                <Border Style="{StaticResource StandardPanel}">
+                    <StackPanel>
+                        <RadioButton x:Name="scope_view_rb" 
+                                     GroupName="Scope"
+                                     Content="Apenas Vista Ativa" 
+                                     IsChecked="True"
+                                     Style="{StaticResource ModernRadioButton}"/>
+                        <RadioButton x:Name="scope_project_rb" 
+                                     GroupName="Scope"
+                                     Content="Todo o Projeto"
+                                     Style="{StaticResource ModernRadioButton}"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <StackPanel Grid.Column="2">
+                <TextBlock Text="TOLERÂNCIA (MM)" Style="{StaticResource SectionHeader}"/>
+                <Border Style="{StaticResource StandardPanel}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="10"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Linear:" Style="{StaticResource FieldLabel}" Margin="0,0,10,0"/>
+                        <TextBox Grid.Row="0" Grid.Column="1" x:Name="tol_curve_tb" Text="1.0"/>
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Pontual:" Style="{StaticResource FieldLabel}" Margin="0,0,10,0"/>
+                        <TextBox Grid.Row="2" Grid.Column="1" x:Name="tol_point_tb" Text="2.0"/>
+                    </Grid>
+                </Border>
+            </StackPanel>
+        </Grid>
+
+        <Grid Grid.Row="2" Margin="0,0,0,15">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0" Margin="0,0,0,5">
+                <TextBlock Text="CATEGORIAS ALVO" Style="{StaticResource SectionHeader}" VerticalAlignment="Center"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="cat_all_btn" Content="Todas" Style="{StaticResource SecondaryActionButton}" Height="24" FontSize="11" Padding="10,0" Margin="0,0,5,0"/>
+                    <Button x:Name="cat_none_btn" Content="Nenhuma" Style="{StaticResource SecondaryActionButton}" Height="24" FontSize="11" Padding="10,0"/>
+                </StackPanel>
+            </Grid>
+
+            <Border Grid.Row="1" Style="{StaticResource StandardPanel}" Padding="10">
+                <ListBox x:Name="categories_lb" 
+                         Background="Transparent" 
+                         BorderThickness="0" 
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         Foreground="{StaticResource TextPrimary}">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <CheckBox Content="{Binding name}" 
+                                      IsChecked="{Binding is_checked}"
+                                      Style="{StaticResource ModernCheckBox}"/>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </Border>
+        </Grid>
+
+        <StackPanel Grid.Row="3">
+            <TextBlock Text="AÇÃO" Style="{StaticResource SectionHeader}"/>
+            <Border Style="{StaticResource StandardPanel}">
+                <StackPanel>
+                    <RadioButton x:Name="mode_select_rb" 
+                                 GroupName="Action"
+                                 IsChecked="True"
+                                 Style="{StaticResource ModernRadioButton}">
+                        <RadioButton.Content>
+                            <TextBlock Text="Apenas SELECIONAR duplicados (Seguro)" Foreground="{StaticResource Warning}" FontWeight="SemiBold"/>
+                        </RadioButton.Content>
+                    </RadioButton>
+                    
+                    <RadioButton x:Name="mode_delete_rb" 
+                                 GroupName="Action"
+                                 Style="{StaticResource ModernRadioButton}">
+                        <RadioButton.Content>
+                            <TextBlock Text="DELETAR duplicados (Destrutivo)" Foreground="{StaticResource Danger}" FontWeight="SemiBold"/>
+                        </RadioButton.Content>
+                    </RadioButton>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+
+        <Grid Grid.Row="4" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <Button x:Name="cancel_btn" 
+                    Grid.Column="0" 
+                    Content="Cancelar" 
+                    Style="{StaticResource SecondaryActionButton}" 
+                    Width="100"/>
+            
+            <Button x:Name="run_btn" 
+                    Grid.Column="2" 
+                    Content="EXECUTAR LIMPEZA" 
+                    Style="{StaticResource PrimaryActionButton}" 
+                    Width="180"/>
+        </Grid>
+    </Grid>
+</Window>
