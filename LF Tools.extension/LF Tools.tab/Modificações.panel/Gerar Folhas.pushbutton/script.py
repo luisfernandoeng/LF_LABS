@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+# coding: utf-8
 """
 EXPORTADOR PRO | LUIS FERNANDO
 Versao Final: Selecionar Tudo + Interface Corrigida
@@ -28,7 +28,7 @@ HAS_PDF_SUPPORT = REVIT_YEAR >= 2022
 
 # --- CLASSE DE DADOS PARA FOLHAS ---
 class SheetItem(object):
-    def __init__(self, sheet, name_pattern="{C-NOME-FOLHA}"):
+    def __init__(self, sheet, name_pattern="{Nome da folha}"):
         self.Element = sheet
         self.Id = sheet.Id
         self.Number = sheet.SheetNumber
@@ -73,6 +73,39 @@ class SheetItem(object):
         self.FileName = self._generate_filename(self.Element, new_pattern)
         self.PdfFileName = self.FileName
 
+# --- FUNCAO AUXILIAR PARA DWG SETTINGS ---
+def create_default_dwg_settings():
+    """Cria configuracao padrao de DWG Export se nao existir nenhuma"""
+    try:
+        # Verifica se ja existe algum ExportDWGSettings
+        existing = DB.FilteredElementCollector(doc).OfClass(DB.ExportDWGSettings).ToElements()
+        if len(list(existing)) > 0:
+            return  # Ja existe, nao precisa criar
+        
+        # Cria as opcoes de exportacao DWG
+        dwg_opts = DB.DWGExportOptions()
+        
+        # 1. Padrao AIA para camadas
+        dwg_opts.LayerMapping = "AIA"
+        
+        # 2. True Colors da vista do Revit
+        dwg_opts.Colors = DB.ExportColorMode.TrueColorPerView
+        
+        # 3. Coordenadas compartilhadas
+        dwg_opts.SharedCoords = True
+        
+        # 4. Unidades em metros
+        dwg_opts.TargetUnit = DB.ExportUnit.Meter
+        
+        # Cria o ExportDWGSettings no documento
+        with DB.Transaction(doc, "Criar DWG Export Settings") as t:
+            t.Start()
+            DB.ExportDWGSettings.Create(doc, "Padrão Luís Fernando", dwg_opts)
+            t.Commit()
+            
+    except Exception as ex:
+        print("Erro ao criar DWG settings: " + str(ex))
+
 # --- JANELA PRINCIPAL ---
 class LuisExporterWindow(forms.WPFWindow):
     def __init__(self):
@@ -101,7 +134,8 @@ class LuisExporterWindow(forms.WPFWindow):
         self.chk_ExportDWG.IsChecked = True
         
         self.load_sheet_parameters() 
-        self.load_sheets()           
+        self.load_sheets()
+        create_default_dwg_settings()  # Cria settings padrao se nao existir
         self.load_dwg_setups()
         
         if HAS_PDF_SUPPORT:
@@ -154,7 +188,7 @@ class LuisExporterWindow(forms.WPFWindow):
     def load_sheet_parameters(self):
         try:
             self.cb_AvailableParams.Items.Clear()
-            defaults = ["Sheet Number", "Sheet Name", "Current Revision", "Approved By", "Designed By", "C-NOME-FOLHA"]
+            defaults = ["Sheet Number", "Sheet Name", "Current Revision", "Approved By", "Designed By", "Nome da folha"]
             for d in defaults: self.cb_AvailableParams.Items.Add(d)
             
             sheets = DB.FilteredElementCollector(doc).OfClass(DB.ViewSheet).WhereElementIsNotElementType().ToElements()
@@ -171,7 +205,7 @@ class LuisExporterWindow(forms.WPFWindow):
         if self.cb_AvailableParams.SelectedItem:
             param = self.cb_AvailableParams.SelectedItem
             current_text = self.txt_NamePattern.Text
-            to_insert = "{{{}}}".format(param)
+            to_insert = "{{{}}}".format(param) 
             if current_text and not current_text.strip().endswith("-") and not current_text.endswith(" "):
                 to_insert = " - " + to_insert
             self.txt_NamePattern.Text += to_insert
@@ -189,7 +223,7 @@ class LuisExporterWindow(forms.WPFWindow):
             
             current_pattern = self.txt_NamePattern.Text
             if not current_pattern:
-                current_pattern = "{C-NOME-FOLHA}"
+                current_pattern = "{Nome da folha}"
                 self.txt_NamePattern.Text = current_pattern
             
             self.sheet_items.Clear()
@@ -214,7 +248,13 @@ class LuisExporterWindow(forms.WPFWindow):
         if folder: self.txt_OutputFolder.Text = folder
     
     def cancel_export(self, sender, args):
-        if forms.alert("Deseja cancelar?", yes=True, no=True):
+        # Se NAO esta exportando, fecha o programa
+        if self.btn_Start.IsEnabled:
+            self.Close()
+            return
+        
+        # Se ESTA exportando, cancela a exportacao
+        if forms.alert("Deseja cancelar a exportacao?", yes=True, no=True):
             self.is_cancelled = True
             self.log_message("!!! CANCELAMENTO SOLICITADO !!!")
 
@@ -258,8 +298,12 @@ class LuisExporterWindow(forms.WPFWindow):
     def run_export(self, sender, args):
         folder = self.txt_OutputFolder.Text
         if not folder or not os.path.exists(folder):
-            forms.alert("Selecione uma pasta valida.")
-            return
+            # Tenta selecionar pasta automaticamente
+            folder = forms.pick_folder()
+            if folder:
+                self.txt_OutputFolder.Text = folder
+            else:
+                return
 
         selected_items = [i for i in self.sheet_items if i.IsSelected]
         if not selected_items:
@@ -360,6 +404,8 @@ class LuisExporterWindow(forms.WPFWindow):
                         found_dwg = False
                         
                         for _ in range(15): 
+                            if self.is_cancelled:
+                                break
                             if os.path.exists(dwg_path): 
                                 found_dwg = True
                                 break

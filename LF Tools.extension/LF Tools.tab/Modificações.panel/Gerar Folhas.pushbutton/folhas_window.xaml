@@ -111,6 +111,20 @@
                             <ContentPresenter Name="ContentSite" IsHitTestVisible="False" 
                                               Content="{TemplateBinding SelectionBoxItem}"
                                               Margin="8,0,25,0" VerticalAlignment="Center" HorizontalAlignment="Left"/>
+                            
+                            <!-- TextBox para edição (IsEditable=True) -->
+                            <TextBox x:Name="PART_EditableTextBox"
+                                     Style="{x:Null}"
+                                     Background="Transparent"
+                                     Foreground="White"
+                                     BorderThickness="0"
+                                     Margin="8,0,25,0"
+                                     VerticalAlignment="Center"
+                                     VerticalContentAlignment="Center" 
+                                     Focusable="True"
+                                     Visibility="Hidden"
+                                     IsReadOnly="{TemplateBinding IsReadOnly}"/>
+
                             <Popup Name="Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}" 
                                    AllowsTransparency="True" Focusable="False" PopupAnimation="Slide">
                                 <Grid Name="DropDown" SnapsToDevicePixels="True" MinWidth="{TemplateBinding ActualWidth}" MaxHeight="200">
@@ -123,6 +137,12 @@
                                 </Grid>
                             </Popup>
                         </Grid>
+                         <ControlTemplate.Triggers>
+                            <Trigger Property="IsEditable" Value="True">
+                                <Setter TargetName="ContentSite" Property="Visibility" Value="Hidden"/>
+                                <Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -381,7 +401,7 @@
                         
                         <StackPanel IsEnabled="{Binding ElementName=chk_ExportDWG, Path=IsChecked}" Margin="25,0,0,0">
                             <TextBlock Text="Setup de Exportação" Style="{StaticResource FieldLabel}"/>
-                            <ComboBox Name="cb_DWGSetups" Margin="0,0,0,15"/>
+                            <ComboBox Name="cb_DWGSetups" Margin="0,0,0,15" IsEditable="True"/>
                         </StackPanel>
 
                         <Separator Background="{StaticResource BorderColor}" Margin="0,15"/>
@@ -399,14 +419,14 @@
                             <TextBlock Text="Padrão de Nome do Arquivo" Style="{StaticResource SectionHeader}" Margin="0,20,0,5"/>
                             <TextBlock Text="Use {Parametro} para combinar dados." Style="{StaticResource FieldLabel}" Margin="0,0,0,8"/>
                             
-                            <TextBox Name="txt_NamePattern" Text="{}{C-NOME-FOLHA}" Margin="0,0,0,5"/>
+                            <TextBox Name="txt_NamePattern" Text="{}{Nome da folha}" Margin="0,0,0,5"/>
                             
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="60"/>
                                 </Grid.ColumnDefinitions>
-                                <ComboBox Name="cb_AvailableParams" Margin="0,0,5,0"/>
+                                <ComboBox Name="cb_AvailableParams" Margin="0,0,5,0" IsEditable="True"/>
                                 <Button Name="btn_AddParam" Content="Add" Grid.Column="1" Height="32" 
                                         Style="{StaticResource SecondaryActionButton}"/>
                             </Grid>
