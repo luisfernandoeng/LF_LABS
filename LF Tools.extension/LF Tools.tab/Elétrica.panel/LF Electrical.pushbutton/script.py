@@ -1,7 +1,7 @@
-# -*- coding: utf-8 -*-
-"""LF Electrical - Automação BIM (Versão Final + Regeneração Forçada)
-Autor: Luís Fernando
-Correção: Força o Revit a ler a voltagem 220V antes de criar o circuito."""
+# coding: utf-8
+"""LF Electrical - Automacao BIM (Versao Final + Regeneracao Forcada)
+Autor: Luis Fernando
+Correcao: Forca o Revit a ler a voltagem 220V antes de criar o circuito."""
 
 __title__ = "LF Electrical"
 __author__ = "Luís Fernando"
