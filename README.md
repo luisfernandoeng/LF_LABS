@@ -1,123 +1,117 @@
-## 🛠️ LF Tools Extension
+# LF Tools - Revit Automation Suite 🚀
 
-Opa! Se você trabalha com projetos de **engenharia, arquitetura ou automação residencial**, sabe que tem um monte de tarefa repetitiva que só atrapalha o fluxo. Esta extensão nasceu justamente para isso: **facilitar minha vida e, agora, a sua também!**
+**LF Tools** é uma suite de engenharia e automação de alta performance desenvolvida para **Autodesk Revit**, focada em maximizar a produtividade e eliminar tarefas repetitivas em fluxos de trabalho BIM.
 
-Aqui eu junto um conjunto de *plugins* que desenvolvi para **automatizar e integrar processos específicos** no meu dia a dia. Chega de perder tempo com cliques desnecessários!
-
-### ✨ O que essa extensão faz?
-
-* **Automação na veia:** Plugins variados que acabam com as tarefas mais chatas e repetitivas.
-* **Integração:** Conexão fácil com outras ferramentas e APIs que eu uso.
-* **Fluxo de Trabalho Personalizado:** Você ganha mais liberdade para focar no que realmente importa no seu projeto.
+Desenvolvida sobre o ecossistema **pyRevit** utilizando **IronPython 2.7** e interfaces nativas **WPF (Windows Presentation Foundation)**, esta extensão oferece ferramentas robustas para manipulação de dados, documentação interoperabilidade e gerenciamento de modelos.
 
 ---
 
-### 🚀 Plugins Inclusos (Por enquanto)
+## 🔥 Módulos e Funcionalidades
 
-Dá uma olhada no que já está rodando por aqui:
+### 🛠️ Painel Modificações (Data & Batch Processing)
 
-#### 1. Filtro Avançado
+Ferramentas para manipulação massiva de dados e parâmetros.
 
-Ele te ajuda a **filtrar elementos** no projeto sem precisar de seleção prévia.
+#### **1. Renumerar (Smart Renumbering)**
+Algoritmo de renumeração sequencial inteligente.
+- **Fluxo Híbrido**: Permite seleção contínua de elementos no modelo sem fechar a interface.
+- **Ordenação Dinâmica**: Numera baseando-se na ordem de seleção do usuário (click-order).
+- **Customização**: Suporte a prefixos, sufixos e *padding* (zeros à esquerda).
 
-* Funciona com **múltiplos parâmetros** no mesmo filtro.
-* Você filtra elementos com caracteristicas específicas.
-* A lógica é igualzinha aos filtros de vista do Revit: você pode filtrar por **"igual a", "contém", "diferente de"**, etc. É só usar a criatividade!
+#### **2. Renomear+ (Advanced Batch Renamer)**
+Motor de renomeação em massa com suporte a regras complexas.
+- **Find & Replace**: Substituição de strings em parâmetros de Vistas, Folhas e Tabelas.
+- **Numeração Sequencial**: Re-indexação de folhas e vistas.
+- **Preview Real-time**: Visualização das alterações antes da aplicação no banco de dados do Revit.
 
-#### 2. Filtrar Elétrica
+#### **3. To Excel (High-Performance IO)**
+Sincronização bidirecional de dados entre Revit e Excel sem dependência de drivers COM.
+- **Performance O(1)**: Otimizado para grandes volumes de dados usando bibliotecas nativas (`xlsxwriter`/`xlrd`).
+- **Relatórios de Integridade**: Feedback detalhado sobre células modificadas, ignoradas (imutáveis) ou erros de tipo.
+- **Aplicações**: Edição em massa de Tabelas de Quantidades e Quadros de Cargas.
 
-Um dos que eu mais **amo**!
+#### **4. Gerar Folhas (Sheet Automation)**
+Automação de documentação técnica.
+- **Batch Creation**: Geração automática de múltiplas folhas baseada em vistas selecionadas.
+- **DWG Auto-Setup**: Configuração automática de padrões de exportação (AIA Layers, True Colors) se inexistentes no projeto.
+- **Alinhamento Inteligente**: Centralização automática de Viewports no Title Block.
 
-* Você seleciona o **quadro** primeiro, depois roda o plugin.
-* Ele **seleciona todos os circuitos** ligados naquele quadro.
-* Eu uso ele para copiar elementos de um pavimento para outro sem perder o circuito.
-* *Obs.:* Por enquanto, os interruptores perdem o `Switch ID`, mas **já estou de olho para resolver isso!**
+#### **5. Inspecionar Tipo (Type Inspector)**
+Ferramenta de diagnóstico rápido de elementos.
+- **Introspecção**: Revela parâmetros ocultos (BuiltInParameters), IDs de categoria e dados de conectores MEP.
+- **Debug Tool**: Essencial para coordenadores BIM identificarem inconsistências em famílias.
 
-#### 3. Overkill
+#### **6. Inverter Anotação (Mirror Fix)**
+Correção automática da orientação de anotações.
+- **Algoritmo**: Detecta e corrige anotações de texto e tags que ficaram invertidas/espelhadas após operações de `Mirror` no modelo.
 
-Esse é fácil: é o **Overkill do CAD**, mas no Revit!
+#### **7. Merge Text (Text Consolidation)**
+Consolidação de notas de texto fragmentadas.
+- **Algoritmo Espacial**: Unifica múltiplas notas de texto selecionadas em uma única entidade mestre.
+- **Ordenação Y/X**: Preserva a ordem de leitura baseada nas coordenadas espaciais dos elementos originais.
 
-* Você seleciona o que quer "limpar".
-* Diz se quer **deletar os duplicados** ou **apenas selecioná-los** para saber onde estão.
-* *Atenção:* Por enquanto, tem poucas categorias, mas vou colocando mais conforme a **necessidade aparecer!**
+#### **8. Nome Amb (Linked Room Tagging)**
+Anotação automatizada baseada em vínculos (Revit Links).
+- **Data Extraction**: Lê dados de Ambientes (Rooms) de arquivos vinculados (impossível com tags nativas de anotação genérica).
+- **Collision Avoidance**: Algoritmo que evita sobreposição de textos em plantas densas.
+- **Multi-Parâmetros**: Extrai Nome, Área e Pé Direito (Unbounded Height).
 
-#### 4. Gerar Folhas
+#### **9. Soma Dist (Route Totalizer)**
+Totalizador métrico para elementos lineares.
+- **Cálculo de Rede**: Soma o comprimento total de Eletrodutos, Tubos ou Linhas selecionadas.
+- **Aplicações**: Estimativa rápida de cabeamento e tubulação.
 
-**Esse deu trabalho! e vai ser o queridinho de muita gente** É um gerador automático de folhas que salva a pátria na hora de entregar o projeto.
-
-* Faz o **PDF e DWG de várias folhas de uma vez**.
-* Ele pega o nome do arquivo a partir de um parâmetro seu (eu uso o `NOME-FOLHA`, que é o padrão da construtora).
-* Na hora de salvar, o DWG **já sai sem aquelas vistas anexadas**, gerando um arquivo único e limpo.
-* **Configuração é simples:** Você escolhe a pasta de saída, marca as folhas que quer na primeira aba e ajusta as opções de PDF/DWG na segunda.
-
-#### 5. Inspecionar Tipo
-
-Basicamente, um **detetive de elementos**.
-
-* Quer saber **o que cada elemento é**? Quais **parâmetros** ele tem?
-* É só selecionar uma tomada, por exemplo, e ele te diz qual o nome, se tem conector elétrico, e todos os parâmetros internos.
-
-#### 6. Inverter Anotação
-
-Sabe quando você usa o `mirror` e aquelas anotações genéricas **insistem em ficar espelhadas/invertidas**?
-
-* Você seleciona as anotações caprichosas e ele **espelha todas de uma vez**, resolvendo o problema rapidinho.
-
-#### 7. Renomear+
-
-Esse é para quem precisa de **edição de texto em massa** nos parâmetros!
-
-* **Exemplo:** Trocar o nome de vários elementos ou re-numerar folhas seguindo um padrão (tipo `UN-01`, `UN-02`, etc.).
-* Tem um texto que você tem que substituir em varios elementos, procurar e substituir por aqui.
-* *Em progresso:* Estou tentando implementar **expressões regulares (`regex`) para o plugin**, mas ainda sem sucesso. Quem quiser testar, sinta-se à vontade!
-
-#### 8. Renumerar
-
-Mais focado em **numeração sequencial** de elementos.
-
-* Você seleciona os elementos que quer numerar (exemplo: preencher o parâmetro **"marca"**).
-* Ele pede onde você quer **começar** (do 1, do 10, do 20) e segue a ordem: `01, 02, 03`, etc.
-* **Importante:** A numeração é feita na **ordem em que você clicou/selecionou**.
-
-#### 9. Soma Dist
-
-Simples e direto!
-
-* Precisa saber a **distância total** de um trecho de eletroduto?
-* Você seleciona os elementos e ele te retorna **a contagem/distância total**.
-
-#### 10. To Excel
-
-Simples e direto!
-
-* Precisa alterar tabelas ou parametros no revit em massa?
-* Você seleciona as tabelas que quer alaterar e manda elas pro excel e depois importa de volta
 ---
 
-### ⚙️ Como a mágica acontece?
+### 🔍 Painel Filtrar e Limpar (Audit & Optimization)
 
-Cada plugin é um arquivo específico que contém os *scripts* e configurações para rodar. 
-Eles são carregados e usados via plataforma compatível (se precisar de detalhes de como carregar na sua plataforma, me avisa!).
+Ferramentas para auditoria, limpeza e seleção precisa de elementos.
 
-### 📥 Como Instalar (Para usuários **pyRevit**)
+#### **10. Filtro Avançado (Query Builder)**
+Seleção baseada em regras lógicas, similar aos Filtros de Vista, mas para seleção ativa.
+- **Lógica Booleana**: Suporte a operadores (Igual, Contém, Diferente, Maior que).
+- **Multi-Categoria**: Permite filtrar elementos de categorias distintas simultaneamente.
 
-**Pré-requisito:** Você precisa ter o **![pyRevit](https://github.com/pyrevitlabs/pyRevit/releases)** instalado.
+#### **11. Overkill (Model Cleanup)**
+Ferramenta de saneamento do modelo.
+- **Deduplicação**: Identifica e remove elementos geometricamente idênticos sobrepostos (clash zero).
+- **Limpeza de Vistas**: Purge seletivo de vistas e folhas não utilizadas.
 
-1.  **Baixe ou Clone:** Clone o repositório ou baixe o arquivo ZIP da pasta principal `LF Tools.extension`.
-2.  **Acesse a pasta de extensões:**
-    * Abra o menu **Executar** do Windows (`Win` + `R`).
-    * Digite `%appdata%` e pressione **Enter**.
-    * Navegue até a pasta `...\pyRevit\Extensions`.
-    * *(O caminho completo deve ser algo como: `C:\Users\[SeuUsuario]\AppData\Roaming\pyRevit\Extensions`)*
-3.  **Mova a pasta:** Copie a pasta `LF Tools.extension` e cole dentro da pasta `Extensions`.
-4.  **Reinicie o Revit:** Feche e abra o Revit (ou a aba pyRevit) para que a extensão seja carregada. Pronto!
+#### **12. Smart Crop (Viewport Optimization)**
+Ajuste algorítmico de Viewports.
+- **Bounding Box Analysis**: Redefine o Crop Region da vista para o limite exato da geometria visível.
+- **Benefício**: Reduz o processamento gráfico da vista e otimiza o espaço em prancha.
 
-### ⌨️ Como Usar
+---
 
-1.  Abra a ferramenta/interface correspondente na sua plataforma.
-2.  Carregue o plugin desejado (`Filtro Avançado`, `Gerar Folhas`, etc.).
-3.  Configure as opções que ele pedir (se houver).
-4.  Execute e veja a mágica acontecer!
+### ⚡ Painel Elétrica (MEP Systems)
+
+Utilitários específicos para projetos de instalações elétricas.
+
+#### **13. Filtrar Elétrica (Circuit Tracer)**
+Rastreamento inteligente de sistemas elétricos.
+- **Topologia de Rede**: Seleciona um Painel e identifica recursivamente todos os dispositivos e circuitos conectados a ele.
+- **Copy/Monitor Aux**: Facilita a cópia de pavimentos inteiros garantindo que a integridade do circuito seja mantida na seleção.
+
+---
+
+## 💻 Tech Stack
+
+- **Core**: Autodesk Revit API 2024
+- **Language**: Python (IronPython 2.7)
+- **Framework**: pyRevit v4.8+
+- **UI/UX**: WPF (Xaml) com Estilização "Dark Mode" Customizada via ResourceDictionaries.
+
+---
+
+## ⚙️ Instalação
+
+1.  Baixe a pasta `LF Tools.extension`.
+2.  Mova para a pasta de extensões do pyRevit:
+    `%appdata%\pyRevit\Extensions\`
+3.  Reinicie o Revit.
+
+> _"Ferramentas desenvolvidas por engenheiros, para engenheiros. Focadas em alto volume de dados e precisão."_ :rocket:
 
 ### 🤝 Contribuições
 
