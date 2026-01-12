@@ -35,8 +35,20 @@ class SheetItem(object):
         self.Name = sheet.Name if sheet.Name else "" 
         self.IsSelected = False
         self.name_pattern = name_pattern
+        self._file_name = "" # Backing field
+        self.PdfFileName = "" 
+        
+        # Inicializa via setter
         self.FileName = self._generate_filename(sheet, name_pattern)
-        self.PdfFileName = self.FileName 
+
+    @property
+    def FileName(self):
+        return self._file_name
+    
+    @FileName.setter
+    def FileName(self, value):
+        self._file_name = value
+        self.PdfFileName = value # Sincroniza PDF com o nome editado 
 
     def _get_param_value(self, sheet, p_name):
         val = ""
@@ -125,9 +137,13 @@ class LuisExporterWindow(forms.WPFWindow):
         # NOVO: Evento Selecionar Tudo
         self.chk_SelectAll.Click += self.toggle_all_sheets
 
-        # Evento de clique na linha
+        # Evento de clique na linha (RESTAURADO)
         self.dg_Sheets.SelectionChanged += self.on_row_clicked
         self.is_handling_click = False 
+        
+        # Configurar Grid de Edicao (mesma fonte)
+        if hasattr(self, 'dg_Edits'):
+            self.dg_Edits.ItemsSource = self.sheet_items
         
         self.is_cancelled = False
         self.rb_ZoomFit.IsChecked = True
@@ -154,9 +170,7 @@ class LuisExporterWindow(forms.WPFWindow):
         is_checked = self.chk_SelectAll.IsChecked
         for item in self.sheet_items:
             item.IsSelected = is_checked
-        self.dg_Sheets.Items.Refresh()
-
-    # --- LOGICA DE CLIQUE NA LINHA ---
+    # --- LOGICA DE CLIQUE NA LINHA (RESTAURADA) ---
     def on_row_clicked(self, sender, args):
         if self.is_handling_click: return
         self.is_handling_click = True
@@ -169,9 +183,40 @@ class LuisExporterWindow(forms.WPFWindow):
         except: pass
         self.is_handling_click = False
 
-    # --- FUNCOES DE UI E LOG ---
+    # --- FUNCOES DE UI E PROGRESSO ---
+    def save_changes_revit(self, sender, args):
+        """Aplica os nomes editados as folhas no Revit"""
+        updated_count = 0
+        errors = []
+        
+        try:
+            # Tenta atualizar
+            with revit.Transaction("Atualizar Nomes de Folhas"):
+                for item in self.sheet_items:
+                    # Verifica se mudou (e se nao eh vazio)
+                    if item.FileName and item.FileName != item.Name:
+                        try:
+                            item.Element.Name = item.FileName
+                            # Atualiza item.Name para refletir a mudanca
+                            item.Name = item.FileName
+                            updated_count += 1
+                        except Exception as e:
+                            errors.append("{} ({}): {}".format(item.Number, item.FileName, str(e)))
+            
+            if errors:
+                forms.alert("Concluído com {} erros:\n{}".format(len(errors), "\n".join(errors[:5])))
+            else:
+                forms.alert("Sucesso! {} folhas atualizadas no Revit.".format(updated_count))
+            
+            # Atualiza Grids
+            self.dg_Edits.Items.Refresh()
+            self.dg_Sheets.Items.Refresh()
+                
+        except Exception as e:
+            forms.alert("Erro ao aplicar mudanças: " + str(e))
+
     def log_message(self, message):
-        """Escreve na aba de Log e atualiza a tela"""
+        """Escreve no log detalhado"""
         try:
             timestamp = time.strftime("%H:%M:%S")
             if "===" in message:
@@ -184,6 +229,136 @@ class LuisExporterWindow(forms.WPFWindow):
             WinFormsApp.DoEvents()
         except:
             pass
+    
+    def reset_progress_ui(self):
+        """Reseta a interface de progresso para estado inicial"""
+        try:
+            self.lbl_ProgressTitle.Text = "Aguardando início..."
+            self.lbl_ProgressDetail.Text = ""
+            self.lbl_ProgressPercent.Text = "0%"
+            self.lbl_SuccessCount.Text = "0"
+            self.lbl_ErrorCount.Text = "0"
+            self.lbl_TimeElapsed.Text = "0s"
+            self.progressBar.Width = 0
+            self.pnl_ExportItems.Children.Clear()
+            self.txt_Log.Text = ""  # Limpa log detalhado
+            WinFormsApp.DoEvents()
+        except:
+            pass
+    
+    def update_progress(self, current, total, current_item_name=""):
+        """Atualiza a barra de progresso e informacoes"""
+        try:
+            percent = int((current / float(total)) * 100)
+            self.lbl_ProgressTitle.Text = "Exportando {} de {}".format(current, total)
+            self.lbl_ProgressDetail.Text = current_item_name
+            self.lbl_ProgressPercent.Text = "{}%".format(percent)
+            
+            # Atualiza largura da barra (assume container ~500px)
+            parent_width = self.progressBar.Parent.ActualWidth if self.progressBar.Parent else 500
+            self.progressBar.Width = (percent / 100.0) * parent_width
+            
+            WinFormsApp.DoEvents()
+        except:
+            pass
+    
+    def update_counters(self, success, errors, elapsed_seconds):
+        """Atualiza contadores de sucesso/erro/tempo"""
+        try:
+            self.lbl_SuccessCount.Text = str(success)
+            self.lbl_ErrorCount.Text = str(errors)
+            self.lbl_TimeElapsed.Text = self.format_time(elapsed_seconds)
+            WinFormsApp.DoEvents()
+        except:
+            pass
+    
+    def add_export_item(self, sheet_number, file_name, status, file_type=""):
+        """Adiciona um item na lista de exportados com status visual"""
+        try:
+            import System.Windows.Controls as Controls
+            import System.Windows.Media as Media
+            
+            # Container do item
+            border = Controls.Border()
+            border.CornerRadius = System.Windows.CornerRadius(4)
+            border.Padding = System.Windows.Thickness(10, 8, 10, 8)
+            border.Margin = System.Windows.Thickness(0, 0, 0, 4)
+            
+            if status == "success":
+                border.Background = Media.SolidColorBrush(Media.Color.FromArgb(26, 78, 201, 155))  # Verde translucido
+                icon = "✓"
+                icon_color = Media.Color.FromArgb(255, 78, 201, 155)
+            elif status == "error":
+                border.Background = Media.SolidColorBrush(Media.Color.FromArgb(26, 210, 85, 85))  # Vermelho translucido
+                icon = "✕"
+                icon_color = Media.Color.FromArgb(255, 210, 85, 85)
+            else:  # processing
+                border.Background = Media.SolidColorBrush(Media.Color.FromArgb(26, 86, 156, 214))  # Azul translucido
+                icon = "◐"
+                icon_color = Media.Color.FromArgb(255, 86, 156, 214)
+            
+            # Grid interno
+            grid = Controls.Grid()
+            col1 = Controls.ColumnDefinition()
+            col1.Width = System.Windows.GridLength(25)
+            col2 = Controls.ColumnDefinition()
+            col2.Width = System.Windows.GridLength(1, System.Windows.GridUnitType.Star)
+            col3 = Controls.ColumnDefinition()
+            col3.Width = System.Windows.GridLength.Auto
+            grid.ColumnDefinitions.Add(col1)
+            grid.ColumnDefinitions.Add(col2)
+            grid.ColumnDefinitions.Add(col3)
+            
+            # Icone
+            icon_txt = Controls.TextBlock()
+            icon_txt.Text = icon
+            icon_txt.FontSize = 14
+            icon_txt.FontWeight = System.Windows.FontWeights.Bold
+            icon_txt.Foreground = Media.SolidColorBrush(icon_color)
+            icon_txt.VerticalAlignment = System.Windows.VerticalAlignment.Center
+            Controls.Grid.SetColumn(icon_txt, 0)
+            grid.Children.Add(icon_txt)
+            
+            # Texto (numero + nome)
+            stack = Controls.StackPanel()
+            
+            num_txt = Controls.TextBlock()
+            num_txt.Text = sheet_number
+            num_txt.FontWeight = System.Windows.FontWeights.SemiBold
+            num_txt.Foreground = Media.SolidColorBrush(Media.Color.FromArgb(255, 241, 241, 241))
+            num_txt.FontSize = 12
+            stack.Children.Add(num_txt)
+            
+            name_txt = Controls.TextBlock()
+            name_txt.Text = file_name
+            name_txt.Foreground = Media.SolidColorBrush(Media.Color.FromArgb(255, 204, 204, 204))
+            name_txt.FontSize = 10
+            stack.Children.Add(name_txt)
+            
+            Controls.Grid.SetColumn(stack, 1)
+            grid.Children.Add(stack)
+            
+            # Tipo de arquivo
+            if file_type:
+                type_txt = Controls.TextBlock()
+                type_txt.Text = file_type
+                type_txt.FontSize = 10
+                type_txt.Foreground = Media.SolidColorBrush(Media.Color.FromArgb(255, 150, 150, 150))
+                type_txt.VerticalAlignment = System.Windows.VerticalAlignment.Center
+                Controls.Grid.SetColumn(type_txt, 2)
+                grid.Children.Add(type_txt)
+            
+            border.Child = grid
+            self.pnl_ExportItems.Children.Add(border)
+            
+            # Scroll para o final
+            parent = self.pnl_ExportItems.Parent
+            if hasattr(parent, 'ScrollToEnd'):
+                parent.ScrollToEnd()
+            
+            WinFormsApp.DoEvents()
+        except Exception as ex:
+            print("Erro add_export_item: " + str(ex))
 
     def load_sheet_parameters(self):
         try:
@@ -270,6 +445,19 @@ class LuisExporterWindow(forms.WPFWindow):
                 pdf_opts.ZoomPercentage = 100
                 pdf_opts.PaperPlacement = DB.PaperPlacementType.Margins
         except: pass
+        
+        # Configurar ocultação de Crop Region (Região de Recorte)
+        try:
+            hide_crop = bool(self.chk_HideCrop.IsChecked)
+            
+            if hasattr(pdf_opts, 'HideCropBoundaries'):
+                pdf_opts.HideCropBoundaries = hide_crop
+                self.log_message("  > HideCropBoundaries = {}".format(hide_crop))
+            else:
+                self.log_message("  > AVISO: HideCropBoundaries nao disponivel nesta versao")
+        except Exception as ex:
+            self.log_message("  > ERRO ao configurar HideCropBoundaries: " + str(ex))
+        
         return pdf_opts
 
     def create_dwg_options_compatible(self):
@@ -298,7 +486,6 @@ class LuisExporterWindow(forms.WPFWindow):
     def run_export(self, sender, args):
         folder = self.txt_OutputFolder.Text
         if not folder or not os.path.exists(folder):
-            # Tenta selecionar pasta automaticamente
             folder = forms.pick_folder()
             if folder:
                 self.txt_OutputFolder.Text = folder
@@ -320,29 +507,35 @@ class LuisExporterWindow(forms.WPFWindow):
         # UI Setup
         self.btn_Start.IsEnabled = False
         self.btn_Cancel.Visibility = System.Windows.Visibility.Visible
-        self.txt_Log.Text = "" 
-        
-        self.tab_Main.SelectedIndex = 1 
-        self.log_message("INICIANDO EXPORTAÇÃO...")
-        self.log_message("Total de folhas: {}".format(len(selected_items)))
-        self.log_message("="*40)
+        self.tab_Main.SelectedIndex = 2 # Aba Progresso agora eh indice 2
+        self.reset_progress_ui()
         
         self.is_cancelled = False
         success_count = 0
         error_count = 0
         start_time = time.time()
+        total_items = len(selected_items)
         
-        for item in selected_items:
-            if self.is_cancelled: break
+        self.log_message("INICIANDO EXPORTAÇÃO...")
+        self.log_message("Total de folhas: {}".format(total_items))
+        self.log_message("Pasta: {}".format(folder))
+        self.log_message("="*50)
+        
+        for idx, item in enumerate(selected_items):
+            if self.is_cancelled: 
+                break
+            
+            current_num = idx + 1
+            self.update_progress(current_num, total_items, "Folha {} - {}".format(item.Number, item.Name))
+            self.update_counters(success_count, error_count, time.time() - start_time)
             
             try:
-                self.log_message("PROCESSANDO: {}".format(item.Number))
+                self.log_message("PROCESSANDO: {} - {}".format(item.Number, item.Name))
                 view_ids = System.Collections.Generic.List[DB.ElementId]([item.Id])
                 
                 # --- PDF ---
                 if do_pdf and HAS_PDF_SUPPORT and not self.is_cancelled:
                     try:
-                        self.log_message("  > Gerando PDF...")
                         pdf_opts = self.create_pdf_options()
                         pdf_files_before = set([f for f in os.listdir(folder) if f.lower().endswith('.pdf')])
                         
@@ -350,11 +543,13 @@ class LuisExporterWindow(forms.WPFWindow):
                         
                         max_wait = 15
                         elapsed = 0
-                        found = False
+                        pdf_ok = False
+                        
                         while elapsed < max_wait and not self.is_cancelled:
-                            WinFormsApp.DoEvents() 
+                            WinFormsApp.DoEvents()
                             time.sleep(0.5)
                             elapsed += 0.5
+                            self.update_counters(success_count, error_count, time.time() - start_time)
                             
                             pdf_files_after = set([f for f in os.listdir(folder) if f.lower().endswith('.pdf')])
                             new_files = pdf_files_after - pdf_files_before
@@ -365,29 +560,33 @@ class LuisExporterWindow(forms.WPFWindow):
                                 new_p = os.path.join(folder, "{}.pdf".format(item.PdfFileName))
                                 if self.safe_rename_file(old_p, new_p):
                                     success_count += 1
-                                    found = True
-                                    self.log_message("  > PDF OK: " + item.PdfFileName)
+                                    pdf_ok = True
+                                    self.add_export_item(item.Number, "{}.pdf".format(item.PdfFileName), "success", "PDF")
+                                    self.log_message("  > PDF OK: {}.pdf".format(item.PdfFileName))
                                 else:
                                     error_count += 1
-                                    self.log_message("  > ERRO ao renomear PDF.")
+                                    self.add_export_item(item.Number, "Erro ao renomear PDF", "error", "PDF")
+                                    self.log_message("  > ERRO PDF: Falha ao renomear arquivo")
                                 break
                         
-                        if not found and not self.is_cancelled:
+                        if not pdf_ok and not self.is_cancelled:
                             if os.path.exists(os.path.join(folder, "{}.pdf".format(item.PdfFileName))):
                                 success_count += 1
-                                self.log_message("  > PDF OK (Direto).")
+                                self.add_export_item(item.Number, "{}.pdf".format(item.PdfFileName), "success", "PDF")
+                                self.log_message("  > PDF OK: {}.pdf".format(item.PdfFileName))
                             else:
                                 error_count += 1
-                                self.log_message("  > ERRO: PDF nao encontrado.")
+                                self.add_export_item(item.Number, "PDF não encontrado", "error", "PDF")
+                                self.log_message("  > ERRO PDF: Arquivo nao encontrado apos exportacao")
 
                     except Exception as ex:
                         error_count += 1
-                        self.log_message("  > ERRO CRITICO PDF: " + str(ex))
+                        self.add_export_item(item.Number, str(ex)[:40], "error", "PDF")
+                        self.log_message("  > ERRO CRITICO PDF: {}".format(str(ex)))
                 
                 # --- DWG ---
                 if do_dwg and not self.is_cancelled:
                     try:
-                        self.log_message("  > Gerando DWG...")
                         dwg_opts = None
                         if self.cb_DWGSetups.SelectedItem:
                             s_name = self.cb_DWGSetups.SelectedItem
@@ -395,68 +594,88 @@ class LuisExporterWindow(forms.WPFWindow):
                                 if s.Name == s_name:
                                     dwg_opts = s.GetDWGExportOptions()
                                     break
-                        if not dwg_opts: dwg_opts = self.create_dwg_options_compatible()
-                        dwg_opts.MergedViews = True 
+                        if not dwg_opts: 
+                            dwg_opts = self.create_dwg_options_compatible()
+                        dwg_opts.MergedViews = True
                         
                         doc.Export(folder, item.FileName, view_ids, dwg_opts)
                         
                         dwg_path = os.path.join(folder, "{}.dwg".format(item.FileName))
                         found_dwg = False
                         
-                        for _ in range(15): 
+                        for _ in range(15):
                             if self.is_cancelled:
                                 break
-                            if os.path.exists(dwg_path): 
+                            if os.path.exists(dwg_path):
                                 found_dwg = True
                                 break
                             time.sleep(0.3)
                             WinFormsApp.DoEvents()
+                            self.update_counters(success_count, error_count, time.time() - start_time)
 
                         if found_dwg:
                             success_count += 1
-                            self.log_message("  > DWG OK.")
+                            self.add_export_item(item.Number, "{}.dwg".format(item.FileName), "success", "DWG")
+                            self.log_message("  > DWG OK: {}.dwg".format(item.FileName))
                         else:
                             alt = os.path.join(folder, "{}_Sheet.dwg".format(item.FileName))
                             if os.path.exists(alt):
                                 self.safe_rename_file(alt, dwg_path)
                                 success_count += 1
-                                self.log_message("  > DWG OK (Renomeado).")
+                                self.add_export_item(item.Number, "{}.dwg".format(item.FileName), "success", "DWG")
+                                self.log_message("  > DWG OK: {}.dwg (renomeado)".format(item.FileName))
                             else:
                                 error_count += 1
-                                self.log_message("  > ERRO: DWG nao gerado.")
+                                self.add_export_item(item.Number, "DWG não gerado", "error", "DWG")
+                                self.log_message("  > ERRO DWG: Arquivo nao foi gerado")
 
                     except Exception as ex:
                         error_count += 1
-                        self.log_message("  > ERRO CRITICO DWG: " + str(ex))
+                        self.add_export_item(item.Number, str(ex)[:40], "error", "DWG")
+                        self.log_message("  > ERRO CRITICO DWG: {}".format(str(ex)))
                 
             except Exception as ex:
-                self.log_message("ERRO GERAL Folha {}: {}".format(item.Number, str(ex)))
                 error_count += 1
+                self.add_export_item(item.Number, "Erro: {}".format(str(ex)[:30]), "error", "")
+                self.log_message("  > ERRO GERAL: {}".format(str(ex)))
         
         # --- FINALIZACAO ---
         total_time = time.time() - start_time
         self.btn_Start.IsEnabled = True
         self.btn_Cancel.Visibility = System.Windows.Visibility.Collapsed
         
-        self.log_message("="*40)
+        # Atualiza UI final
+        self.update_counters(success_count, error_count, total_time)
         
+        # Log de finalizacao
+        self.log_message("="*50)
         if self.is_cancelled:
-            self.log_message("CANCELADO PELO USUÁRIO.")
+            self.lbl_ProgressTitle.Text = "Cancelado pelo usuário"
+            self.lbl_ProgressDetail.Text = ""
+            self.log_message("CANCELADO PELO USUARIO")
         elif error_count == 0:
-            self.log_message("CONCLUÍDO COM SUCESSO!")
-            self.log_message("Tempo: {}".format(self.format_time(total_time)))
-            self.log_message("Arquivos: {}".format(success_count))
+            self.lbl_ProgressTitle.Text = "✓ Concluído com sucesso!"
+            self.lbl_ProgressDetail.Text = "{} arquivos exportados em {}".format(success_count, self.format_time(total_time))
+            self.update_progress(total_items, total_items, "")
+            self.log_message("CONCLUIDO COM SUCESSO!")
+            self.log_message("Arquivos: {} | Tempo: {}".format(success_count, self.format_time(total_time)))
         else:
-            self.log_message("CONCLUÍDO COM AVISOS.")
-            self.log_message("Sucessos: {} | Erros: {}".format(success_count, error_count))
-            
-        self.log_message("="*40)
-        self.log_message("Abrindo pasta de destino...")
+            self.lbl_ProgressTitle.Text = "Concluído com avisos"
+            self.lbl_ProgressDetail.Text = "{} sucessos, {} erros".format(success_count, error_count)
+            self.update_progress(total_items, total_items, "")
+            self.log_message("CONCLUIDO COM AVISOS")
+            self.log_message("Sucessos: {} | Erros: {} | Tempo: {}".format(success_count, error_count, self.format_time(total_time)))
+        
+        self.log_message("="*50)
+        
+        self.log_message("="*50)
         
         try:
-            os.startfile(folder)
+             # Pergunta se quer abrir a pasta com TaskDialog padrao do pyrevit
+             if forms.alert("Processo finalizado. Deseja abrir a pasta de destino?", yes=True, no=True):
+                 os.startfile(folder)
         except:
-            self.log_message("Nao foi possivel abrir a pasta automaticamente.")
+             pass
 
 try:
     LuisExporterWindow().ShowDialog()

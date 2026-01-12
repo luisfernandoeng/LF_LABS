@@ -307,7 +307,8 @@
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Background="{StaticResource PanelColor}" CornerRadius="4" Padding="5">
-                <TabControl Name="tab_Main" Background="Transparent" BorderThickness="0" Margin="5">
+                <TabControl Name="tab_Main" Background="Transparent" BorderThickness="0" Margin="5"
+                            HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
                     
                     <TabItem Header="Seleção">
                         <Grid Margin="0,10,0,0">
@@ -358,11 +359,60 @@
                                             </Trigger>
                                         </Style.Triggers>
                                     </Style>
+                                    <Style x:Key="CenteredCellCheckBox" TargetType="CheckBox">
+                                        <Setter Property="Cursor" Value="Hand"/>
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="CheckBox">
+                                                    <Grid Background="Transparent">
+                                                        <Border x:Name="CheckBorder" Width="18" Height="18" BorderThickness="2" BorderBrush="{StaticResource BorderColor}" CornerRadius="3" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                            <Path x:Name="CheckMark" Width="12" Height="12" Stretch="Uniform" Fill="{StaticResource AccentBlue}" Data="M 0,4 L 3,7 L 8,0" Visibility="Collapsed"/>
+                                                        </Border>
+                                                    </Grid>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsChecked" Value="True">
+                                                            <Setter TargetName="CheckMark" Property="Visibility" Value="Visible"/>
+                                                            <Setter TargetName="CheckBorder" Property="BorderBrush" Value="{StaticResource AccentBlue}"/>
+                                                            <Setter TargetName="CheckBorder" Property="Background" Value="{StaticResource AccentBlue}"/>
+                                                            <Setter TargetName="CheckMark" Property="Fill" Value="White"/>
+                                                        </Trigger>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="CheckBorder" Property="BorderBrush" Value="{StaticResource AccentBlue}"/>
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                    <Style x:Key="TextButtonStyle" TargetType="Button">
+                                        <Setter Property="Background" Value="Transparent"/>
+                                        <Setter Property="BorderThickness" Value="0"/>
+                                        <Setter Property="HorizontalContentAlignment" Value="Left"/>
+                                        <Setter Property="VerticalContentAlignment" Value="Center"/>
+                                        <Setter Property="Cursor" Value="Hand"/>
+                                        <Setter Property="Padding" Value="5,0"/>
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="Button">
+                                                    <Border Background="{TemplateBinding Background}">
+                                                        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                                                    </Border>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
                                 </DataGrid.Resources>
 
                                 <DataGrid.Columns>
-                                    <DataGridCheckBoxColumn Header="Sel." Binding="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}" Width="40">
-                                        </DataGridCheckBoxColumn>
+                                    <DataGridTemplateColumn Header="Sel." Width="40">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <CheckBox IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}" 
+                                                          HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                                                          Style="{StaticResource CenteredCellCheckBox}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
                                     
                                     <DataGridTextColumn Header="Número" Binding="{Binding Number}" Width="80" IsReadOnly="True"/>
                                     <DataGridTextColumn Header="Nome da Folha" Binding="{Binding Name}" Width="*" IsReadOnly="True"/>
@@ -378,18 +428,183 @@
                         </Grid>
                     </TabItem>
                     
-                    <TabItem Header="Progresso / Log">
-                        <TextBox Name="txt_Log" IsReadOnly="True" 
-                                 Style="{StaticResource LogTextBox}"
-                                 VerticalScrollBarVisibility="Auto"
-                                 TextWrapping="Wrap"
-                                 FontFamily="Consolas, Courier New, Monospace"
-                                 FontSize="12"
-                                 Background="{StaticResource InputColor}"
-                                 Foreground="{StaticResource TextSecondary}"
-                                 BorderThickness="0"
-                                 Margin="0,10,0,0"
-                                 Padding="10"/>
+                    <TabItem Header="Edição">
+                        <Grid Margin="0,10,0,0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/> 
+                                <RowDefinition Height="*"/> 
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                <TextBlock Text="Edite os nomes abaixo e clique em Salvar para atualizar no Revit." VerticalAlignment="Center" Foreground="{StaticResource TextSecondary}"/>
+                            </StackPanel>
+
+                            <Border Grid.Row="1" Background="{StaticResource PanelColor}" CornerRadius="4" Padding="5">
+                                <DataGrid Name="dg_Edits" AutoGenerateColumns="False" 
+                                          CanUserAddRows="False" 
+                                          SelectionUnit="Cell"
+                                          GridLinesVisibility="Horizontal"
+                                          HorizontalGridLinesBrush="{StaticResource BorderColor}"
+                                          Background="{StaticResource InputColor}"
+                                          BorderThickness="1" BorderBrush="{StaticResource BorderColor}"
+                                          RowBackground="Transparent"
+                                          Foreground="{StaticResource TextPrimary}"
+                                          RowHeaderWidth="0">
+                                    <DataGrid.Resources>
+                                        <Style TargetType="DataGridColumnHeader">
+                                            <Setter Property="Background" Value="{StaticResource PanelColor}"/>
+                                            <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+                                            <Setter Property="Padding" Value="10,8"/>
+                                            <Setter Property="FontWeight" Value="SemiBold"/>
+                                            <Setter Property="BorderThickness" Value="0,0,0,1"/>
+                                            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}"/>
+                                        </Style>
+                                        <Style TargetType="DataGridCell">
+                                            <Setter Property="Padding" Value="8"/>
+                                            <Setter Property="BorderThickness" Value="0"/>
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="DataGridCell">
+                                                        <Border Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                                                            <ContentPresenter VerticalAlignment="Center"/>
+                                                        </Border>
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
+                                            <Style.Triggers>
+                                                <Trigger Property="IsSelected" Value="True">
+                                                    <Setter Property="Background" Value="#22569CD6"/>
+                                                    <Setter Property="Foreground" Value="White"/>
+                                                </Trigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </DataGrid.Resources>
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Número" Binding="{Binding Number}" Width="80" IsReadOnly="True"/>
+                                        <DataGridTextColumn Header="Nome Original" Binding="{Binding Name}" Width="*" IsReadOnly="True"/>
+                                        <DataGridTextColumn Header="Nome Final (Editável)" Binding="{Binding FileName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="1.5*" IsReadOnly="False">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="{StaticResource AccentTeal}"/>
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                            <DataGridTextColumn.EditingElementStyle>
+                                                <Style TargetType="TextBox">
+                                                    <Setter Property="Foreground" Value="{StaticResource AccentTeal}"/>
+                                                    <Setter Property="Background" Value="#11FFFFFF"/>
+                                                    <Setter Property="BorderThickness" Value="0"/>
+                                                </Style>
+                                            </DataGridTextColumn.EditingElementStyle>
+                                        </DataGridTextColumn>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </Border>
+                            
+                            <Button Grid.Row="2" Content="Salvar Alterações no Revit" 
+                                    Click="save_changes_revit"
+                                    Margin="0,15,0,0" Width="200" HorizontalAlignment="Right"
+                                    Style="{StaticResource PrimaryActionButton}"/>
+                        </Grid>
+                    </TabItem>
+                    
+                    
+                    <TabItem Header="Progresso">
+                        <Grid Margin="0,15,0,0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            
+                            <!-- Header do Progresso -->
+                            <StackPanel Grid.Row="0" Margin="0,0,0,15">
+                                <TextBlock Name="lbl_ProgressTitle" Text="Aguardando início..." 
+                                           FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}"/>
+                                <TextBlock Name="lbl_ProgressDetail" Text="" 
+                                           FontSize="12" Foreground="{StaticResource TextSecondary}" Margin="0,3,0,0"/>
+                            </StackPanel>
+                            
+                            <!-- Barra de Progresso -->
+                            <Grid Grid.Row="1" Margin="0,0,0,15">
+                                <Border Background="#FF2D2D30" CornerRadius="6" Height="12"/>
+                                <Border Name="progressBar" CornerRadius="6" Height="12" 
+                                        HorizontalAlignment="Left" Width="0">
+                                    <Border.Background>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                            <GradientStop Color="#FF4EC99B" Offset="0"/>
+                                            <GradientStop Color="#FF56D4A4" Offset="1"/>
+                                        </LinearGradientBrush>
+                                    </Border.Background>
+                                </Border>
+                                <TextBlock Name="lbl_ProgressPercent" Text="0%" 
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                                           FontSize="9" FontWeight="Bold" Foreground="White"/>
+                            </Grid>
+                            
+                            <!-- Contadores de Status -->
+                            <Grid Grid.Row="2" Margin="0,0,0,15">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                
+                                <!-- Sucesso -->
+                                <Border Grid.Column="0" Background="#1A4EC99B" CornerRadius="6" Padding="12,8" Margin="0,0,5,0">
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                        <TextBlock Text="✓" Foreground="#FF4EC99B" FontSize="16" FontWeight="Bold" VerticalAlignment="Center"/>
+                                        <StackPanel Margin="8,0,0,0">
+                                            <TextBlock Name="lbl_SuccessCount" Text="0" FontSize="18" FontWeight="Bold" Foreground="#FF4EC99B"/>
+                                            <TextBlock Text="Sucesso" FontSize="10" Foreground="{StaticResource TextSecondary}"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                                
+                                <!-- Erro -->
+                                <Border Grid.Column="1" Background="#1AD25555" CornerRadius="6" Padding="12,8" Margin="5,0,5,0">
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                        <TextBlock Text="✕" Foreground="#FFD25555" FontSize="16" FontWeight="Bold" VerticalAlignment="Center"/>
+                                        <StackPanel Margin="8,0,0,0">
+                                            <TextBlock Name="lbl_ErrorCount" Text="0" FontSize="18" FontWeight="Bold" Foreground="#FFD25555"/>
+                                            <TextBlock Text="Erro" FontSize="10" Foreground="{StaticResource TextSecondary}"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                                
+                                <!-- Tempo -->
+                                <Border Grid.Column="2" Background="#1A569CD6" CornerRadius="6" Padding="12,8" Margin="5,0,0,0">
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                        <TextBlock Text="⏱" Foreground="#FF569CD6" FontSize="14" VerticalAlignment="Center"/>
+                                        <StackPanel Margin="8,0,0,0">
+                                            <TextBlock Name="lbl_TimeElapsed" Text="0s" FontSize="18" FontWeight="Bold" Foreground="#FF569CD6"/>
+                                            <TextBlock Text="Tempo" FontSize="10" Foreground="{StaticResource TextSecondary}"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+                            
+                            <!-- Lista de Itens Exportados -->
+                            <Border Grid.Row="3" Background="{StaticResource InputColor}" CornerRadius="4">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                    <StackPanel Name="pnl_ExportItems" Margin="8"/>
+                                </ScrollViewer>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+                    
+                    <TabItem Header="Log Detalhado">
+                        <Grid Margin="0,10,0,0">
+                            <TextBox Name="txt_Log" IsReadOnly="True" 
+                                     Style="{StaticResource LogTextBox}"
+                                     HorizontalAlignment="Stretch" VerticalAlignment="Stretch" 
+                                     VerticalScrollBarVisibility="Auto"
+                                     TextWrapping="Wrap"
+                                     FontFamily="Consolas, Courier New, Monospace"
+                                     FontSize="12"
+                                     Padding="10"/>
+                        </Grid>
                     </TabItem>
                 </TabControl>
             </Border>
@@ -414,7 +629,7 @@
                             <RadioButton Name="rb_ZoomFit" Content="Fit to Page + Center" GroupName="Z" IsChecked="True" Style="{StaticResource ModernRadioButton}"/>
                             <RadioButton Name="rb_Zoom100" Content="100% Zoom + Offset" GroupName="Z" Style="{StaticResource ModernRadioButton}"/>
                             
-                            <CheckBox Name="chk_HideScopes" Content="Ocultar Scope Boxes" Margin="0,10,0,0" IsChecked="True" Style="{StaticResource ModernCheckBox}"/>
+                            <CheckBox Name="chk_HideCrop" Content="Ocultar Região de Recorte" Margin="0,10,0,0" IsChecked="True" Style="{StaticResource ModernCheckBox}"/>
                         
                             <TextBlock Text="Padrão de Nome do Arquivo" Style="{StaticResource SectionHeader}" Margin="0,20,0,5"/>
                             <TextBlock Text="Use {Parametro} para combinar dados." Style="{StaticResource FieldLabel}" Margin="0,0,0,8"/>
