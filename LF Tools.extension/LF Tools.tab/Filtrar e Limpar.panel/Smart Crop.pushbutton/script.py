@@ -1,127 +1,89 @@
 # -*- coding: utf-8 -*-
 """
-Script: Smart Crop Turbo - OTIMIZADO
-Descricao: Recorte ultra-rapido (2 cliques) e analise de elementos perdidos.
-Otimizacoes: Snaps minimos, caching, colecoes rapidas
+Script: Smart Crop - Recorte Simples
+Descrição: Recorta a vista com base na seleção com margem de 2m
+Compatível: IronPython 2.7 / pyRevit / Revit 2024
 """
 
-from pyrevit import forms, revit, DB, UI
-from System.Collections.Generic import List # Import necessario para criar listas .NET
+from pyrevit import forms, revit, DB
+from System.Collections.Generic import List
 
-# Variaveis Globais
+# Variáveis Globais
 doc = revit.doc
 uidoc = revit.uidoc
 view = revit.active_view
 
-# ============================================================================
-# 1. ANALISE DE LIXO (OTIMIZADA)
-# ============================================================================
-
-def analyze_garbage():
-    """Inverte a selecao para achar elementos longe. VERSAO OTIMIZADA."""
+def recortar_vista():
+    """Recorta a vista com base nos elementos selecionados."""
+    
+    # Pegar seleção
     selection = revit.get_selection()
     
     if not selection:
-        forms.alert("Selecione o que esta CORRETO primeiro.", warn_icon=True)
+        forms.alert("Selecione elementos para recortar a vista.", 
+                   warn_icon=True, 
+                   title="Nenhum elemento selecionado")
         return
-
-    # OTIMIZACAO 1: Calculo de limites em uma passada
-    bounds = {'min_x': float('inf'), 'min_y': float('inf'), 
-              'max_x': float('-inf'), 'max_y': float('-inf')}
     
-    selected_ids = set()
+    # Filtrar elementos válidos (remover vistas, fixados, caixas 3D)
+    elementos_validos = []
     
     for el in selection:
-        selected_ids.add(el.Id.IntegerValue)
-        bbox = el.get_BoundingBox(view)
-        if bbox:
-            bounds['min_x'] = min(bounds['min_x'], bbox.Min.X)
-            bounds['min_y'] = min(bounds['min_y'], bbox.Min.Y)
-            bounds['max_x'] = max(bounds['max_x'], bbox.Max.X)
-            bounds['max_y'] = max(bounds['max_y'], bbox.Max.Y)
-    
-    if bounds['min_x'] == float('inf'):
-        return
-
-    tolerance = 1.0
-    view_id = view.Id.IntegerValue
-    
-    # OTIMIZACAO 2: Filtro rapido - apenas visiveis
-    collector = (DB.FilteredElementCollector(doc, view.Id)
-                .WhereElementIsNotElementType())
-    
-    # OTIMIZACAO 3: Lista de IDs direto (evita .ToElements())
-    culprit_ids = []
-    
-    for el_id in collector.ToElementIds():
-        id_val = el_id.IntegerValue
-        
-        # Skip rapido
-        if id_val == view_id or id_val in selected_ids:
+        # Ignorar vistas
+        if isinstance(el, DB.View):
             continue
         
-        # OTIMIZACAO 4: GetElement apenas se necessario
-        el = doc.GetElement(el_id)
-        if not el or not el.Category:
+        # Ignorar elementos fixados (pinned)
+        if hasattr(el, 'Pinned') and el.Pinned:
             continue
         
-        bbox = el.get_BoundingBox(view)
-        if not bbox:
+        # Ignorar Section Boxes (caixas 3D)
+        if el.GetType().Name == 'Element' and el.Category and el.Category.Name == '3D Section Box':
             continue
         
-        # Check rapido: esta fora?
-        if (bbox.Max.X < bounds['min_x'] - tolerance or 
-            bbox.Min.X > bounds['max_x'] + tolerance or 
-            bbox.Max.Y < bounds['min_y'] - tolerance or 
-            bbox.Min.Y > bounds['max_y'] + tolerance):
-            culprit_ids.append(el_id)
-
-    if culprit_ids:
-        # OTIMIZACAO 5: SetElementIds direto (mais rapido que set_to)
-        # CORRECAO APLICADA AQUI:
-        uidoc.Selection.SetElementIds(List[DB.ElementId](culprit_ids))
-        
-        forms.alert("Encontrados {} elementos fora da area.".format(len(culprit_ids)), 
-                   title="Analise Completa")
-    else:
-        forms.alert("Vista Limpa! Nada fora da area.", title="Analise Completa")
-
-# ============================================================================
-# 2. AJUSTE AUTOMATICO
-# ============================================================================
-
-def auto_adjust_crop():
-    """Ajusta o cropbox automaticamente para a selecao. RAPIDO."""
-    selection = revit.get_selection()
+        elementos_validos.append(el)
     
-    if not selection:
-        forms.alert("Selecione elementos primeiro.", warn_icon=True)
+    if not elementos_validos:
+        forms.alert("Nenhum elemento válido selecionado.\n\n"
+                   "Elementos ignorados:\n"
+                   "- Vistas\n"
+                   "- Elementos fixados\n"
+                   "- Caixas 3D", 
+                   warn_icon=True,
+                   title="Seleção inválida")
         return
     
-    # Calculo rapido de limites
+    # Calcular limites de todos os elementos válidos
     min_x, min_y = float('inf'), float('inf')
     max_x, max_y = float('-inf'), float('-inf')
     
-    for el in selection:
+    elementos_com_bbox = 0
+    
+    for el in elementos_validos:
         bbox = el.get_BoundingBox(view)
         if bbox:
             min_x = min(min_x, bbox.Min.X)
             min_y = min(min_y, bbox.Min.Y)
             max_x = max(max_x, bbox.Max.X)
             max_y = max(max_y, bbox.Max.Y)
+            elementos_com_bbox += 1
     
-    if min_x == float('inf'):
+    if elementos_com_bbox == 0:
+        forms.alert("Os elementos selecionados não possuem limites visíveis nesta vista.", 
+                   warn_icon=True,
+                   title="Sem limites")
         return
     
-    # Margem
-    margin = 2.0
+    # Margem de 2 metros (convertido para pés - unidade interna do Revit)
+    # 2 metros = 6.56168 pés
+    margin = 3.28084
     
-    # OTIMIZACAO: TransactionGroup para evitar regeneracoes multiplas
-    tg = DB.TransactionGroup(doc, "Auto Ajuste Crop")
+    # Aplicar recorte com TransactionGroup
+    tg = DB.TransactionGroup(doc, "Recortar Vista")
     tg.Start()
     
     try:
-        # Sub-transacao 1: Ativar crop
+        # Ativar crop se necessário
         if not view.CropBoxActive:
             t1 = DB.Transaction(doc, "Ativar Crop")
             t1.Start()
@@ -129,9 +91,10 @@ def auto_adjust_crop():
             view.CropBoxVisible = True
             t1.Commit()
         
+        # Pegar cropbox atual para manter a transformação
         current = view.CropBox
         
-        # Sub-transacao 2: Ajustar
+        # Ajustar cropbox
         t2 = DB.Transaction(doc, "Ajustar Crop")
         t2.Start()
         
@@ -144,34 +107,23 @@ def auto_adjust_crop():
         
         t2.Commit()
         
-        # COMMIT FINAL: Apenas UMA regeneracao
+        # Finalizar TransactionGroup
         tg.Assimilate()
         
-    except:
+        forms.alert("Vista recortada com sucesso!\n\n"
+                   "Elementos processados: {}\n"
+                   "Margem aplicada: 2 metros".format(elementos_com_bbox),
+                   title="Recorte concluído")
+        
+    except Exception as e:
         tg.RollBack()
-        raise
-    
-    forms.alert("Cropbox ajustado para a selecao!", title="Sucesso")
+        forms.alert("Erro ao recortar vista:\n\n{}".format(str(e)), 
+                   warn_icon=True,
+                   title="Erro")
 
 # ============================================================================
-# MAIN - INTERFACE OTIMIZADA
+# EXECUTAR
 # ============================================================================
 
-# Opcoes organizadas
-opcoes = {
-    '1. Analisar Lixo (Inverte Selecao)': 'ANALYZE',
-    '2. Auto Ajustar (da Selecao)': 'AUTO'
-}
-
-resposta = forms.CommandSwitchWindow.show(
-    sorted(opcoes.keys()),
-    message='Smart Crop Turbo - Otimizado',
-)
-
-if resposta:
-    modo = opcoes[resposta]
-    
-    if modo == 'ANALYZE':
-        analyze_garbage()
-    elif modo == 'AUTO':
-        auto_adjust_crop()
+if __name__ == '__main__':
+    recortar_vista()
