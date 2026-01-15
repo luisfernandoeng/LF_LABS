@@ -141,9 +141,7 @@ class LuisExporterWindow(forms.WPFWindow):
         self.dg_Sheets.SelectionChanged += self.on_row_clicked
         self.is_handling_click = False 
         
-        # Configurar Grid de Edicao (mesma fonte)
-        if hasattr(self, 'dg_Edits'):
-            self.dg_Edits.ItemsSource = self.sheet_items
+
         
         self.is_cancelled = False
         self.rb_ZoomFit.IsChecked = True
@@ -184,36 +182,9 @@ class LuisExporterWindow(forms.WPFWindow):
         self.is_handling_click = False
 
     # --- FUNCOES DE UI E PROGRESSO ---
-    def save_changes_revit(self, sender, args):
-        """Aplica os nomes editados as folhas no Revit"""
-        updated_count = 0
-        errors = []
-        
-        try:
-            # Tenta atualizar
-            with revit.Transaction("Atualizar Nomes de Folhas"):
-                for item in self.sheet_items:
-                    # Verifica se mudou (e se nao eh vazio)
-                    if item.FileName and item.FileName != item.Name:
-                        try:
-                            item.Element.Name = item.FileName
-                            # Atualiza item.Name para refletir a mudanca
-                            item.Name = item.FileName
-                            updated_count += 1
-                        except Exception as e:
-                            errors.append("{} ({}): {}".format(item.Number, item.FileName, str(e)))
-            
-            if errors:
-                forms.alert("Concluído com {} erros:\n{}".format(len(errors), "\n".join(errors[:5])))
-            else:
-                forms.alert("Sucesso! {} folhas atualizadas no Revit.".format(updated_count))
-            
-            # Atualiza Grids
-            self.dg_Edits.Items.Refresh()
-            self.dg_Sheets.Items.Refresh()
-                
-        except Exception as e:
-            forms.alert("Erro ao aplicar mudanças: " + str(e))
+
+
+
 
     def log_message(self, message):
         """Escreve no log detalhado"""
