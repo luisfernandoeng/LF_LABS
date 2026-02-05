@@ -14,10 +14,14 @@ clr.AddReference('System.Windows.Forms')
 
 import Autodesk.Revit.DB as DB
 from System.Collections.ObjectModel import ObservableCollection
+from System.Collections.Generic import List
 from System.Windows.Forms import Application as WinFormsApp
+from System.Windows import Input
+from System.Windows.Data import CollectionViewSource
 import os
 import re
 import time
+import json
 
 doc = revit.doc
 uidoc = revit.uidoc
@@ -25,6 +29,10 @@ uidoc = revit.uidoc
 # --- DETECAO DE VERSAO ---
 REVIT_YEAR = int(doc.Application.VersionNumber)
 HAS_PDF_SUPPORT = REVIT_YEAR >= 2022
+
+# --- CAMINHO DE CONFIGURACAO ---
+CONFIG_DIR = os.path.join(os.getenv('APPDATA'), 'pyRevit', 'Extensions', 'LF Tools')
+CONFIG_FILE = os.path.join(CONFIG_DIR, 'gerar_folhas_config.json')
 
 # --- CLASSE DE DADOS PARA FOLHAS ---
 class SheetItem(object):
@@ -35,8 +43,14 @@ class SheetItem(object):
         self.Name = sheet.Name if sheet.Name else "" 
         self.IsSelected = False
         self.name_pattern = name_pattern
-        self._file_name = "" # Backing field
-        self.PdfFileName = "" 
+        self._file_name = "" 
+        self.PdfFileName = ""
+        
+        # Status Properties
+        self.StatusIcon = ""
+        self.StatusColor = "Transparent"
+        self.StatusToolTip = ""
+        self.HasViews = True # Padrao True, verificado dps
         
         # Inicializa via setter
         self.FileName = self._generate_filename(sheet, name_pattern)
@@ -85,6 +99,37 @@ class SheetItem(object):
         self.FileName = self._generate_filename(self.Element, new_pattern)
         self.PdfFileName = self.FileName
 
+    def update_status(self, folder_path):
+        """Atualiza icone e cor baseado na existencia do arquivo e conteudo"""
+        self.StatusIcon = ""
+        self.StatusColor = "Transparent"
+        self.StatusToolTip = ""
+
+        # 1. Verifica se folha esta vazia (sem views)
+        if not self.HasViews:
+            self.StatusIcon = "📄"
+            self.StatusColor = "#FF888888" # Cinza
+            self.StatusToolTip = "Folha vazia (sem vistas)"
+        
+        # 2. Verifica se arquivo ja existe (sobrescreve o aviso de vazia se for o caso, ou soma?)
+        # Vamos dar prioridade ao aviso de sobrescrita pois eh destrutivo
+        if folder_path and os.path.exists(folder_path):
+            # Verifica PDF
+            pdf_path = os.path.join(folder_path, "{}.pdf".format(self.PdfFileName))
+            # Verifica DWG
+            dwg_path = os.path.join(folder_path, "{}.dwg".format(self.FileName))
+            
+            exists_pdf = os.path.exists(pdf_path)
+            exists_dwg = os.path.exists(dwg_path)
+            
+            if exists_pdf or exists_dwg:
+                self.StatusIcon = "⚠️"
+                self.StatusColor = "#FFD7BA7D" # Amarelo Warning
+                found = []
+                if exists_pdf: found.append("PDF")
+                if exists_dwg: found.append("DWG")
+                self.StatusToolTip = "Arquivo(s) existente(s): {}".format(", ".join(found))
+
 # --- FUNCAO AUXILIAR PARA DWG SETTINGS ---
 def create_default_dwg_settings():
     """Cria configuracao padrao de DWG Export se nao existir nenhuma"""
@@ -118,6 +163,32 @@ def create_default_dwg_settings():
     except Exception as ex:
         print("Erro ao criar DWG settings: " + str(ex))
 
+# --- FUNCOES DE CONFIGURACAO PERSISTENTE ---
+def load_config():
+    """Carrega configuracoes salvas do arquivo JSON"""
+    default_config = {
+        "last_folder": "",
+        "open_folder_after": True
+    }
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, 'r') as f:
+                return json.load(f)
+    except:
+        pass
+    return default_config
+
+def save_config(config):
+    """Salva configuracoes no arquivo JSON"""
+    try:
+        if not os.path.exists(CONFIG_DIR):
+            os.makedirs(CONFIG_DIR)
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(config, f, indent=2)
+    except Exception as ex:
+        print("Erro ao salvar config: " + str(ex))
+
+
 # --- JANELA PRINCIPAL ---
 class LuisExporterWindow(forms.WPFWindow):
     def __init__(self):
@@ -125,7 +196,12 @@ class LuisExporterWindow(forms.WPFWindow):
         forms.WPFWindow.__init__(self, xaml_file)
         
         self.sheet_items = ObservableCollection[SheetItem]()
-        self.dg_Sheets.ItemsSource = self.sheet_items
+        
+        # Configurar CollectionView para filtragem
+        self.view_source = CollectionViewSource.GetDefaultView(self.sheet_items)
+        self.view_source.Filter = System.Predicate[object](self.filter_sheets)
+        
+        self.dg_Sheets.ItemsSource = self.view_source
         
         # Eventos Principais
         self.btn_SelectFolder.Click += self.pick_folder
@@ -136,6 +212,23 @@ class LuisExporterWindow(forms.WPFWindow):
         
         # NOVO: Evento Selecionar Tudo
         self.chk_SelectAll.Click += self.toggle_all_sheets
+        self.btn_InvertSelection.Click += self.invert_selection
+        
+        # NOVO: Busca e Filtros
+        self.txt_Search.TextChanged += self.on_search_text_changed
+        self.btn_SelectVisible.Click += self.select_visible
+        
+        # NOVO: Sets do Revit
+        # NOVO: Sets do Revit
+        self.cb_RevitSets.SelectionChanged += self.apply_current_set # Auto-apply
+        self.btn_SaveSet.Click += self.save_new_set
+        self.btn_DeleteSet.Click += self.delete_current_set
+
+        # Configurações Iniciais
+        self.config = load_config()
+        self.txt_OutputFolder.Text = self.config.get("last_folder", "")
+        self.chk_OpenFolderAfter.IsChecked = self.config.get("open_folder_after", True)
+
 
         # Evento de clique na linha (RESTAURADO)
         self.dg_Sheets.SelectionChanged += self.on_row_clicked
@@ -148,7 +241,15 @@ class LuisExporterWindow(forms.WPFWindow):
         self.chk_ExportDWG.IsChecked = True
         
         self.load_sheet_parameters() 
+        self.load_sheet_parameters() 
         self.load_sheets()
+        
+        # Checar arquivos existentes na inicializacao
+        self.check_existing_files()
+        
+        # Carregar Sets do Revit
+        self.load_revit_sets()
+        
         create_default_dwg_settings()  # Cria settings padrao se nao existir
         self.load_dwg_setups()
         
@@ -164,10 +265,212 @@ class LuisExporterWindow(forms.WPFWindow):
 
     # --- LOGICA SELECIONAR TUDO ---
     def toggle_all_sheets(self, sender, args):
-        """Marca ou desmarca todas as folhas"""
-        is_checked = self.chk_SelectAll.IsChecked
+        """Marca ou desmarca todas as folhas VISIVEIS"""
+        is_checked = bool(self.chk_SelectAll.IsChecked)
         for item in self.sheet_items:
-            item.IsSelected = is_checked
+            # Bugfix: Respeitar o filtro
+            if self.filter_sheets(item):
+                item.IsSelected = is_checked
+        self.dg_Sheets.Items.Refresh()
+
+    def invert_selection(self, sender, args):
+        """Inverte a seleção atual"""
+        for item in self.sheet_items:
+            item.IsSelected = not item.IsSelected
+        self.dg_Sheets.Items.Refresh()
+
+    def Window_PreviewKeyDown(self, sender, args):
+        """Atalhos de teclado: Ctrl+A (Tudo), Ctrl+Shift+A (Inverter)"""
+        try:
+            if args.Key == Input.Key.A and (Input.Keyboard.Modifiers & Input.ModifierKeys.Control) == Input.ModifierKeys.Control:
+                if (Input.Keyboard.Modifiers & Input.ModifierKeys.Shift) == Input.ModifierKeys.Shift:
+                    # Ctrl + Shift + A -> Inverter
+                    self.invert_selection(None, None)
+                else:
+                    # Ctrl + A -> Selecionar Tudo (respeitando filtro)
+                    visible_items = [i for i in self.sheet_items if self.filter_sheets(i)]
+                    
+                    if visible_items:
+                        # Se TODOS os visiveis estao selecionados -> Desseleciona eles
+                        # Senao -> Seleciona todos os visiveis
+                        all_visible_selected = all(i.IsSelected for i in visible_items)
+                        new_state = not all_visible_selected
+                        
+                        self.chk_SelectAll.IsChecked = new_state
+                        for item in visible_items:
+                            item.IsSelected = new_state
+                        
+                        self.dg_Sheets.Items.Refresh()
+                args.Handled = True
+        except Exception as ex:
+            print("Erro KeyDown: " + str(ex))
+
+    # --- LOGICA DE BUSCA E FILTRO ---
+    def filter_sheets(self, item):
+        if not self.txt_Search.Text: return True
+        s_text = self.txt_Search.Text.lower()
+        if s_text in item.Number.lower(): return True
+        if s_text in item.Name.lower(): return True
+        if s_text in item.FileName.lower(): return True
+        return False
+
+    def on_search_text_changed(self, sender, args):
+        self.view_source.Refresh()
+
+    def select_visible(self, sender, args):
+        """Seleciona apenas os itens visiveis no filtro atual"""
+        for item in self.sheet_items:
+            # Verifica se item passa no filtro
+            if self.filter_sheets(item):
+                item.IsSelected = True
+            else:
+                 # Opcional: Desselecionar os que nao estao visiveis?
+                 # Melhor nao mexer nos invisiveis para nao perder selecao anterior
+                 pass
+        self.dg_Sheets.Items.Refresh()
+
+    # --- LOGICA DE VERIFICACAO DE ARQUIVOS ---
+    def check_existing_files(self, folder=None):
+        """Verifica quais arquivos ja existem na pasta de destino"""
+        try:
+            if not folder:
+                folder = self.txt_OutputFolder.Text
+            
+            if not folder or not os.path.exists(folder):
+                return
+
+            for item in self.sheet_items:
+                item.update_status(folder)
+            
+            self.dg_Sheets.Items.Refresh()
+        except:
+            pass
+
+    # --- LOGICA DE SETS DO REVIT (FASE 3) ---
+    # --- LOGICA DE SETS DO REVIT (FASE 3 & 4) ---
+    def load_revit_sets(self):
+        try:
+            self.cb_RevitSets.Items.Clear()
+            
+            # 1. Opcao Padrao "Todas as Folhas"
+            self.cb_RevitSets.Items.Add("(Todas as Folhas)")
+            
+            # 2. Sets do Revit
+            all_sets = DB.FilteredElementCollector(doc).OfClass(DB.ViewSheetSet).ToElements()
+            sorted_sets = sorted(all_sets, key=lambda x: x.Name)
+            
+            self.revit_sets_map = {}
+            for vset in sorted_sets:
+                self.cb_RevitSets.Items.Add(vset.Name)
+                self.revit_sets_map[vset.Name] = vset
+            
+            # Auto-selecionar o ultimo usado ou o primeiro
+            last_set = self.config.get("last_set", "(Todas as Folhas)")
+            
+            if last_set in self.cb_RevitSets.Items:
+                self.cb_RevitSets.SelectedItem = last_set
+            elif self.cb_RevitSets.Items.Count > 0:
+                self.cb_RevitSets.SelectedIndex = 0
+                
+        except Exception as ex:
+            self.log_message("Erro load_sets: " + str(ex))
+
+    def apply_current_set(self, sender, args):
+        """Aplica o set assim que mudado no combo"""
+        sel_name = self.cb_RevitSets.SelectedItem
+        if not sel_name: return
+        
+        # Persistir a escolha
+        try:
+            if self.config.get("last_set") != sel_name:
+                self.config["last_set"] = sel_name
+                save_config(self.config)
+        except: pass
+
+        try:
+            # Caso Especial: Todas as Folhas
+            if sel_name == "(Todas as Folhas)":
+                for item in self.sheet_items:
+                    item.IsSelected = True # Seleciona Tudo (padrão clean)
+                self.dg_Sheets.Items.Refresh()
+                return
+
+            # Caso Sets do Revit
+            if sel_name in self.revit_sets_map:
+                vset = self.revit_sets_map[sel_name]
+                view_ids = [v.Id for v in vset.Views]
+                
+                count = 0
+                for item in self.sheet_items:
+                    if item.Element.Id in view_ids:
+                        item.IsSelected = True
+                        count += 1
+                    else:
+                        item.IsSelected = False # Exclusivo
+                
+                self.dg_Sheets.Items.Refresh()
+                
+        except Exception as ex:
+            forms.alert("Erro ao aplicar set: " + str(ex))
+
+    def save_new_set(self, sender, args):
+        selected_items = [i for i in self.sheet_items if i.IsSelected]
+        if not selected_items:
+            forms.alert("Selecione folhas para salvar.")
+            return
+
+        name = forms.ask_for_string(prompt="Nome do Set:", title="Novo Set")
+        if not name: return
+        
+        # Validacao nome
+        if name == "(Todas as Folhas)":
+             forms.alert("Nome reservado.")
+             return
+
+        try:
+            with DB.Transaction(doc, "Criar Set") as t:
+                t.Start()
+                view_set = DB.ViewSet()
+                for item in selected_items: view_set.Insert(item.Element)
+                
+                print_mgr = doc.PrintManager
+                print_mgr.PrintRange = DB.PrintRange.Select
+                settings = print_mgr.ViewSheetSetting
+                settings.CurrentViewSheetSet.Views = view_set
+                settings.SaveAs(name)
+                t.Commit()
+            
+            self.load_revit_sets()
+            self.cb_RevitSets.SelectedItem = name # Ja aplica? Sim, o SelectionChanged dispara
+            forms.alert("Set salvo!")
+        except Exception as ex:
+            forms.alert("Erro ao salvar: " + str(ex))
+
+    def delete_current_set(self, sender, args):
+        sel_name = self.cb_RevitSets.SelectedItem
+        if not sel_name: return
+        
+        if sel_name == "(Todas as Folhas)":
+            forms.alert("Não é possível deletar o conjunto padrão.")
+            return
+            
+        if not forms.alert("Deletar o set '{}'? (Isso remove do Revit)".format(sel_name), yes=True, no=True):
+            return
+
+        try:
+            if sel_name in self.revit_sets_map:
+                vset = self.revit_sets_map[sel_name]
+                with DB.Transaction(doc, "Deletar Set") as t:
+                    t.Start()
+                    doc.Delete(vset.Id)
+                    t.Commit()
+                
+                self.load_revit_sets() # Recarrega
+                self.cb_RevitSets.SelectedIndex = 0 # Volta para Default
+                forms.alert("Set deletado.")
+        except Exception as ex:
+            forms.alert("Erro ao deletar: " + str(ex))
+
     # --- LOGICA DE CLIQUE NA LINHA (RESTAURADA) ---
     def on_row_clicked(self, sender, args):
         if self.is_handling_click: return
@@ -182,9 +485,6 @@ class LuisExporterWindow(forms.WPFWindow):
         self.is_handling_click = False
 
     # --- FUNCOES DE UI E PROGRESSO ---
-
-
-
 
     def log_message(self, message):
         """Escreve no log detalhado"""
@@ -360,6 +660,8 @@ class LuisExporterWindow(forms.WPFWindow):
         new_pattern = self.txt_NamePattern.Text
         if not new_pattern: return
         for item in self.sheet_items: item.update_filename(new_pattern)
+        # Re-checar existencia pois nomes mudaram
+        self.check_existing_files() 
         self.dg_Sheets.Items.Refresh()
 
     def load_sheets(self):
@@ -375,7 +677,13 @@ class LuisExporterWindow(forms.WPFWindow):
             self.sheet_items.Clear()
             for s in sorted_sheets:
                 if not s.IsPlaceholder: 
-                    self.sheet_items.Add(SheetItem(s, current_pattern))
+                    item = SheetItem(s, current_pattern)
+                    # Checar se tem views (para status icon)
+                    try:
+                         if not s.GetAllPlacedViews():
+                             item.HasViews = False
+                    except: pass
+                    self.sheet_items.Add(item)
             self.lbl_Count.Text = str(len(self.sheet_items))
         except Exception as e:
             forms.alert("Erro ao carregar folhas: " + str(e))
@@ -391,7 +699,14 @@ class LuisExporterWindow(forms.WPFWindow):
 
     def pick_folder(self, sender, args):
         folder = forms.pick_folder()
-        if folder: self.txt_OutputFolder.Text = folder
+        if folder: 
+            self.txt_OutputFolder.Text = folder
+            # Salvar config
+            self.config["last_folder"] = folder
+            save_config(self.config)
+            
+            # Re-checar existencia na nova pasta
+            self.check_existing_files(folder)
     
     def cancel_export(self, sender, args):
         # Se NAO esta exportando, fecha o programa
@@ -474,14 +789,31 @@ class LuisExporterWindow(forms.WPFWindow):
         if not do_pdf and not do_dwg:
             forms.alert("Selecione PDF ou DWG.")
             return
+
+        # VERIFICACAO DE DUPLICADOS
+        name_counts = {}
+        for item in selected_items:
+            name = item.FileName
+            if name in name_counts: name_counts[name] += 1
+            else: name_counts[name] = 1
+        
+        duplicates = [n for n, c in name_counts.items() if c > 1]
+        if duplicates:
+            msg = "Existem {} nomes de arquivos duplicados:\n\n".format(len(duplicates))
+            msg += "\n".join(duplicates[:10])
+            if len(duplicates) > 10: msg += "\n...e mais {}.".format(len(duplicates)-10)
+            msg += "\n\nDeseja continuar mesmo assim? (Arquivos podem ser sobrescritos)"
+            if not forms.alert(msg, yes=True, no=True):
+                return
         
         # UI Setup
         self.btn_Start.IsEnabled = False
         self.btn_Cancel.Visibility = System.Windows.Visibility.Visible
-        self.tab_Main.SelectedIndex = 2 # Aba Progresso agora eh indice 2
+        self.tab_Main.SelectedIndex = 1 
         self.reset_progress_ui()
         
         self.is_cancelled = False
+        
         success_count = 0
         error_count = 0
         start_time = time.time()
@@ -490,163 +822,214 @@ class LuisExporterWindow(forms.WPFWindow):
         self.log_message("INICIANDO EXPORTAÇÃO...")
         self.log_message("Total de folhas: {}".format(total_items))
         self.log_message("Pasta: {}".format(folder))
-        self.log_message("="*50)
         
+        # Merge PDF Info
+        do_merge_pdf = do_pdf and self.chk_CombinePDF.IsChecked
+        pdf_merge_list = []
+        if do_merge_pdf:
+            self.log_message("Modo PDF Combinado (Merge) ATIVADO")
+            
+        self.log_message("="*50)
+
+        # Estimativa de tempo
+        last_times = []
+        
+        
+        # Pre-configurar DWG options fora do loop
+        dwg_opts = None
+        if do_dwg:
+            if self.cb_DWGSetups.SelectedItem:
+                s_name = self.cb_DWGSetups.SelectedItem
+                for s in DB.FilteredElementCollector(doc).OfClass(DB.ExportDWGSettings):
+                    if s.Name == s_name:
+                        dwg_opts = s.GetDWGExportOptions()
+                        break
+            if not dwg_opts: 
+                dwg_opts = self.create_dwg_options_compatible()
+            dwg_opts.MergedViews = True
+
         for idx, item in enumerate(selected_items):
+            loop_start = time.time()
             if self.is_cancelled: 
                 break
             
             current_num = idx + 1
-            self.update_progress(current_num, total_items, "Folha {} - {}".format(item.Number, item.Name))
+            
+            # Calculo de estimativa
+            remaining_txt = ""
+            if len(last_times) > 0:
+                avg_time = sum(last_times) / len(last_times)
+                remaining_items = total_items - idx
+                est_seconds = remaining_items * avg_time
+                remaining_txt = " | Restante: ~{}".format(self.format_time(est_seconds))
+
+            self.update_progress(current_num, total_items, "Exportando: {} - {}{}".format(item.Number, item.Name, remaining_txt))
             self.update_counters(success_count, error_count, time.time() - start_time)
             
             try:
                 self.log_message("PROCESSANDO: {} - {}".format(item.Number, item.Name))
-                view_ids = System.Collections.Generic.List[DB.ElementId]([item.Id])
-                
-                # --- PDF ---
-                if do_pdf and HAS_PDF_SUPPORT and not self.is_cancelled:
-                    try:
-                        pdf_opts = self.create_pdf_options()
-                        pdf_files_before = set([f for f in os.listdir(folder) if f.lower().endswith('.pdf')])
-                        
-                        doc.Export(folder, view_ids, pdf_opts)
-                        
-                        max_wait = 15
-                        elapsed = 0
-                        pdf_ok = False
-                        
-                        while elapsed < max_wait and not self.is_cancelled:
-                            WinFormsApp.DoEvents()
-                            time.sleep(0.5)
-                            elapsed += 0.5
-                            self.update_counters(success_count, error_count, time.time() - start_time)
-                            
-                            pdf_files_after = set([f for f in os.listdir(folder) if f.lower().endswith('.pdf')])
-                            new_files = pdf_files_after - pdf_files_before
-                            
-                            if new_files:
-                                latest = list(new_files)[0]
-                                old_p = os.path.join(folder, latest)
-                                new_p = os.path.join(folder, "{}.pdf".format(item.PdfFileName))
-                                if self.safe_rename_file(old_p, new_p):
-                                    success_count += 1
-                                    pdf_ok = True
-                                    self.add_export_item(item.Number, "{}.pdf".format(item.PdfFileName), "success", "PDF")
-                                    self.log_message("  > PDF OK: {}.pdf".format(item.PdfFileName))
-                                else:
-                                    error_count += 1
-                                    self.add_export_item(item.Number, "Erro ao renomear PDF", "error", "PDF")
-                                    self.log_message("  > ERRO PDF: Falha ao renomear arquivo")
-                                break
-                        
-                        if not pdf_ok and not self.is_cancelled:
-                            if os.path.exists(os.path.join(folder, "{}.pdf".format(item.PdfFileName))):
-                                success_count += 1
-                                self.add_export_item(item.Number, "{}.pdf".format(item.PdfFileName), "success", "PDF")
-                                self.log_message("  > PDF OK: {}.pdf".format(item.PdfFileName))
-                            else:
-                                error_count += 1
-                                self.add_export_item(item.Number, "PDF não encontrado", "error", "PDF")
-                                self.log_message("  > ERRO PDF: Arquivo nao encontrado apos exportacao")
+                view_ids = List[DB.ElementId]([item.Element.Id])
 
-                    except Exception as ex:
-                        error_count += 1
-                        self.add_export_item(item.Number, str(ex)[:40], "error", "PDF")
-                        self.log_message("  > ERRO CRITICO PDF: {}".format(str(ex)))
-                
                 # --- DWG ---
-                if do_dwg and not self.is_cancelled:
+                if do_dwg:
                     try:
-                        dwg_opts = None
-                        if self.cb_DWGSetups.SelectedItem:
-                            s_name = self.cb_DWGSetups.SelectedItem
-                            for s in DB.FilteredElementCollector(doc).OfClass(DB.ExportDWGSettings):
-                                if s.Name == s_name:
-                                    dwg_opts = s.GetDWGExportOptions()
-                                    break
-                        if not dwg_opts: 
-                            dwg_opts = self.create_dwg_options_compatible()
-                        dwg_opts.MergedViews = True
-                        
                         doc.Export(folder, item.FileName, view_ids, dwg_opts)
-                        
+                        self.log_message("  [DWG] OK: {}".format(item.FileName))
+
+                        # Verificar Renomear DWG (Revit as vezes poe prefixo)
                         dwg_path = os.path.join(folder, "{}.dwg".format(item.FileName))
-                        found_dwg = False
-                        
                         for _ in range(15):
-                            if self.is_cancelled:
-                                break
-                            if os.path.exists(dwg_path):
-                                found_dwg = True
-                                break
+                            if self.is_cancelled or os.path.exists(dwg_path): break
                             time.sleep(0.3)
                             WinFormsApp.DoEvents()
-                            self.update_counters(success_count, error_count, time.time() - start_time)
-
-                        if found_dwg:
-                            success_count += 1
-                            self.add_export_item(item.Number, "{}.dwg".format(item.FileName), "success", "DWG")
-                            self.log_message("  > DWG OK: {}.dwg".format(item.FileName))
-                        else:
+                        
+                        if not os.path.exists(dwg_path):
+                            # Tenta achar arquivo similar com sufixo -Sheet ou _Sheet
                             alt = os.path.join(folder, "{}_Sheet.dwg".format(item.FileName))
                             if os.path.exists(alt):
                                 self.safe_rename_file(alt, dwg_path)
-                                success_count += 1
-                                self.add_export_item(item.Number, "{}.dwg".format(item.FileName), "success", "DWG")
-                                self.log_message("  > DWG OK: {}.dwg (renomeado)".format(item.FileName))
-                            else:
-                                error_count += 1
-                                self.add_export_item(item.Number, "DWG não gerado", "error", "DWG")
-                                self.log_message("  > ERRO DWG: Arquivo nao foi gerado")
-
-                    except Exception as ex:
+                                self.log_message("  > DWG Renomeado de _Sheet")
+                        
+                        self.add_export_item(item.Number, item.FileName, "success", "DWG")
+                    except Exception as e:
                         error_count += 1
-                        self.add_export_item(item.Number, str(ex)[:40], "error", "DWG")
-                        self.log_message("  > ERRO CRITICO DWG: {}".format(str(ex)))
-                
+                        self.add_export_item(item.Number, "Erro DWG", "error", "")
+                        self.log_message("  > ERRO DWG: " + str(e))
+
+                # --- PDF ---
+                if do_pdf:
+                    if do_merge_pdf:
+                        pdf_merge_list.append(item.Element.Id)
+                        self.log_message("  [PDF] Adicionado ao Merge")
+                        if not do_dwg:
+                             self.add_export_item(item.Number, "Na Fila Merge", "processing", "PDF")
+                    else:
+                        try:
+                            pdf_opts = self.create_pdf_options()
+                            pdf_opts.FileName = item.PdfFileName
+
+                            # --- ESTRATEGIA UNIVERSAL SNAPSHOT ---
+                            # 1. Tenta limpar o arquivo esperado final (se existir)
+                            expected_path = os.path.join(folder, "{}.pdf".format(item.PdfFileName))
+                            try:
+                                if os.path.exists(expected_path): os.remove(expected_path)
+                            except: pass
+
+                            # 2. Tira foto da pasta ANTES
+                            before_files = set(f for f in os.listdir(folder) if f.lower().endswith(".pdf"))
+                            
+                            # 3. Exporta
+                            doc.Export(folder, view_ids, pdf_opts)
+                            
+                            # 4. Procura QUALQUER arquivo novo
+                            final_path = None
+                            found_new_file = None
+                            
+                            for _ in range(30): # 10s
+                                if self.is_cancelled: break
+                                
+                                try:
+                                    current_files = set(f for f in os.listdir(folder) if f.lower().endswith(".pdf"))
+                                    new_files = current_files - before_files
+                                    
+                                    if new_files:
+                                        # Achou arquivo(s) novo(s)!
+                                        found_new_file = list(new_files)[0] # Pega o primeiro
+                                        
+                                        # Log do que foi achado
+                                        self.log_message("  > Arquivo gerado: '{}'".format(found_new_file))
+                                        
+                                        generated_path = os.path.join(folder, found_new_file)
+                                        
+                                        # Renomeia para o esperado
+                                        if self.safe_rename_file(generated_path, expected_path):
+                                            final_path = expected_path
+                                            self.log_message("  > Renomeado com sucesso!")
+                                        else:
+                                            # Se falhar renomear (ex: mesmo nome), assume que eh ele
+                                            if found_new_file.lower() == "{}.pdf".format(item.PdfFileName).lower():
+                                                 final_path = generated_path
+                                            else:
+                                                 self.log_message("  > Falha ao renomear.")
+                                        break
+                                except: pass
+                                
+                                time.sleep(0.33)
+                                WinFormsApp.DoEvents()
+                            
+                            if final_path:
+                                self.log_message("  [PDF] OK: {}".format(item.PdfFileName))
+                                self.add_export_item(item.Number, item.FileName, "success", "PDF")
+                            else:
+                                self.log_message("  [PDF] ERRO: Nenhum arquivo novo detectado.")
+                                self.add_export_item(item.Number, "PDF?", "error", "PDF")
+
+                        except Exception as e:
+                            error_count += 1
+                            self.log_message("  > ERRO PDF: " + str(e))
+                            self.add_export_item(item.Number, "Erro PDF", "error", "")
+            
             except Exception as ex:
                 error_count += 1
                 self.add_export_item(item.Number, "Erro: {}".format(str(ex)[:30]), "error", "")
-                self.log_message("  > ERRO GERAL: {}".format(str(ex)))
-        
+                self.log_message("  > ERRO GERAL LOOP: {}".format(str(ex)))
+            
+            # Registra tempo do loop
+            loop_time = time.time() - loop_start
+            last_times.append(loop_time)
+            if len(last_times) > 5: last_times.pop(0)
+
+        # --- POS-LOOP MERGE PDF ---
+        if do_merge_pdf and pdf_merge_list and not self.is_cancelled:
+            self.update_progress(total_items, total_items, "Gerando PDF Único (Merge)... Aguarde.")
+            try:
+                # Nome do arquivo = Nome do RVT + Data
+                base_name = doc.Title
+                # Remove extensao .rvt se existir (doc.Title as vezes traz)
+                if base_name.lower().endswith(".rvt"):
+                    base_name = base_name[:-4]
+                
+                cleaned_name = re.sub(r'[\\/*?:"<>|]', "", base_name)
+                merge_name = "{}_{}".format(cleaned_name, time.strftime("%Y%m%d"))
+                
+                pdf_opts = self.create_pdf_options() 
+                pdf_opts.FileName = merge_name
+                pdf_opts.Combine = True
+                
+                merge_ids = List[DB.ElementId](pdf_merge_list)
+                doc.Export(folder, merge_ids, pdf_opts)
+                
+                self.log_message("="*30)
+                self.log_message("[PDF MERGE] ARQUIVO GERADO: {}.pdf".format(merge_name))
+                self.add_export_item("MERGE", "{}.pdf".format(merge_name), "success", "PDF COMBINADO")
+                success_count += 1 
+            except Exception as ex:
+                error_count += 1
+                self.log_message("[PDF MERGE] ERRO: " + str(ex))
+                self.add_export_item("MERGE", "Falha ao combinar", "error", "")
+
         # --- FINALIZACAO ---
         total_time = time.time() - start_time
         self.btn_Start.IsEnabled = True
         self.btn_Cancel.Visibility = System.Windows.Visibility.Collapsed
-        
-        # Atualiza UI final
         self.update_counters(success_count, error_count, total_time)
         
-        # Log de finalizacao
+        self.config["open_folder_after"] = self.chk_OpenFolderAfter.IsChecked
+        save_config(self.config)
+
         self.log_message("="*50)
+        
         if self.is_cancelled:
-            self.lbl_ProgressTitle.Text = "Cancelado pelo usuário"
-            self.lbl_ProgressDetail.Text = ""
-            self.log_message("CANCELADO PELO USUARIO")
+            self.lbl_ProgressTitle.Text = "Cancelado"
         elif error_count == 0:
             self.lbl_ProgressTitle.Text = "✓ Concluído com sucesso!"
-            self.lbl_ProgressDetail.Text = "{} arquivos exportados em {}".format(success_count, self.format_time(total_time))
-            self.update_progress(total_items, total_items, "")
-            self.log_message("CONCLUIDO COM SUCESSO!")
-            self.log_message("Arquivos: {} | Tempo: {}".format(success_count, self.format_time(total_time)))
         else:
             self.lbl_ProgressTitle.Text = "Concluído com avisos"
-            self.lbl_ProgressDetail.Text = "{} sucessos, {} erros".format(success_count, error_count)
-            self.update_progress(total_items, total_items, "")
-            self.log_message("CONCLUIDO COM AVISOS")
-            self.log_message("Sucessos: {} | Erros: {} | Tempo: {}".format(success_count, error_count, self.format_time(total_time)))
-        
-        self.log_message("="*50)
-        
-        self.log_message("="*50)
-        
+
         try:
-             # Pergunta se quer abrir a pasta com TaskDialog padrao do pyrevit
-             if forms.alert("Processo finalizado. Deseja abrir a pasta de destino?", yes=True, no=True):
+             if self.chk_OpenFolderAfter.IsChecked and not self.is_cancelled:
                  os.startfile(folder)
-        except:
-             pass
+        except: pass
 
 try:
     LuisExporterWindow().ShowDialog()

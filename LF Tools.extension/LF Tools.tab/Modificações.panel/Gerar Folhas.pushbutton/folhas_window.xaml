@@ -7,7 +7,8 @@
         WindowStartupLocation="CenterScreen" 
         ResizeMode="NoResize"
         UseLayoutRounding="True"
-        TextOptions.TextFormattingMode="Display">
+        TextOptions.TextFormattingMode="Display"
+        PreviewKeyDown="Window_PreviewKeyDown">
     
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
@@ -317,9 +318,48 @@
                                 <RowDefinition Height="*"/> 
                             </Grid.RowDefinitions>
 
-                            <CheckBox Name="chk_SelectAll" Content="Selecionar / Deselecionar Tudo" 
-                                      Margin="5,0,0,10" 
-                                      Style="{StaticResource ModernCheckBox}"/>
+                            <!-- BARRA DE FERRAMENTAS UNIFICADA (SETS + BUSCA) -->
+                            <Grid Grid.Row="0" Margin="5,0,0,10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/> <!-- Check Tudo -->
+                                    <ColumnDefinition Width="10"/>   <!-- Spacer -->
+                                    <ColumnDefinition Width="Auto"/> <!-- Label Set -->
+                                    <ColumnDefinition Width="1.5*"/> <!-- Combo Set -->
+                                    <ColumnDefinition Width="Auto"/> <!-- Buttons Set -->
+                                    <ColumnDefinition Width="15"/>   <!-- Spacer -->
+                                    <ColumnDefinition Width="Auto"/> <!-- Label Busca -->
+                                    <ColumnDefinition Width="2*"/>   <!-- Txt Busca -->
+                                    <ColumnDefinition Width="Auto"/> <!-- Buttons Selection -->
+                                </Grid.ColumnDefinitions>
+                                
+                                <!-- CHECK TUDO -->
+                                <CheckBox Grid.Column="0" Name="chk_SelectAll" Content="Tudo" 
+                                          Style="{StaticResource ModernCheckBox}" VerticalAlignment="Center" ToolTip="Selecionar Todas as Folhas Visíveis"/>
+
+                                <!-- SETS -->
+                                <TextBlock Grid.Column="2" Text="Set:" VerticalAlignment="Center" Margin="0,0,5,0" Foreground="{StaticResource TextSecondary}"/>
+                                <ComboBox Grid.Column="3" Name="cb_RevitSets" Margin="0,0,5,0" Height="26" VerticalContentAlignment="Center" ToolTip="Selecione um conjunto de folhas"/>
+                                
+                                <StackPanel Grid.Column="4" Orientation="Horizontal">
+                                    <Button Name="btn_SaveSet" Content="💾" Style="{StaticResource SecondaryActionButton}" Height="26" Width="26" Padding="0" Margin="0,0,2,0" ToolTip="Salvar seleção como novo Set"/>
+                                    <Button Name="btn_DeleteSet" Content="🗑️" Style="{StaticResource SecondaryActionButton}" Height="26" Width="26" Padding="0" ToolTip="Deletar Set selecionado"/>
+                                </StackPanel>
+
+                                <!-- BUSCA -->
+                                <TextBlock Grid.Column="6" Text="🔍" VerticalAlignment="Center" Margin="0,0,5,0" Foreground="{StaticResource TextSecondary}" ToolTip="Pesquisar por Nome ou Número"/>
+                                <TextBox Grid.Column="7" Name="txt_Search" Height="26" VerticalContentAlignment="Center" Margin="0,0,5,0" Padding="5,0,0,0"/>
+                                
+                                <StackPanel Grid.Column="8" Orientation="Horizontal">
+                                    <Button Name="btn_SelectVisible" Content="👁️" 
+                                            Style="{StaticResource SecondaryActionButton}" 
+                                            Height="26" Width="26" Padding="0" Margin="0,0,2,0"
+                                            ToolTip="Selecionar apenas os itens visíveis"/>
+                                    <Button Name="btn_InvertSelection" Content="⇄" 
+                                            Style="{StaticResource SecondaryActionButton}" 
+                                            Height="26" Width="26" Padding="0" FontSize="14"
+                                            ToolTip="Inverter Seleção"/>
+                                </StackPanel>
+                            </Grid>
 
                             <DataGrid Grid.Row="1" Name="dg_Sheets" AutoGenerateColumns="False" 
                                       CanUserAddRows="False" 
@@ -404,6 +444,18 @@
                                 </DataGrid.Resources>
 
                                 <DataGrid.Columns>
+                                    <DataGridTemplateColumn Width="30" CanUserResize="False">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding StatusIcon}" 
+                                                           Foreground="{Binding StatusColor}" 
+                                                           ToolTip="{Binding StatusToolTip}"
+                                                           HorizontalAlignment="Center" VerticalAlignment="Center" 
+                                                           FontWeight="Bold" FontSize="14"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+
                                     <DataGridTemplateColumn Header="Sel." Width="40">
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
@@ -552,6 +604,7 @@
                             <RadioButton Name="rb_Zoom100" Content="100% Zoom + Offset" GroupName="Z" Style="{StaticResource ModernRadioButton}"/>
                             
                             <CheckBox Name="chk_HideCrop" Content="Ocultar Região de Recorte" Margin="0,10,0,0" IsChecked="True" Style="{StaticResource ModernCheckBox}"/>
+                            <CheckBox Name="chk_CombinePDF" Content="Combinar em um único arquivo (Merge)" Margin="0,5,0,0" Style="{StaticResource ModernCheckBox}"/>
                         
                             <TextBlock Text="Padrão de Nome do Arquivo" Style="{StaticResource SectionHeader}" Margin="0,20,0,5"/>
                             <TextBlock Text="Use {Parametro} para combinar dados." Style="{StaticResource FieldLabel}" Margin="0,0,0,8"/>
@@ -590,6 +643,8 @@
                     <Button Name="btn_SelectFolder" Content="..." Grid.Column="1" Margin="8,0,0,0" 
                             Style="{StaticResource SecondaryActionButton}"/>
                 </Grid>
+                <CheckBox Name="chk_OpenFolderAfter" Content="Abrir pasta ao finalizar" 
+                          IsChecked="True" Margin="0,8,0,0" Style="{StaticResource ModernCheckBox}"/>
             </StackPanel>
 
             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
