@@ -21,6 +21,7 @@ from System.Windows.Data import CollectionViewSource
 import os
 import re
 import time
+import io
 import json
 
 doc = revit.doc
@@ -31,8 +32,8 @@ REVIT_YEAR = int(doc.Application.VersionNumber)
 HAS_PDF_SUPPORT = REVIT_YEAR >= 2022
 
 # --- CAMINHO DE CONFIGURACAO ---
-CONFIG_DIR = os.path.join(os.getenv('APPDATA'), 'pyRevit', 'Extensions', 'LF Tools')
-CONFIG_FILE = os.path.join(CONFIG_DIR, 'gerar_folhas_config.json')
+CONFIG_DIR = os.path.join(os.getenv('APPDATA'), 'LFTools')
+CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
 
 # --- CLASSE DE DADOS PARA FOLHAS ---
 class SheetItem(object):
@@ -172,7 +173,7 @@ def load_config():
     }
     try:
         if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, 'r') as f:
+            with io.open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
     except:
         pass
@@ -183,10 +184,10 @@ def save_config(config):
     try:
         if not os.path.exists(CONFIG_DIR):
             os.makedirs(CONFIG_DIR)
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(config, f, indent=2)
+        with io.open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
     except Exception as ex:
-        print("Erro ao salvar config: " + str(ex))
+        forms.alert("Erro ao salvar config: " + str(ex))
 
 
 # --- JANELA PRINCIPAL ---
