@@ -423,6 +423,17 @@
                                     Content="Projeto Inteiro" 
                                     GroupName="Escopo"
                                     Style="{StaticResource ModernRadioButton}"/>
+                        <RadioButton x:Name="Radio_SelecaoAtual"
+                                    GroupName="Escopo"
+                                    Content="Seleção Atual (0 elementos)"
+                                    Style="{StaticResource ModernRadioButton}"
+                                    Visibility="Collapsed"/>
+
+                        <!-- Opções avançadas -->
+                        <CheckBox x:Name="CheckBox_FamiliasAninhadas"
+                                  Content="↳ Incluir famílias aninhadas (sub-elementos)"
+                                  Style="{StaticResource ModernCheckBox}"
+                                  Margin="0,10,0,0"/>
                         
                         <!-- ComboBox oculto para compatibilidade -->
                         <ComboBox x:Name="ComboBox_Escopo" Visibility="Collapsed">
@@ -454,10 +465,16 @@
                                 <TextBlock Text="Condição" Style="{StaticResource FieldLabel}"/>
                                 <ComboBox x:Name="ComboBox_Condicao1">
                                     <ComboBoxItem Content="Igual a" IsSelected="True"/>
+                                    <ComboBoxItem Content="Maior que"/>
+                                    <ComboBoxItem Content="Menor que"/>
+                                    <ComboBoxItem Content="Maior ou igual"/>
+                                    <ComboBoxItem Content="Menor ou igual"/>
+                                    <ComboBoxItem Content="Diferente de"/>
                                     <ComboBoxItem Content="Contém"/>
                                     <ComboBoxItem Content="Começa com"/>
                                     <ComboBoxItem Content="Termina com"/>
-                                    <ComboBoxItem Content="Diferente de"/>
+                                    <ComboBoxItem Content="Em branco"/>
+                                    <ComboBoxItem Content="Não em branco"/>
                                 </ComboBox>
                             </StackPanel>
 
@@ -524,10 +541,16 @@
                                 <TextBlock Text="Condição" Style="{StaticResource FieldLabel}"/>
                                 <ComboBox x:Name="ComboBox_Condicao2">
                                     <ComboBoxItem Content="Igual a" IsSelected="True"/>
+                                    <ComboBoxItem Content="Maior que"/>
+                                    <ComboBoxItem Content="Menor que"/>
+                                    <ComboBoxItem Content="Maior ou igual"/>
+                                    <ComboBoxItem Content="Menor ou igual"/>
+                                    <ComboBoxItem Content="Diferente de"/>
                                     <ComboBoxItem Content="Contém"/>
                                     <ComboBoxItem Content="Começa com"/>
                                     <ComboBoxItem Content="Termina com"/>
-                                    <ComboBoxItem Content="Diferente de"/>
+                                    <ComboBoxItem Content="Em branco"/>
+                                    <ComboBoxItem Content="Não em branco"/>
                                 </ComboBox>
                             </StackPanel>
 

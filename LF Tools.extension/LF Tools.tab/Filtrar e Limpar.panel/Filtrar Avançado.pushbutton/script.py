@@ -2,7 +2,7 @@
 from pyrevit import revit, forms, script
 from Autodesk.Revit.DB import (
     FilteredElementCollector, BuiltInCategory, ElementId, StorageType,
-    BuiltInParameter, Element
+    BuiltInParameter, Element, UnitUtils, UnitTypeId
 )
 from System.Collections.Generic import List
 import traceback
@@ -118,6 +118,135 @@ def save_presets(data):
 doc = revit.doc
 uidoc = revit.uidoc
 logger = script.get_logger()
+
+# ==================== HELPERS DE ELEVAÇÃO ====================
+def get_element_elevation(el):
+    """Obtém a elevação Z do elemento convertida de pés para metros."""
+    z_feet = None
+    
+    # 1. Tentar Location.Point (elementos pontuais: devices, equipment, etc.)
+    try:
+        loc = el.Location
+        if loc and hasattr(loc, 'Point') and loc.Point:
+            z_feet = loc.Point.Z
+    except:
+        pass
+    
+    # 2. Tentar Location.Curve midpoint (elementos lineares: conduit, pipe, duct)
+    if z_feet is None:
+        try:
+            loc = el.Location
+            if loc and hasattr(loc, 'Curve') and loc.Curve:
+                mid = loc.Curve.Evaluate(0.5, True)
+                z_feet = mid.Z
+        except:
+            pass
+    
+    # 3. Fallback: BoundingBox center
+    if z_feet is None:
+        try:
+            bb = el.get_BoundingBox(None)
+            if bb:
+                z_feet = (bb.Min.Z + bb.Max.Z) / 2.0
+        except:
+            pass
+    
+    if z_feet is None:
+        return None
+    
+    # Converter de pés internos para metros
+    try:
+        z_meters = UnitUtils.ConvertFromInternalUnits(z_feet, UnitTypeId.Meters)
+    except:
+        # Fallback manual: 1 pé = 0.3048 metros
+        z_meters = z_feet * 0.3048
+    
+    return z_meters
+
+def check_elevation_condition(z_meters, condition, val_min, val_max=None, tolerance=0.01):
+    """Verifica condição de elevação. Valores em metros."""
+    if z_meters is None:
+        return False
+    
+    if condition == u"Igual a (\u00b11cm)":
+        return abs(z_meters - val_min) <= tolerance
+    elif condition == u"Maior que":
+        return z_meters > val_min
+    elif condition == u"Menor que":
+        return z_meters < val_min
+    elif condition == u"Maior ou igual":
+        return z_meters >= val_min
+    elif condition == u"Menor ou igual":
+        return z_meters <= val_min
+    elif condition == u"Entre":
+        if val_max is None:
+            return False
+        lo = min(val_min, val_max)
+        hi = max(val_min, val_max)
+    return z_meters
+
+def smart_parameter_compare(param, condition, user_text, text_compare_func):
+    """
+    Compara o parâmetro com o input do usuário de forma inteligente.
+    Se o parâmetro for numérico (Double), tenta converter e comparar como número com regras de unidade.
+    Se falhar ou não for numérico, usa a comparação de texto original.
+    """
+    if condition == u"Em branco":
+        return not param.HasValue
+    if condition == u"Não em branco":
+        return param.HasValue
+        
+    try:
+        # Tenta lógica numérica APENAS se for StorageType.Double
+        if param.StorageType == StorageType.Double:
+            internal_val = param.AsDouble()
+            
+            # Tentar ler o input do usuário (esperando metros se for comprimento)
+            user_val_str = user_text.replace(',', '.').strip()
+            if user_val_str:
+                user_val = float(user_val_str)
+                
+                # Obter o tipo de unidade do parâmetro
+                try:
+                    # Tenta converter o valor interno (pés) para unidades de exibição (ex: metros)
+                    # UnitUtils.ConvertFromInternalUnits foi introduzido nas versões mais recentes
+                    val_in_meters = UnitUtils.ConvertFromInternalUnits(internal_val, param.GetUnitTypeId())
+                except:
+                    # Fallback manual assumindo pés -> metros se GetUnitTypeId falhar
+                    val_in_meters = internal_val * 0.3048
+                    
+                tolerance = 0.01 # Tolerância numérica (ex: 1cm se em metros)
+                
+                if condition == u"Igual a":
+                    return abs(val_in_meters - user_val) <= tolerance
+                elif condition == u"Maior que":
+                    return val_in_meters > user_val
+                elif condition == u"Menor que":
+                    return val_in_meters < user_val
+                elif condition == u"Maior ou igual":
+                    return val_in_meters >= (user_val - tolerance)
+                elif condition == u"Menor ou igual":
+                    return val_in_meters <= (user_val + tolerance)
+                elif condition == u"Diferente de":
+                    return abs(val_in_meters - user_val) > tolerance
+    except Exception as e:
+        # Se falhar a extração ou parse float, segue pro fallback textual
+        pass
+        
+    # --- Fallback: Texto ---
+    if not param.HasValue:
+        return False
+        
+    param_txt = param.AsValueString()
+    if not param_txt:
+        # Alguns parâmetros (ex: texto simples) usam AsString() em vez de AsValueString()
+        if param.StorageType == StorageType.String:
+            param_txt = param.AsString()
+        else:
+            param_txt = ""
+            
+    return text_compare_func(param_txt, condition, user_text)
+
 
 class FiltroAvancadoWindow(forms.WPFWindow):
     def __init__(self):
@@ -286,11 +415,56 @@ class FiltroAvancadoWindow(forms.WPFWindow):
             # Estado inicial do segundo filtro
             self.segundo_filtro_alterado(None, None)
             
+            # ✨ NOVO: Detectar seleção ativa e habilitar radio
+            try:
+                selecao_ids = list(uidoc.Selection.GetElementIds())
+                self._selecao_inicial = selecao_ids
+                if selecao_ids:
+                    n = len(selecao_ids)
+                    self.Radio_SelecaoAtual.Content = u"Seleção Atual ({} elemento{})".format(n, u"s" if n != 1 else u"")
+                    self.Radio_SelecaoAtual.Visibility = System.Windows.Visibility.Visible
+                    self.Radio_SelecaoAtual.IsChecked = True
+                else:
+                    self._selecao_inicial = []
+                    self.Radio_SelecaoAtual.Visibility = System.Windows.Visibility.Collapsed
+            except:
+                self._selecao_inicial = []
+            
             self.atualizar_status("Selecione uma categoria para começar...")
             
         except Exception as e:
             logger.error("Erro ao inicializar controles: {}".format(traceback.format_exc()))
             forms.alert("Erro ao inicializar interface: {}".format(str(e)))
+    
+    def expand_nested_families(self, elements):
+        """✨ NOVO: Expande recursivamente sub-elementos de FamilyInstances aninhadas."""
+        expanded = []
+        visited = set()
+        
+        def _expand(el):
+            try:
+                eid = el.Id.IntegerValue
+                if eid in visited:
+                    return
+                visited.add(eid)
+                expanded.append(el)
+                # Tentar expandir sub-componentes (famílias aninhadas)
+                try:
+                    sub_ids = el.GetSubComponentIds()
+                    if sub_ids:
+                        for sub_id in sub_ids:
+                            sub = doc.GetElement(sub_id)
+                            if sub:
+                                _expand(sub)
+                except:
+                    pass  # Elemento não suporta GetSubComponentIds
+            except:
+                pass
+        
+        for el in elements:
+            _expand(el)
+        
+        return expanded
     
     def get_available_parameters(self, elements):
         """Coleta parâmetros de instância E de tipo - OTIMIZADO"""
@@ -412,49 +586,55 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                 return
                 
             categoria_nome = self.ComboBox_Categoria.SelectedItem
+            usar_selecao = getattr(self.Radio_SelecaoAtual, 'IsChecked', False)
             
             # ⚡ Verificar cache primeiro
-            cache_key = "{}_{}".format(categoria_nome, self.Radio_VistaAtual.IsChecked)
+            cache_key = "{}_{}_sel{}".format(categoria_nome, self.Radio_VistaAtual.IsChecked, usar_selecao)
             if cache_key in self._parametros_cache:
                 self._preencher_combos_parametros(self._parametros_cache[cache_key])
                 return
             
-            config = self.categoria_opcoes[categoria_nome]
-            categorias = config["categorias"]
-            usar_vista_atual = self.Radio_VistaAtual.IsChecked
-            
             elementos_amostra = []
-            
-            # ⚡ OTIMIZAÇÃO: Coletar apenas 20 elementos no total (não 10 por categoria)
             max_elementos = 20
-            elementos_coletados = 0
             
-            for cat in categorias:
-                if elementos_coletados >= max_elementos:
-                    break
-                    
-                col = FilteredElementCollector(doc, revit.active_view.Id) if usar_vista_atual else FilteredElementCollector(doc)
-                col = col.OfCategory(cat).WhereElementIsNotElementType()
+            # ✨ NOVO: Escopo de Seleção Ativa — amostrar dos elementos já selecionados
+            if usar_selecao and self._selecao_inicial:
+                for eid in self._selecao_inicial[:max_elementos]:
+                    try:
+                        el = doc.GetElement(eid)
+                        if el:
+                            elementos_amostra.append(el)
+                    except:
+                        pass
+            else:
+                config = self.categoria_opcoes[categoria_nome]
+                categorias = config["categorias"]
+                usar_vista_atual = self.Radio_VistaAtual.IsChecked
+                elementos_coletados = 0
                 
-                iterator = col.GetElementIterator()
-                while iterator.MoveNext() and elementos_coletados < max_elementos:
-                    elementos_amostra.append(iterator.Current)
-                    elementos_coletados += 1
+                for cat in categorias:
+                    if elementos_coletados >= max_elementos:
+                        break
+                        
+                    col = FilteredElementCollector(doc, revit.active_view.Id) if usar_vista_atual else FilteredElementCollector(doc)
+                    col = col.OfCategory(cat).WhereElementIsNotElementType()
+                    
+                    iterator = col.GetElementIterator()
+                    while iterator.MoveNext() and elementos_coletados < max_elementos:
+                        elementos_amostra.append(iterator.Current)
+                        elementos_coletados += 1
             
             if elementos_amostra:
                 parametros_disponiveis = self.get_available_parameters(elementos_amostra)
-                
-                # Armazenar no cache
                 self._parametros_cache[cache_key] = parametros_disponiveis
-                
                 self._preencher_combos_parametros(parametros_disponiveis)
-                self.atualizar_status("Pronto. {} parâmetros encontrados.".format(len(parametros_disponiveis)))
+                self.atualizar_status(u"Pronto. {} parâmetros encontrados.".format(len(parametros_disponiveis)))
             else:
-                self.atualizar_status("Nenhum elemento encontrado nesta categoria.")
+                self.atualizar_status(u"Nenhum elemento encontrado nesta categoria.")
                 
         except Exception as e:
             logger.error("Erro em categoria_selecionada: {}".format(traceback.format_exc()))
-            self.atualizar_status("Erro ao carregar parâmetros")
+            self.atualizar_status(u"Erro ao carregar parâmetros")
     
     def _preencher_combos_parametros(self, parametros):
         """⚡ Método auxiliar para preencher ComboBoxes"""
@@ -508,7 +688,7 @@ class FiltroAvancadoWindow(forms.WPFWindow):
             return False
 
     def aplicar_filtro_click(self, sender, args):
-        """⚡ OTIMIZADO: Lógica de filtragem com precisão de vista e segurança de encode"""
+        """OTIMIZADO: Filtragem com 3 escopos (Selecao/Vista/Projeto) + Familias Aninhadas"""
         try:
             if not self.validar_campos():
                 return
@@ -517,96 +697,109 @@ class FiltroAvancadoWindow(forms.WPFWindow):
             self.Button_AplicarFiltro.Content = "PROCESSANDO..."
             
             categoria_nome = self.ComboBox_Categoria.SelectedItem
-            usar_vista_atual = self.Radio_VistaAtual.IsChecked
             
-            # Filtro 1
-            p1_nome = self.ComboBox_Parametro1.SelectedItem
-            c1 = self.ComboBox_Condicao1.SelectedItem.Content
-            v1 = self.TextBox_Valor1.Text
+            usar_selecao      = bool(getattr(self.Radio_SelecaoAtual,       'IsChecked', False))
+            usar_vista_atual  = bool(self.Radio_VistaAtual.IsChecked)
+            incluir_aninhadas = bool(getattr(self.CheckBox_FamiliasAninhadas, 'IsChecked', False))
             
-            # Filtro 2
-            usar_f2 = self.CheckBox_UsarSegundoFiltro.IsChecked
-            p2_nome = self.ComboBox_Parametro2.SelectedItem if usar_f2 else None
-            c2 = self.ComboBox_Condicao2.SelectedItem.Content if usar_f2 else None
-            v2 = self.TextBox_Valor2.Text if usar_f2 else ""
-            
+            p1_nome    = self.ComboBox_Parametro1.SelectedItem
+            c1         = self.ComboBox_Condicao1.SelectedItem.Content
+            v1         = self.TextBox_Valor1.Text
+            usar_f2    = self.CheckBox_UsarSegundoFiltro.IsChecked
+            p2_nome    = self.ComboBox_Parametro2.SelectedItem if usar_f2 else None
+            c2         = self.ComboBox_Condicao2.SelectedItem.Content if usar_f2 else None
+            v2         = self.TextBox_Valor2.Text if usar_f2 else ""
             operador_e = self.Radio_And.IsChecked
             
             config = self.categoria_opcoes[categoria_nome]
             ids_selecionados = []
-            
             self.atualizar_status(u"Processando elementos...")
             
-            for cat in config["categorias"]:
-                col = FilteredElementCollector(doc, revit.active_view.Id) if usar_vista_atual else FilteredElementCollector(doc)
-                col = col.OfCategory(cat).WhereElementIsNotElementType()
-                
-                view_atual = revit.active_view if usar_vista_atual else None
-                
-                for el in col:
-                    # MELHORIA: Filtrar apenas elementos visíveis (Respeita filtros/HH/VV)
-                    if usar_vista_atual and el.IsHidden(view_atual):
-                        continue
-
-                    # Lógica de Classes e RN
-                    tipo_el = el.GetType().Name
-                    if config["classes"] and tipo_el not in config["classes"]:
-                        if config.get("requires_param") == "RN_optional" and not el.LookupParameter("RN"):
-                            continue
-                        if config.get("requires_param") != "RN_optional":
-                             continue
-
-                    if config.get("requires_param") and config["requires_param"] != "RN_optional":
-                        if not el.LookupParameter(config["requires_param"]): 
-                            continue
-                        
-                    if config.get("requires_param_absent"):
-                        if el.LookupParameter(config["requires_param_absent"]): 
-                            continue
-                    
-                    # Verificação dos Filtros
+            def avaliar(el):
+                try:
                     res1 = False
                     param1 = self.find_parameter(el, p1_nome)
                     if param1:
-                        val1 = self.get_parameter_value(param1)
-                        res1 = self.check_condition(val1, c1, v1)
-                    elif c1 == "Em branco":
-                        res1 = True
-                        
+                        res1 = smart_parameter_compare(param1, c1, v1, self.check_condition)
+                    
                     res2 = False
                     if usar_f2:
                         param2 = self.find_parameter(el, p2_nome)
                         if param2:
-                            val2 = self.get_parameter_value(param2)
-                            res2 = self.check_condition(val2, c2, v2)
-                        elif c2 == "Em branco":
-                            res2 = True
+                            res2 = smart_parameter_compare(param2, c2, v2, self.check_condition)
                     
-                    match = False
-                    if not usar_f2:
-                        match = res1
-                    else:
-                        match = (res1 and res2) if operador_e else (res1 or res2)
-                    
-                    if match:
+                    return res1 if not usar_f2 else ((res1 and res2) if operador_e else (res1 or res2))
+                except Exception as eval_err:
+                    return False
+            
+            # ESCOPO 1: Selecao Ativa
+            if usar_selecao and self._selecao_inicial:
+                pool = []
+                for eid in self._selecao_inicial:
+                    try:
+                        el = doc.GetElement(eid)
+                        if el:
+                            pool.append(el)
+                    except:
+                        pass
+                if incluir_aninhadas:
+                    pool = self.expand_nested_families(pool)
+                for el in pool:
+                    if avaliar(el):
                         ids_selecionados.append(el.Id)
             
-            # Resultado
+            # ESCOPOS 2 e 3: Vista Atual / Projeto Inteiro
+            else:
+                view_atual = revit.active_view if usar_vista_atual else None
+                for cat in config["categorias"]:
+                    col = FilteredElementCollector(doc, revit.active_view.Id) if usar_vista_atual else FilteredElementCollector(doc)
+                    col = col.OfCategory(cat).WhereElementIsNotElementType()
+                    
+                    pool_cat = []
+                    for el in col:
+                        try:
+                            if usar_vista_atual and el.IsHidden(view_atual):
+                                continue
+                            tipo_el = el.GetType().Name
+                            if config["classes"] and tipo_el not in config["classes"]:
+                                if config.get("requires_param") == "RN_optional" and not el.LookupParameter("RN"):
+                                    continue
+                                if config.get("requires_param") != "RN_optional":
+                                    continue
+                            if config.get("requires_param") and config["requires_param"] != "RN_optional":
+                                if not el.LookupParameter(config["requires_param"]):
+                                    continue
+                            if config.get("requires_param_absent"):
+                                if el.LookupParameter(config["requires_param_absent"]):
+                                    continue
+                            pool_cat.append(el)
+                        except:
+                            continue
+                    
+                    if incluir_aninhadas:
+                        pool_cat = self.expand_nested_families(pool_cat)
+                    
+                    for el in pool_cat:
+                        if avaliar(el):
+                            ids_selecionados.append(el.Id)
+            
             if ids_selecionados:
                 uidoc.Selection.SetElementIds(List[ElementId](ids_selecionados))
-                self.atualizar_status(u"✅ {} elementos selecionados!".format(len(ids_selecionados)))
-                forms.alert(u"✅ {} elementos selecionados com sucesso!".format(len(ids_selecionados)))
+                self.atualizar_status(u"OK {} elementos selecionados!".format(len(ids_selecionados)))
+                forms.alert(u"OK {} elementos selecionados com sucesso!".format(len(ids_selecionados)))
             else:
-                forms.alert(u"❌ Nenhum elemento atende aos critérios.")
+                forms.alert(u"Nenhum elemento atende aos criterios.")
                 
             self.Button_AplicarFiltro.IsEnabled = True
             self.Button_AplicarFiltro.Content = "APLICAR FILTRO"
                 
         except Exception as e:
             logger.error(u"Erro em aplicar_filtro_click: {}".format(to_unicode(e)))
-            forms.alert(u"❌ Erro durante a filtragem:\n{}".format(to_unicode(e)))
+            forms.alert(u"Erro durante a filtragem:\n{}".format(to_unicode(e)))
             self.Button_AplicarFiltro.IsEnabled = True
             self.Button_AplicarFiltro.Content = "APLICAR FILTRO"
+
+
 
     def fechar_click(self, sender, args):
         """⚡ OTIMIZADO: Limpar cache ao fechar"""
@@ -661,7 +854,8 @@ class FiltroAvancadoWindow(forms.WPFWindow):
             
             state = {
                 "Categoria": cat_val,
-                "Escopo": "Vista Atual" if self.Radio_VistaAtual.IsChecked else "Projeto Inteiro",
+                "Escopo": "Selecao Atual" if bool(getattr(self.Radio_SelecaoAtual, 'IsChecked', False)) else ("Vista Atual" if self.Radio_VistaAtual.IsChecked else "Projeto Inteiro"),
+                "UseNested": bool(getattr(self.CheckBox_FamiliasAninhadas, 'IsChecked', False)),
                 
                 "Param1": param1_val,
                 "Cond1": str(self.ComboBox_Condicao1.SelectedItem.Content) if self.ComboBox_Condicao1.SelectedItem else "",
@@ -748,9 +942,19 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                             self.ComboBox_Parametro2.SelectedItem = item
                             break
             
-            # 4. Outros
-            if preset.get("Escopo") == "Vista Atual": self.Radio_VistaAtual.IsChecked = True
-            else: self.Radio_ProjetoInteiro.IsChecked = True
+            # 4. Escopo + Opções adicionais
+            escopo = preset.get("Escopo", "Vista Atual")
+            # "Selecao Atual" não pode ser restaurado (seleção mudou) — usa Vista Atual
+            if escopo == "Projeto Inteiro":
+                self.Radio_ProjetoInteiro.IsChecked = True
+            else:
+                self.Radio_VistaAtual.IsChecked = True
+            
+            # Restaurar CheckBox de famílias aninhadas
+            try:
+                self.CheckBox_FamiliasAninhadas.IsChecked = bool(preset.get("UseNested", False))
+            except:
+                pass
             
             if preset.get("Logic") == "AND": self.Radio_And.IsChecked = True
             else: self.Radio_Or.IsChecked = True
