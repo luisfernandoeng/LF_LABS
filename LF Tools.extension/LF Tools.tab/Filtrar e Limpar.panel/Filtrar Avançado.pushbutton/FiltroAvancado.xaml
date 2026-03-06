@@ -464,17 +464,18 @@
                             <StackPanel Grid.Column="0">
                                 <TextBlock Text="Condição" Style="{StaticResource FieldLabel}"/>
                                 <ComboBox x:Name="ComboBox_Condicao1">
-                                    <ComboBoxItem Content="Igual a" IsSelected="True"/>
+                                    <ComboBoxItem Content="Contém" IsSelected="True"/>
+                                    <ComboBoxItem Content="Não Contém"/>
+                                    <ComboBoxItem Content="Diferente de"/>
+                                    <ComboBoxItem Content="Em branco"/>
+                                    <ComboBoxItem Content="Não em branco"/>
                                     <ComboBoxItem Content="Maior que"/>
                                     <ComboBoxItem Content="Menor que"/>
                                     <ComboBoxItem Content="Maior ou igual"/>
                                     <ComboBoxItem Content="Menor ou igual"/>
-                                    <ComboBoxItem Content="Diferente de"/>
-                                    <ComboBoxItem Content="Contém"/>
+                                    <ComboBoxItem Content="Igual a"/>
                                     <ComboBoxItem Content="Começa com"/>
                                     <ComboBoxItem Content="Termina com"/>
-                                    <ComboBoxItem Content="Em branco"/>
-                                    <ComboBoxItem Content="Não em branco"/>
                                 </ComboBox>
                             </StackPanel>
 
@@ -540,17 +541,18 @@
                             <StackPanel Grid.Column="0">
                                 <TextBlock Text="Condição" Style="{StaticResource FieldLabel}"/>
                                 <ComboBox x:Name="ComboBox_Condicao2">
-                                    <ComboBoxItem Content="Igual a" IsSelected="True"/>
+                                    <ComboBoxItem Content="Contém" IsSelected="True"/>
+                                    <ComboBoxItem Content="Não Contém"/>
+                                    <ComboBoxItem Content="Diferente de"/>
+                                    <ComboBoxItem Content="Em branco"/>
+                                    <ComboBoxItem Content="Não em branco"/>
                                     <ComboBoxItem Content="Maior que"/>
                                     <ComboBoxItem Content="Menor que"/>
                                     <ComboBoxItem Content="Maior ou igual"/>
                                     <ComboBoxItem Content="Menor ou igual"/>
-                                    <ComboBoxItem Content="Diferente de"/>
-                                    <ComboBoxItem Content="Contém"/>
+                                    <ComboBoxItem Content="Igual a"/>
                                     <ComboBoxItem Content="Começa com"/>
                                     <ComboBoxItem Content="Termina com"/>
-                                    <ComboBoxItem Content="Em branco"/>
-                                    <ComboBoxItem Content="Não em branco"/>
                                 </ComboBox>
                             </StackPanel>
 

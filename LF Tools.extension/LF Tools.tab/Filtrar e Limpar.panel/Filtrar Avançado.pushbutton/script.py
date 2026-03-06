@@ -262,10 +262,17 @@ class FiltroAvancadoWindow(forms.WPFWindow):
             
             # Configurações iniciais
             self.categoria_opcoes = {
-                u"Eletrodutos (segmentos + curvas reais)": {
+                u"Conduítes e Curvas": {
                     "categorias": [BuiltInCategory.OST_Conduit, BuiltInCategory.OST_ConduitFitting],
-                    "classes": ["Conduit"],
-                    "requires_param": "RN_optional",
+                    "classes": ["Conduit", "FamilyInstance"],
+                    "requires_param": None,
+                    "requires_param_absent": None,
+                    "exclude_if_not": "angle_or_conduit"
+                },
+                u"Conexões de conduíte": {
+                    "categorias": [BuiltInCategory.OST_ConduitFitting],
+                    "classes": ["FamilyInstance"],
+                    "requires_param": None,
                     "requires_param_absent": None
                 },
                 u"Isolamento de Tubo": {
@@ -567,6 +574,8 @@ class FiltroAvancadoWindow(forms.WPFWindow):
             return p_val_lower == val_lower
         elif condition == "Contém":
             return val_lower in p_val_lower
+        elif condition == "Não Contém":
+            return val_lower not in p_val_lower
         elif condition == "Diferente de":
             return p_val_lower != val_lower
         elif condition == "Começa com":
@@ -717,6 +726,41 @@ class FiltroAvancadoWindow(forms.WPFWindow):
             
             def avaliar(el):
                 try:
+                    
+                    # Logica Avancada de Exclusao (Parametros Reais)
+                    exc_rule = config.get("exclude_if_not")
+                    if exc_rule == "angle_or_conduit":
+                        tipo = el.GetType().Name
+                        # Se for um Conduit (segmento reto), ele ta seguro, deixa de fora as exclusoes das Familias
+                        if tipo == "FamilyInstance":
+                            # Tenta pegar pelo PartType (Parametro NATIVO de pecas MEP)
+                            # Se for uma caixa (Equipamento/Panel), o PartType costuma ser diferente de Elbow, Tee, Cross, Transition, Union, etc.
+                            try:
+                                # O parametro PartType fica no FamilySymbol ou na Family
+                                part_type_param = el.Symbol.Family.get_Parameter(BuiltInParameter.FAMILY_CONTENT_PART_TYPE)
+                                if part_type_param and part_type_param.HasValue:
+                                    part_type_val = part_type_param.AsInteger()
+                                    # Valores corriqueiros para caixas (Equipment = 6, Panelboard = ... Varias outras coisas que não sao 1 ao 5)
+                                    # Conduletes/Curvas sao geralmente Elbow(1), Tee(2), Cross(3), Transition(4), Union(5)
+                                    # Se a pessoa criadora fez a caixa com PartType de curva (Elbow), então é uma falha na criação da familia.
+                                    # Na dúvida: Filtramos pelo nome também para reforçar a segurança (Abordagem híbrida)
+                                    pass
+                            except:
+                                pass
+                                
+                            # Abordagem Hibrida: Se o Revit deixou passar, usamos o nome por segurança
+                            nome = ""
+                            try:
+                                if hasattr(el, 'Name') and el.Name:
+                                    nome += el.Name.lower()
+                                if hasattr(el, 'Symbol') and el.Symbol and hasattr(el.Symbol, 'FamilyName'):
+                                    nome += " " + el.Symbol.FamilyName.lower()
+                            except:
+                                pass
+                            
+                            if "caixa" in nome or "condulete" in nome:
+                                return False
+
                     res1 = False
                     param1 = self.find_parameter(el, p1_nome)
                     if param1:
@@ -859,12 +903,12 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                 
                 "Param1": param1_val,
                 "Cond1": str(self.ComboBox_Condicao1.SelectedItem.Content) if self.ComboBox_Condicao1.SelectedItem else "",
-                "Val1": str(self.TextBox_Valor1.Text) if self.TextBox_Valor1.Text else "",
+                "Val1": str(self.TextBox_Valor1.Text) if getattr(self.TextBox_Valor1, "Text", None) else "",
                 
                 "UseF2": bool(self.CheckBox_UsarSegundoFiltro.IsChecked),
                 "Param2": param2_val,
                 "Cond2": str(self.ComboBox_Condicao2.SelectedItem.Content) if self.ComboBox_Condicao2.SelectedItem else "",
-                "Val2": str(self.TextBox_Valor2.Text) if self.TextBox_Valor2.Text else "",
+                "Val2": str(self.TextBox_Valor2.Text) if getattr(self.TextBox_Valor2, "Text", None) else "",
                 
                 "Logic": "AND" if self.Radio_And.IsChecked else "OR"
             }
@@ -941,6 +985,15 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                         if str(item) == p2:
                             self.ComboBox_Parametro2.SelectedItem = item
                             break
+                            
+                c2 = preset.get("Cond2")
+                if c2:
+                    for item in self.ComboBox_Condicao2.Items:
+                        if getattr(item, 'Content', str(item)) == c2:
+                            self.ComboBox_Condicao2.SelectedItem = item
+                            break
+                            
+                self.TextBox_Valor2.Text = preset.get("Val2", "")
             
             # 4. Escopo + Opções adicionais
             escopo = preset.get("Escopo", "Vista Atual")
