@@ -6,6 +6,7 @@ import re
 import traceback
 import gc
 import sys
+
 from collections import namedtuple, OrderedDict
 from pyrevit import script, forms, coreutils, revit, DB
 
@@ -251,6 +252,7 @@ def get_schedule_elements_and_params(schedule):
         if element_ids_set:
             for element_id in element_ids_set:
                 if element_id and element_id != DB.ElementId.InvalidElementId:
+                    cached_element = _element_cache.get(element_id.IntegerValue)
                     if cached_element:
                         element = cached_element
                     else:
@@ -273,8 +275,6 @@ def get_schedule_elements_and_params(schedule):
             for el in collector:
                 try:
                     if el.Id not in element_ids:
-                        element_ids.add(el.Id)
-                        elements.append(el)
                         element_ids.add(el.Id)
                         elements.append(el)
                         _element_cache[el.Id.IntegerValue] = el
@@ -322,7 +322,7 @@ def get_schedule_elements_and_params(schedule):
             param_info = first_element.LookupParameter(field_name)
             
             if not param_info and hasattr(first_element, 'Parameters'):
-                for p in first_element.Parameters:
+                for p in getattr(first_element, 'Parameters', []):
                     try:
                         if p.Definition.Name == field_name:
                             param_info = p
@@ -562,9 +562,10 @@ def export_xls(src_elements, selected_params, file_path, is_panel_schedule=False
             processed_count = 0
             
             for batch_start in range(0, total_elements, batch_size):
-                batch_end = min(batch_start + batch_size, total_elements)
+                batch_end = min(batch_start + batch_size, total_elements)  # type: ignore
                 
-                for r_offset, el in enumerate(src_elements[batch_start:batch_end]):
+                r_offset = 0
+                for el in src_elements[batch_start:batch_end]:
                     r = batch_start + r_offset + 1
                     try:
                         eid = el.Id.IntegerValue
@@ -583,9 +584,11 @@ def export_xls(src_elements, selected_params, file_path, is_panel_schedule=False
                                 widths[c+1] = min(slen, 50)
                     except Exception as e:
                         logger.error("Erro ao processar elemento " + str(r) + ": " + str(e))
-                        continue
+                        pass
+                    
+                    r_offset += 1
                 
-                processed_count += (batch_end - batch_start)
+                processed_count += (batch_end - batch_start)  # type: ignore
                 
                 # Limpeza inteligente de cache removida (Python dict gerencia memoria melhor sem interferencia)
                 if len(param_cache) > 5000:
@@ -595,7 +598,7 @@ def export_xls(src_elements, selected_params, file_path, is_panel_schedule=False
                 pass
                 
                 # Status periódico
-                if processed_count % 1000 == 0:
+                if processed_count % 1000 == 0:  # type: ignore
                     logger.debug("Processados " + str(processed_count) + " de " + str(total_elements) + " elementos")
             
             # Aplicar larguras
@@ -1050,6 +1053,10 @@ class ExportImportWindow(forms.WPFWindow):
             
             self.update_status("Concluido!")
             forms.alert("Exportacao finalizada com sucesso!", title="Sucesso")
+            
+            if self.CheckBox_OpenFolder.IsChecked:
+                import subprocess
+                subprocess.Popen('explorer /select,"{}"'.format(self.export_path))
             
         except Exception as e:
             logger.error(traceback.format_exc())

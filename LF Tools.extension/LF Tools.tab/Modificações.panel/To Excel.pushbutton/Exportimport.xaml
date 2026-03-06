@@ -160,6 +160,37 @@
             </Setter>
         </Style>
 
+        <!-- CheckBox -->
+        <Style x:Key="ModernCheckBox" TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Margin" Value="0,5"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <Grid Background="Transparent">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="CheckBorder" Width="16" Height="16" BorderThickness="2" BorderBrush="{StaticResource BorderColor}" CornerRadius="2" Margin="0,0,8,0" VerticalAlignment="Center">
+                                <Path x:Name="CheckMark" Width="10" Height="10" Stretch="Uniform" Fill="White" Data="M 0,4 L 3,7 L 8,0" Visibility="Collapsed"/>
+                            </Border>
+                            <ContentPresenter Grid.Column="1" VerticalAlignment="Center" Content="{TemplateBinding Content}"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="CheckMark" Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="CheckBorder" Property="BorderBrush" Value="{StaticResource AccentBlue}"/>
+                                <Setter TargetName="CheckBorder" Property="Background" Value="{StaticResource AccentBlue}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- Botões -->
         <Style x:Key="PrimaryActionButton" TargetType="Button">
             <Setter Property="Background" Value="{StaticResource AccentGreen}"/>
@@ -310,6 +341,13 @@
                                Style="{StaticResource BrowseButton}"
                                Margin="8,0,0,0"/>
                     </Grid>
+                    
+                    <!-- Opções Extras -->
+                    <CheckBox x:Name="CheckBox_OpenFolder"
+                              Content="Abrir pasta após concluir"
+                              Style="{StaticResource ModernCheckBox}"
+                              IsChecked="True"
+                              Margin="0,0,0,15"/>
                     
                     <!-- Botão Exportar -->
                     <Button x:Name="Button_Export" 
