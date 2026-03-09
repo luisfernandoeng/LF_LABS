@@ -13,6 +13,59 @@ import System
 import sys
 from System.Windows.Forms import Application as WinFormsApp
 import re
+import datetime
+
+# ==================== LOGICA DE HISTORICO ====================
+class SelectionHistory:
+    def __init__(self):
+        # Pasta de dados do usuario
+        appdata = os.getenv('APPDATA')
+        self.history_dir = os.path.join(appdata, 'pyRevit', 'Extensions', 'LFTools')
+        if not os.path.exists(self.history_dir):
+            os.makedirs(self.history_dir)
+            
+        self.history_file = os.path.join(self.history_dir, 'filtro_avancado_history.json')
+        self.history = self.load_history()
+        self.max_size = 15
+    
+    def load_history(self):
+        if os.path.exists(self.history_file):
+            try:
+                with io.open(self.history_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                pass
+        return []
+    
+    def save_history(self):
+        try:
+            with io.open(self.history_file, 'w', encoding='utf-8') as f:
+                json.dump(self.history, f, indent=4, ensure_ascii=False)
+        except:
+            pass
+    
+    def add(self, element_ids, category, criteria_desc, count, state):
+        entry = {
+            'element_ids': [eid.IntegerValue for eid in element_ids],
+            'category': category,
+            'criteria': criteria_desc,
+            'count': count,
+            'timestamp': datetime.datetime.now().strftime("%H:%M:%S"),
+            'state': state
+        }
+        # Evitar duplicados consecutivos idênticos
+        if self.history and self.history[0]['criteria'] == criteria_desc and self.history[0]['category'] == category:
+            self.history.pop(0)
+            
+        self.history.insert(0, entry)
+        if len(self.history) > self.max_size:
+            self.history = self.history[:self.max_size]
+        self.save_history()
+
+    def clear(self):
+        self.history = []
+        self.save_history()
+
 
 
 # --- HELPER UNICODE PARA IRONPYTHON 2.7 (CODEC-FREE) ---
@@ -283,7 +336,7 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                     "requires_param": None,
                     "requires_param_absent": None
                 },
-                u"Eletrocalhas": {
+                u"Bandeja de cabos": {
                     "categorias": [BuiltInCategory.OST_CableTray],
                     "classes": ["CableTray"],
                     "requires_param": None,
@@ -357,6 +410,23 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                 }
             }
             
+            # Inicializar Histórico
+            self.selection_history = SelectionHistory()
+            
+            # Set de IDs já mapeados para evitar duplicidade na injeção
+            self.ids_mapeados = set()
+            for info in self.categoria_opcoes.values():
+                for cat in info["categorias"]:
+                    try:
+                        if isinstance(cat, BuiltInCategory):
+                            self.ids_mapeados.add(int(cat))
+                        elif hasattr(cat, "IntegerValue"):
+                            self.ids_mapeados.add(cat.IntegerValue)
+                        elif hasattr(cat, "Value"):
+                            self.ids_mapeados.add(int(cat.Value))
+                    except:
+                        pass
+
             self.inicializar_controles()
             
         except Exception as e:
@@ -413,6 +483,13 @@ class FiltroAvancadoWindow(forms.WPFWindow):
             self.Button_SalvarFiltro.Click += self.salvar_preset_click
             self.Button_DeletarFiltro.Click += self.deletar_preset_click
             self.Button_CapturarSelecao.Click += self.capturar_selecao_click
+            
+            # --- Eventos de Histórico ---
+            try:
+                self.Button_HistoricoAnterior.Click += self.historico_anterior_click
+                self.Button_LimparHistorico.Click += self.limpar_historico_click
+            except: pass
+
             self.carregar_presets_ui()
             
             # Estado inicial do segundo filtro
@@ -433,6 +510,14 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                     for eid in selecao_ids:
                         el = doc.GetElement(eid)
                         if el and el.Category:
+                            # Se a categoria já está mapeada nos botões/opções padrão, não injeta como "*"
+                            cat_id_val = getattr(el.Category.Id, "Value", None)
+                            if cat_id_val is None:
+                                cat_id_val = el.Category.Id.IntegerValue
+                            
+                            if int(cat_id_val) in self.ids_mapeados:
+                                continue
+
                             c_name = el.Category.Name
                             # Insere marcador visual
                             used_categories.add(u"* [SELEÇÃO] " + c_name)
@@ -916,9 +1001,12 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                 for cat in todas_categorias_analisar:
                     col = FilteredElementCollector(doc, revit.active_view.Id) if usar_vista_atual else FilteredElementCollector(doc)
                     
-                    if hasattr(cat, 'value'): # Categoria BuiltIn Hardcoded
+                    if isinstance(cat, BuiltInCategory): # Categoria BuiltIn Hardcoded
                         col = col.OfCategory(cat).WhereElementIsNotElementType()
                     else: # ElementId Category vindo do Injetor do Selecionado!
+                        # Garante que é ElementId (pode vir como BuiltInCategory se o config for gerado dinamicamente)
+                        if isinstance(cat, int):
+                            cat = ElementId(cat)
                         col = col.OfCategoryId(cat).WhereElementIsNotElementType()
                     
                     pool_cat = []
@@ -953,7 +1041,26 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                             ids_selecionados.append(el.Id)
             
             if ids_selecionados:
-                uidoc.Selection.SetElementIds(List[ElementId](ids_selecionados))
+                sel_ids_list = List[ElementId](ids_selecionados)
+                uidoc.Selection.SetElementIds(sel_ids_list)
+                
+                # ADICIONAR AO HISTÓRICO
+                cat_name_history = to_unicode(categoria_nome) if categoria_nome else to_unicode(self.ComboBox_Categoria.Text)
+                p1_name_history = to_unicode(p1_nome) if p1_nome else to_unicode(self.ComboBox_Parametro1.Text)
+                p2_name_history = to_unicode(p2_nome) if p2_nome else (to_unicode(self.ComboBox_Parametro2.Text) if usar_f2 else "")
+                
+                desc = u"{} {} {}".format(p1_name_history, c1, v1)
+                if usar_f2:
+                    desc += u" ({} {} {} {})".format("E" if operador_e else "OU", p2_name_history, c2, v2)
+                
+                state = {
+                    'p1': p1_name_history, 'c1': to_unicode(c1), 'v1': to_unicode(v1),
+                    'usar_f2': usar_f2, 'p2': p2_name_history, 'c2': to_unicode(c2) if c2 else "", 'v2': to_unicode(v2),
+                    'op_e': operador_e
+                }
+                
+                self.selection_history.add(sel_ids_list, cat_name_history, desc, len(ids_selecionados), state)
+                
                 self.atualizar_status(u"OK {} elementos selecionados!".format(len(ids_selecionados)))
                 forms.alert(u"OK {} elementos selecionados com sucesso!".format(len(ids_selecionados)))
             else:
@@ -1156,8 +1263,19 @@ class FiltroAvancadoWindow(forms.WPFWindow):
             
             found_cat_name = None
             for name, info in self.categoria_opcoes.items():
-                cat_list = [c.value if hasattr(c, 'value') else int(c) for c in info["categorias"]]
-                if target_cat_id in cat_list:
+                cat_list = []
+                for c in info["categorias"]:
+                    try:
+                        if isinstance(c, BuiltInCategory):
+                            cat_list.append(int(c))
+                        elif hasattr(c, "IntegerValue"):
+                            cat_list.append(c.IntegerValue)
+                        elif hasattr(c, "Value"):
+                            cat_list.append(int(c.Value))
+                    except:
+                        pass
+                
+                if int(target_cat_id) in cat_list:
                     found_cat_name = name
                     break
             
@@ -1177,6 +1295,115 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                 
         except Exception as e:
             logger.error(u"Erro ao capturar seleção: " + to_unicode(e))
+
+    def historico_anterior_click(self, sender, args):
+        """Recupera a última seleção realizada na sessão."""
+        try:
+            history = self.selection_history.history
+            if not history:
+                forms.alert("Nenhum histórico disponível.")
+                return
+            
+            # Se houver histórico, mostrar lista para escolher
+            options = []
+            for h in history:
+                options.append("{} | {} ({} elem) - {}".format(
+                    h['timestamp'], h['category'], h['count'], h['criteria']
+                ))
+            
+            selected = forms.SelectFromList.show(
+                options, 
+                title="Histórico de Seleções",
+                multiselect=False,
+                button_name="Selecionar"
+            )
+            
+            if selected:
+                # Extrai o índice do item do histórico original pela string de opção
+                idx = options.index(selected)
+                h_entry = history[idx]
+                
+                # 1. restaurar IDs no Revit
+                eids = [ElementId(int(eid)) for eid in h_entry['element_ids']]
+                valid_ids = [eid for eid in eids if doc.GetElement(eid)]
+                if valid_ids:
+                    uidoc.Selection.SetElementIds(List[ElementId](valid_ids))
+                
+                # 2. Restaurar UI
+                state = h_entry.get('state')
+                if state:
+                    self.atualizar_status("Restaurando configuração...")
+                    
+                    # Categoria
+                    cat_name = h_entry['category']
+                    found_cat = False
+                    for item in self.ComboBox_Categoria.Items:
+                        if to_unicode(item) == to_unicode(cat_name):
+                            self.ComboBox_Categoria.SelectedItem = item
+                            found_cat = True
+                            break
+                    
+                    if not found_cat:
+                        self.ComboBox_Categoria.Text = cat_name
+                    
+                    # Força carregamento dos parâmetros (Processamento Síncrono)
+                    WinFormsApp.DoEvents() 
+                    self.categoria_selecionada(None, None)
+                    WinFormsApp.DoEvents()
+
+                    # Filtro 1
+                    p1_val = state.get('p1')
+                    found_p1 = False
+                    for item in self.ComboBox_Parametro1.Items:
+                        if to_unicode(item) == to_unicode(p1_val):
+                            self.ComboBox_Parametro1.SelectedItem = item
+                            found_p1 = True
+                            break
+                    if not found_p1: self.ComboBox_Parametro1.Text = p1_val
+                    
+                    c1_val = state.get('c1')
+                    for item in self.ComboBox_Condicao1.Items:
+                        if item.Content == c1_val:
+                            self.ComboBox_Condicao1.SelectedItem = item
+                            break
+                    self.TextBox_Valor1.Text = state.get('v1', '')
+                    
+                    # Filtro 2
+                    use_f2 = state.get('usar_f2', False)
+                    self.CheckBox_UsarSegundoFiltro.IsChecked = use_f2
+                    WinFormsApp.DoEvents()
+                    
+                    if use_f2:
+                        p2_val = state.get('p2')
+                        found_p2 = False
+                        for item in self.ComboBox_Parametro2.Items:
+                            if to_unicode(item) == to_unicode(p2_val):
+                                self.ComboBox_Parametro2.SelectedItem = item
+                                found_p2 = True
+                                break
+                        if not found_p2: self.ComboBox_Parametro2.Text = p2_val
+                            
+                        c2_val = state.get('c2')
+                        for item in self.ComboBox_Condicao2.Items:
+                            if item.Content == c2_val:
+                                self.ComboBox_Condicao2.SelectedItem = item
+                                break
+                        self.TextBox_Valor2.Text = state.get('v2', '')
+                    
+                    # Operador
+                    if state.get('op_e'): self.Radio_And.IsChecked = True
+                    else: self.Radio_Or.IsChecked = True
+
+                    self.atualizar_status(u"Histórico carregado: {} elementos.".format(len(valid_ids)))
+                else:
+                    self.atualizar_status(u"Histórico antigo: Seleção restaurada.")
+        except Exception as e:
+            logger.error("Erro ao recuperar historico: " + str(e))
+
+    def limpar_historico_click(self, sender, args):
+        """Limpa o arquivo de histórico."""
+        self.selection_history.clear()
+        self.atualizar_status("Histórico limpo.")
 
 # Execução principal
 try:
