@@ -1,5 +1,0 @@
-tooltip: Limpar elementos sobrepostos 
-icon: icon.png
-long_description: >
-    Script para selecionar elementos duplicados em projeto.
-    Evitando contagem duplicadas e outros problemas tanto nas tabelas.

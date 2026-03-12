@@ -1,7 +1,0 @@
-# Configuração do botão no ribbon do pyRevit
-tooltip: Contar distancia de Tubos e Conduites
-icon: icon.png
-script: script.py
-long_description: >
-    A ideia é contar distancia sem precisar somar nada manualmente, 
-    você seleciona os elementos e o script soma as distancias pra você.
