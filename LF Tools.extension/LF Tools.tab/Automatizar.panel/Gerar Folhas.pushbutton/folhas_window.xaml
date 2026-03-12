@@ -553,7 +553,7 @@
                                         <TextBlock Text="⏱" Foreground="#FF569CD6" FontSize="14" VerticalAlignment="Center"/>
                                         <StackPanel Margin="8,0,0,0">
                                             <TextBlock Name="lbl_TimeElapsed" Text="0s" FontSize="18" FontWeight="Bold" Foreground="#FF569CD6"/>
-                                            <TextBlock Text="Tempo" FontSize="10" Foreground="{StaticResource TextSecondary}"/>
+                                            <TextBlock Name="lbl_TimeLabel" Text="Restante" FontSize="10" Foreground="{StaticResource TextSecondary}"/>
                                         </StackPanel>
                                     </StackPanel>
                                 </Border>

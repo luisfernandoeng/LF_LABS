@@ -537,7 +537,8 @@ class LuisExporterWindow(forms.WPFWindow):
             self.lbl_ProgressPercent.Text = "0%"
             self.lbl_SuccessCount.Text = "0"
             self.lbl_ErrorCount.Text = "0"
-            self.lbl_TimeElapsed.Text = "0s"
+            self.lbl_TimeElapsed.Text = "--"
+            self.lbl_TimeLabel.Text = "Restante"
             self.progressBar.Width = 0
             self.pnl_ExportItems.Children.Clear()
             self.txt_Log.Text = ""  # Limpa log detalhado
@@ -553,20 +554,25 @@ class LuisExporterWindow(forms.WPFWindow):
             self.lbl_ProgressDetail.Text = current_item_name
             self.lbl_ProgressPercent.Text = "{}%".format(percent)
             
-            # Atualiza largura da barra (assume container ~500px)
-            parent_width = self.progressBar.Parent.ActualWidth if self.progressBar.Parent else 500
+            # Atualiza largura da barra
+            parent_width = 0
+            if self.progressBar.Parent:
+                parent_width = self.progressBar.Parent.ActualWidth
+            if parent_width < 50:
+                parent_width = 500  # fallback se o tab ainda nao renderizou
             self.progressBar.Width = (percent / 100.0) * parent_width
             
             WinFormsApp.DoEvents()
         except:
             pass
     
-    def update_counters(self, success, errors, elapsed_seconds):
-        """Atualiza contadores de sucesso/erro/tempo"""
+    def update_counters(self, success, errors, remaining_seconds=None):
+        """Atualiza contadores de sucesso/erro/tempo restante"""
         try:
             self.lbl_SuccessCount.Text = str(success)
             self.lbl_ErrorCount.Text = str(errors)
-            self.lbl_TimeElapsed.Text = self.format_time(elapsed_seconds)
+            if remaining_seconds is not None:
+                self.lbl_TimeElapsed.Text = "~" + self.format_time(remaining_seconds)
             WinFormsApp.DoEvents()
         except:
             pass
@@ -650,10 +656,13 @@ class LuisExporterWindow(forms.WPFWindow):
             border.Child = grid
             self.pnl_ExportItems.Children.Add(border)
             
-            # Scroll para o final
+            # Scroll para o final - percorrer arvore visual ate achar ScrollViewer
             parent = self.pnl_ExportItems.Parent
-            if hasattr(parent, 'ScrollToEnd'):
-                parent.ScrollToEnd()
+            while parent is not None:
+                if hasattr(parent, 'ScrollToEnd'):
+                    parent.ScrollToEnd()
+                    break
+                parent = getattr(parent, 'Parent', None)
             
             WinFormsApp.DoEvents()
         except Exception as ex:
@@ -885,14 +894,15 @@ class LuisExporterWindow(forms.WPFWindow):
             
             # Calculo de estimativa
             remaining_txt = ""
+            est_remaining = None
             if len(last_times) > 0:
                 avg_time = sum(last_times) / len(last_times)
                 remaining_items = total_items - idx
-                est_seconds = remaining_items * avg_time
-                remaining_txt = " | Restante: ~{}".format(self.format_time(est_seconds))
+                est_remaining = remaining_items * avg_time
+                remaining_txt = " | Restante: ~{}".format(self.format_time(est_remaining))
 
             self.update_progress(current_num, total_items, "Exportando: {} - {}{}".format(item.Number, item.Name, remaining_txt))
-            self.update_counters(success_count, error_count, time.time() - start_time)
+            self.update_counters(success_count, error_count, est_remaining)
             
             try:
                 self.log_message("PROCESSANDO: {} - {}".format(item.Number, item.Name))
@@ -919,10 +929,13 @@ class LuisExporterWindow(forms.WPFWindow):
                                 self.log_message("  > DWG Renomeado de _Sheet")
                         
                         self.add_export_item(item.Number, item.FileName, "success", "DWG")
+                        success_count += 1
+                        self.update_counters(success_count, error_count)
                     except Exception as e:
                         error_count += 1
                         self.add_export_item(item.Number, "Erro DWG", "error", "")
                         self.log_message("  > ERRO DWG: " + str(e))
+                        self.update_counters(success_count, error_count)
 
                 # --- PDF ---
                 if do_pdf:
@@ -988,19 +1001,25 @@ class LuisExporterWindow(forms.WPFWindow):
                             if final_path:
                                 self.log_message("  [PDF] OK: {}".format(item.PdfFileName))
                                 self.add_export_item(item.Number, item.FileName, "success", "PDF")
+                                success_count += 1
+                                self.update_counters(success_count, error_count)
                             else:
+                                error_count += 1
                                 self.log_message("  [PDF] ERRO: Nenhum arquivo novo detectado.")
                                 self.add_export_item(item.Number, "PDF?", "error", "PDF")
+                                self.update_counters(success_count, error_count)
 
                         except Exception as e:
                             error_count += 1
                             self.log_message("  > ERRO PDF: " + str(e))
                             self.add_export_item(item.Number, "Erro PDF", "error", "")
+                            self.update_counters(success_count, error_count)
             
             except Exception as ex:
                 error_count += 1
                 self.add_export_item(item.Number, "Erro: {}".format(str(ex)[:30]), "error", "")
                 self.log_message("  > ERRO GERAL LOOP: {}".format(str(ex)))
+                self.update_counters(success_count, error_count)
             
             # Registra tempo do loop
             loop_time = time.time() - loop_start
@@ -1040,7 +1059,9 @@ class LuisExporterWindow(forms.WPFWindow):
         total_time = time.time() - start_time
         self.btn_Start.IsEnabled = True
         self.btn_Cancel.Visibility = System.Windows.Visibility.Collapsed
-        self.update_counters(success_count, error_count, total_time)
+        self.lbl_TimeLabel.Text = "Tempo Total"
+        self.lbl_TimeElapsed.Text = self.format_time(total_time)
+        self.update_counters(success_count, error_count)
         
         self.config["open_folder_after"] = self.chk_OpenFolderAfter.IsChecked
         save_config(self.config)
