@@ -497,41 +497,77 @@ class FiltroAvancadoWindow(forms.WPFWindow):
             
             # ✨ NOVO: Detectar seleção ativa e habilitar radio / injetar categorias
             try:
-                selecao_ids = list(uidoc.Selection.GetElementIds())
-                self._selecao_inicial = selecao_ids
-                if selecao_ids:
-                    n = len(selecao_ids)
+                from Autodesk.Revit.DB import RevitLinkInstance, ElementId
+                
+                sel_refs = uidoc.Selection.GetReferences()
+                self._selecao_inicial = []
+                self._target_doc = doc
+                self._target_link_instance = None
+                
+                if sel_refs:
+                    n = len(sel_refs)
                     self.Radio_SelecaoAtual.Content = u"Seleção Atual ({} elemento{})".format(n, u"s" if n != 1 else u"")
                     self.Radio_SelecaoAtual.Visibility = System.Windows.Visibility.Visible
                     self.Radio_SelecaoAtual.IsChecked = True
                     
-                    # INJEÇÃO INTELIGENTE DE CATEGORIAS DA SELEÇÃO
                     used_categories = set()
-                    for eid in selecao_ids:
-                        el = doc.GetElement(eid)
-                        if el and el.Category:
-                            # Se a categoria já está mapeada nos botões/opções padrão, não injeta como "*"
+                    for ref in sel_refs:
+                        el = doc.GetElement(ref.ElementId)
+                        link_instance = None
+                        target_doc = doc
+                        
+                        if isinstance(el, RevitLinkInstance):
+                            link_instance = el
+                            target_doc = link_instance.GetLinkDocument()
+                            if not target_doc: continue
+                            
+                            linked_id = ref.LinkedElementId
+                            if linked_id and linked_id != ElementId.InvalidElementId:
+                                el = target_doc.GetElement(linked_id)
+                        else:
+                            try:
+                                val_linked = getattr(ref.LinkedElementId, "IntegerValue", -1)
+                                if val_linked > 0 or (hasattr(ref.LinkedElementId, "Value") and ref.LinkedElementId.Value > 0):
+                                    link_instance = doc.GetElement(ref.ElementId)
+                                    if isinstance(link_instance, RevitLinkInstance):
+                                        target_doc = link_instance.GetLinkDocument()
+                                        el = target_doc.GetElement(ref.LinkedElementId)
+                            except: pass
+                        
+                        if not el: continue
+                        
+                        self._selecao_inicial.append({
+                            'ref': ref,
+                            'element': el,
+                            'doc': target_doc,
+                            'link_instance': link_instance
+                        })
+                        
+                        # Set primary link target for project-wide queries
+                        if len(self._selecao_inicial) == 1 and link_instance:
+                            self._target_doc = target_doc
+                            self._target_link_instance = link_instance
+                            self.Radio_ProjetoInteiro.Content = "Vínculo Inteiro"
+                        
+                        if el.Category:
                             cat_id_val = getattr(el.Category.Id, "Value", None)
                             if cat_id_val is None:
                                 cat_id_val = el.Category.Id.IntegerValue
                             
-                            if int(cat_id_val) in self.ids_mapeados:
-                                continue
-
-                            c_name = el.Category.Name
-                            # Insere marcador visual
-                            used_categories.add(u"* [SELEÇÃO] " + c_name)
+                            if int(cat_id_val) not in self.ids_mapeados:
+                                c_name = el.Category.Name
+                                used_categories.add(u"* [SELEÇÃO] " + c_name)
                     
                     if used_categories:
-                        # Adiciona no topo das opções do ComboBox
                         for c_sel in sorted(used_categories):
                             self.ComboBox_Categoria.Items.Insert(0, c_sel)
                             
                 else:
-                    self._selecao_inicial = []
                     self.Radio_SelecaoAtual.Visibility = System.Windows.Visibility.Collapsed
             except:
                 self._selecao_inicial = []
+                self._target_doc = doc
+                self._target_link_instance = None
             
             self.atualizar_status("Selecione uma categoria para começar...")
             
@@ -752,9 +788,9 @@ class FiltroAvancadoWindow(forms.WPFWindow):
             
             # ✨ NOVO: Escopo de Seleção Ativa — amostrar dos elementos já selecionados
             if usar_selecao and self._selecao_inicial:
-                for eid in self._selecao_inicial[:max_elementos]:
+                for s_item in self._selecao_inicial[:max_elementos]:
                     try:
-                        el = doc.GetElement(eid)
+                        el = s_item['element']
                         if el:
                             elementos_amostra.append(el)
                     except:
@@ -766,9 +802,9 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                     clean_name = raw_cat.replace("* [SELEÇÃO] ", "")
                     # Pegar Ids da categoria na seleção ativa
                     if self._selecao_inicial:
-                        for eid in self._selecao_inicial:
+                        for s_item in self._selecao_inicial:
                             try:
-                                el = doc.GetElement(eid)
+                                el = s_item['element']
                                 if el and el.Category and el.Category.Name == clean_name:
                                     elementos_amostra.append(el)
                             except: pass
@@ -783,7 +819,12 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                         if elementos_coletados >= max_elementos:
                             break
                             
-                        col = FilteredElementCollector(doc, revit.active_view.Id) if usar_vista_atual else FilteredElementCollector(doc)
+                        t_doc = getattr(self, '_target_doc', doc)
+                        if usar_vista_atual and t_doc.Title == doc.Title and not t_doc.IsFamilyDocument:
+                            col = FilteredElementCollector(t_doc, revit.active_view.Id)
+                        else:
+                            col = FilteredElementCollector(t_doc)
+                            
                         col = col.OfCategory(cat).WhereElementIsNotElementType()
                         
                         iterator = col.GetElementIterator()
@@ -949,9 +990,9 @@ class FiltroAvancadoWindow(forms.WPFWindow):
             # ESCOPO 1: Selecao Ativa
             if usar_selecao and self._selecao_inicial:
                 pool = []
-                for eid in self._selecao_inicial:
+                for s_item in self._selecao_inicial:
                     try:
-                        el = doc.GetElement(eid)
+                        el = s_item['element']
                         if el:
                             pool.append(el)
                     except:
@@ -961,6 +1002,11 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                 for el in pool:
                     if avaliar(el):
                         ids_selecionados.append(el.Id)
+                        # Salvar match com seu próprio dict original
+                        # But wait, we need to create references for them.
+                        # Since it's from _selecao_inicial, we can just grab original refs, but what about expanded nested?
+                        # This works differently, we just put elements in pool. Let's just store the Elements for now in a unified list
+                        pass
             
             # ESCOPOS 2 e 3: Vista Atual / Projeto Inteiro
             else:
@@ -972,50 +1018,41 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                 requires_param = None
                 requires_param_absent = None
                 
-                # Se for Injetada "* [SELEÇÃO]"
                 if raw_cat.startswith("* [SELEÇÃO] "):
                     clean_name = raw_cat.replace("* [SELEÇÃO] ", "")
-                    # O Revit nao possui filtro limpo apenas por String para Collectors globais
-                    # Temos que varrer ou usar um filtro mais devagar mas vamos fazer Collector sem Classe
-                    # Mas como é Global, precisamos tentar achar o BuiltInCategory via BuiltInCategories
-                    # Ou varrer filtrando pela classe "clássica" global... Nao e ideal por string.
-                    # Mas como isso soh ocorre se a pessoa NAO clicou no Radio "Selecao Atual", vamos alertar ou pegar da vista
-                    
-                    # Hack super eficiente para achar todos da mesma categoria sem ter o BuiltInCategory enum
-                    # O pyRevit permite passar ids de categorias se acharmos um...
                     if self._selecao_inicial:
-                        for eid in self._selecao_inicial:
-                            el_dummy = doc.GetElement(eid)
+                        for s_item in self._selecao_inicial:
+                            el_dummy = s_item['element']
                             if el_dummy and el_dummy.Category and el_dummy.Category.Name == clean_name:
                                 todas_categorias_analisar.append(el_dummy.Category.Id)
                                 break
                     
                 else: 
-                    # Categorias hardcoded originais
                     todas_categorias_analisar = config["categorias"] if config else []
                     filtros_class = config["classes"] if config else []
                     requires_param = config.get("requires_param") if config else None
                     requires_param_absent = config.get("requires_param_absent") if config else None
                 
-                # Para cada id_cat descoberto hardcoded OU pela injeção da seleçao
+                t_doc = getattr(self, '_target_doc', doc)
                 for cat in todas_categorias_analisar:
-                    col = FilteredElementCollector(doc, revit.active_view.Id) if usar_vista_atual else FilteredElementCollector(doc)
+                    if usar_vista_atual and t_doc.Title == doc.Title and not t_doc.IsFamilyDocument:
+                        col = FilteredElementCollector(t_doc, revit.active_view.Id)
+                    else:
+                        col = FilteredElementCollector(t_doc)
                     
-                    if isinstance(cat, BuiltInCategory): # Categoria BuiltIn Hardcoded
+                    if isinstance(cat, BuiltInCategory):
                         col = col.OfCategory(cat).WhereElementIsNotElementType()
-                    else: # ElementId Category vindo do Injetor do Selecionado!
-                        # Garante que é ElementId (pode vir como BuiltInCategory se o config for gerado dinamicamente)
+                    else:
                         if isinstance(cat, int):
                             cat = ElementId(cat)
                         col = col.OfCategoryId(cat).WhereElementIsNotElementType()
                     
-                    pool_cat = []
+                    pool = []
                     for el in col:
                         try:
-                            if usar_vista_atual and el.IsHidden(view_atual):
+                            if usar_vista_atual and t_doc.Title == doc.Title and el.IsHidden(view_atual):
                                 continue
                                 
-                            # Se não possui config, é uma categoria injetada (custom) e não tem exclusão fina
                             if config:
                                 if filtros_class and el.GetType().Name not in filtros_class:
                                     if requires_param == "RN_optional" and not el.LookupParameter("RN"):
@@ -1029,20 +1066,39 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                                     if el.LookupParameter(requires_param_absent):
                                         continue
                                         
-                            pool_cat.append(el)
+                            pool.append(el)
                         except:
                             continue
                     
                     if incluir_aninhadas:
-                        pool_cat = self.expand_nested_families(pool_cat)
+                        pool = self.expand_nested_families(pool)
                     
-                    for el in pool_cat:
+                    for el in pool:
                         if avaliar(el):
                             ids_selecionados.append(el.Id)
             
+            # --- SELEÇÃO FINAL ---
+            # pool elements are collected as ElementId in ids_selecionados.
+            # But if _target_link_instance is present, we must convert to References.
+            target_link_instance = getattr(self, '_target_link_instance', None)
+            target_doc = getattr(self, '_target_doc', doc)
+            
             if ids_selecionados:
-                sel_ids_list = List[ElementId](ids_selecionados)
-                uidoc.Selection.SetElementIds(sel_ids_list)
+                if target_link_instance:
+                    from Autodesk.Revit.DB import Reference
+                    refs = List[Reference]()
+                    for eid in ids_selecionados:
+                        try:
+                            el = target_doc.GetElement(eid)
+                            r = Reference(el).CreateLinkReference(target_link_instance)
+                            refs.Add(r)
+                        except: pass
+                    
+                    if refs.Count > 0:
+                        uidoc.Selection.SetReferences(refs)
+                else:
+                    sel_ids_list = List[ElementId](ids_selecionados)
+                    uidoc.Selection.SetElementIds(sel_ids_list)
                 
                 # ADICIONAR AO HISTÓRICO
                 cat_name_history = to_unicode(categoria_nome) if categoria_nome else to_unicode(self.ComboBox_Categoria.Text)
@@ -1056,10 +1112,11 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                 state = {
                     'p1': p1_name_history, 'c1': to_unicode(c1), 'v1': to_unicode(v1),
                     'usar_f2': usar_f2, 'p2': p2_name_history, 'c2': to_unicode(c2) if c2 else "", 'v2': to_unicode(v2),
-                    'op_e': operador_e
+                    'op_e': operador_e,
+                    'target_link_id': target_link_instance.Id.IntegerValue if target_link_instance else None
                 }
                 
-                self.selection_history.add(sel_ids_list, cat_name_history, desc, len(ids_selecionados), state)
+                self.selection_history.add(ids_selecionados, cat_name_history, desc, len(ids_selecionados), state)
                 
                 self.atualizar_status(u"OK {} elementos selecionados!".format(len(ids_selecionados)))
                 forms.alert(u"OK {} elementos selecionados com sucesso!".format(len(ids_selecionados)))
@@ -1250,12 +1307,33 @@ class FiltroAvancadoWindow(forms.WPFWindow):
     def capturar_selecao_click(self, sender, args):
         """✨ NOVO: Preenche a Categoria automaticamente com base no elemento selecionado no Revit"""
         try:
-            selection = uidoc.Selection.GetElementIds()
-            if not selection:
+            from Autodesk.Revit.UI.Selection import ObjectType
+            from Autodesk.Revit.DB import RevitLinkInstance, ElementId
+            
+            sel_refs = uidoc.Selection.GetReferences()
+            
+            if not sel_refs:
                 forms.alert(u"Selecione um elemento no Revit primeiro para capturar sua categoria.")
                 return
                 
-            el = doc.GetElement(selection[0])
+            ref = sel_refs[0]
+            el = doc.GetElement(ref.ElementId)
+            
+            if isinstance(el, RevitLinkInstance):
+                target_doc = el.GetLinkDocument()
+                if not target_doc: return
+                linked_id = ref.LinkedElementId
+                if linked_id and linked_id != ElementId.InvalidElementId:
+                    el = target_doc.GetElement(linked_id)
+            else:
+                try:
+                    val_linked = getattr(ref.LinkedElementId, "IntegerValue", -1)
+                    if val_linked > 0 or (hasattr(ref.LinkedElementId, "Value") and ref.LinkedElementId.Value > 0):
+                        link_instance = doc.GetElement(ref.ElementId)
+                        if isinstance(link_instance, RevitLinkInstance):
+                            el = link_instance.GetLinkDocument().GetElement(ref.LinkedElementId)
+                except: pass
+                
             cat = el.Category
             if not cat: return
             
@@ -1324,13 +1402,35 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                 h_entry = history[idx]
                 
                 # 1. restaurar IDs no Revit
-                eids = [ElementId(int(eid)) for eid in h_entry['element_ids']]
-                valid_ids = [eid for eid in eids if doc.GetElement(eid)]
-                if valid_ids:
-                    uidoc.Selection.SetElementIds(List[ElementId](valid_ids))
+                state = h_entry.get('state')
+                link_id_val = state.get('target_link_id') if state else None
+                
+                from Autodesk.Revit.DB import ElementId, Reference
+                from System.Collections.Generic import List
+                
+                if link_id_val:
+                    link_instance = doc.GetElement(ElementId(link_id_val))
+                    if link_instance:
+                        t_doc = link_instance.GetLinkDocument()
+                        if t_doc:
+                            refs = List[Reference]()
+                            for eid_val in h_entry['element_ids']:
+                                try:
+                                    el = t_doc.GetElement(ElementId(int(eid_val)))
+                                    if el:
+                                        r = Reference(el).CreateLinkReference(link_instance)
+                                        refs.Add(r)
+                                except: pass
+                            if refs.Count > 0:
+                                uidoc.Selection.SetReferences(refs)
+                                
+                else:
+                    eids = [ElementId(int(eid)) for eid in h_entry['element_ids']]
+                    valid_ids = [eid for eid in eids if doc.GetElement(eid)]
+                    if valid_ids:
+                        uidoc.Selection.SetElementIds(List[ElementId](valid_ids))
                 
                 # 2. Restaurar UI
-                state = h_entry.get('state')
                 if state:
                     self.atualizar_status("Restaurando configuração...")
                     
