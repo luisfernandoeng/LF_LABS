@@ -1,0 +1,376 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Copiar Crop Region - Smart Crop"
+        Height="720" 
+        Width="580"
+        Background="#FF1E1E1E"
+        Foreground="#FFF1F1F1"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display">
+
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+
+        <!-- Paleta de Cores -->
+        <SolidColorBrush x:Key="PanelColor" Color="#FF252526"/>
+        <SolidColorBrush x:Key="BorderColor" Color="#FF3F3F46"/>
+        <SolidColorBrush x:Key="InputColor" Color="#FF333337"/>
+        <SolidColorBrush x:Key="AccentBlue" Color="#FF569CD6"/>
+        <SolidColorBrush x:Key="AccentTeal" Color="#FF4EC9B0"/>
+        <SolidColorBrush x:Key="AccentGreen" Color="#FF4EC99B"/>
+        <SolidColorBrush x:Key="TextPrimary" Color="#FFF1F1F1"/>
+        <SolidColorBrush x:Key="TextSecondary" Color="#FFCCCCCC"/>
+
+        <!-- Estilos Base -->
+        <Style TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="Segoe UI"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+        </Style>
+
+        <Style x:Key="SectionHeader" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="{StaticResource AccentBlue}"/>
+            <Setter Property="Margin" Value="0,0,0,10"/>
+        </Style>
+
+        <Style x:Key="InfoLabel" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+        </Style>
+
+        <Style x:Key="InfoValue" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Foreground" Value="{StaticResource AccentTeal}"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+
+        <!-- CheckBox Moderno -->
+        <Style x:Key="ModernCheckBox" TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <Grid Background="Transparent">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            
+                            <Border x:Name="CheckBorder" 
+                                    Width="16" Height="16" 
+                                    BorderThickness="2" 
+                                    BorderBrush="{StaticResource BorderColor}"
+                                    CornerRadius="3"
+                                    Margin="0,0,8,0"
+                                    VerticalAlignment="Center">
+                                <Path x:Name="CheckMark"
+                                      Width="10" Height="10"
+                                      Stretch="Uniform"
+                                      Fill="White"
+                                      Data="M 0,4 L 3,7 L 8,0"
+                                      StrokeThickness="2"
+                                      Stroke="White"
+                                      Visibility="Collapsed"/>
+                            </Border>
+                            
+                            <ContentPresenter Grid.Column="1" 
+                                            VerticalAlignment="Center"
+                                            Content="{TemplateBinding Content}"/>
+                        </Grid>
+                        
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="CheckMark" Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="CheckBorder" Property="BorderBrush" Value="{StaticResource AccentTeal}"/>
+                                <Setter TargetName="CheckBorder" Property="Background" Value="{StaticResource AccentTeal}"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="CheckBorder" Property="BorderBrush" Value="{StaticResource AccentTeal}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Botões -->
+        <Style x:Key="FilterButton" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource InputColor}"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border"
+                                Background="{TemplateBinding Background}" 
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center" 
+                                            VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#33FFFFFF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="PrimaryActionButton" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource AccentTeal}"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Height" Value="42"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border" 
+                                Background="{TemplateBinding Background}" 
+                                CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center" 
+                                            VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Opacity" Value="0.9"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SecondaryActionButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Height" Value="38"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border"
+                                Background="{TemplateBinding Background}" 
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center" 
+                                            VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#33FFFFFF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>  <!-- Header -->
+            <RowDefinition Height="*"/>     <!-- Content -->
+            <RowDefinition Height="Auto"/>  <!-- Footer -->
+        </Grid.RowDefinitions>
+
+        <!-- HEADER -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,20">
+            <TextBlock Text="📐 COPIAR CROP REGION" 
+                      FontSize="20" 
+                      FontWeight="Light" 
+                      Foreground="{StaticResource AccentTeal}"/>
+            <TextBlock Text="Aplicar o recorte da vista atual a outras vistas" 
+                      FontSize="11" 
+                      Foreground="{StaticResource TextSecondary}"
+                      Margin="0,3,0,0"/>
+        </StackPanel>
+
+        <!-- CONTENT -->
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <!-- Vista Atual Info -->
+                <Border Background="{StaticResource PanelColor}" 
+                        CornerRadius="4" 
+                        Padding="18"
+                        Margin="0,0,0,12">
+                    <StackPanel>
+                        <TextBlock Text="Vista Atual" Style="{StaticResource SectionHeader}"/>
+                        
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Nome: " Style="{StaticResource InfoLabel}" Margin="0,0,5,5"/>
+                            <TextBlock Grid.Row="0" Grid.Column="1" x:Name="TextBlock_CurrentViewName" Text="..." Style="{StaticResource InfoValue}" Margin="0,0,0,5"/>
+                            
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Crop Box: " Style="{StaticResource InfoLabel}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="1" x:Name="TextBlock_CropBoxInfo" Text="..." Style="{StaticResource InfoValue}"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- Filtros Rápidos -->
+                <Border Background="{StaticResource PanelColor}" 
+                        CornerRadius="4" 
+                        Padding="18"
+                        Margin="0,0,0,12">
+                    <StackPanel>
+                        <TextBlock Text="Filtros Rápidos" Style="{StaticResource SectionHeader}"/>
+                        
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="8"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="8"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            
+                            <Button Grid.Column="0" x:Name="Button_FilterSameLevel" 
+                                    Content="Mesmo Nível" 
+                                    Style="{StaticResource FilterButton}"/>
+                            
+                            <Button Grid.Column="2" x:Name="Button_FilterSameDiscipline" 
+                                    Content="Mesma Disciplina" 
+                                    Style="{StaticResource FilterButton}"/>
+                            
+                            <Button Grid.Column="4" x:Name="Button_FilterAll" 
+                                    Content="Todas" 
+                                    Style="{StaticResource FilterButton}"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- Lista de Vistas -->
+                <Border Background="{StaticResource PanelColor}" 
+                        CornerRadius="4" 
+                        Padding="18"
+                        Margin="0,0,0,12">
+                    <StackPanel>
+                        <TextBlock Text="Selecione as Vistas" Style="{StaticResource SectionHeader}"/>
+                        
+                        <Border Background="{StaticResource InputColor}"
+                                BorderBrush="{StaticResource BorderColor}"
+                                BorderThickness="1"
+                                CornerRadius="3"
+                                Height="280">
+                            <ListBox x:Name="ListBox_Views"
+                                    Background="Transparent"
+                                    BorderThickness="0"
+                                    ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                    ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem">
+                                        <Setter Property="Background" Value="Transparent"/>
+                                        <Setter Property="Padding" Value="8,4"/>
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="ListBoxItem">
+                                                    <Border Background="{TemplateBinding Background}" 
+                                                            Padding="{TemplateBinding Padding}">
+                                                        <ContentPresenter/>
+                                                    </Border>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                        <Style.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter Property="Background" Value="#22569CD6"/>
+                                            </Trigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ListBox.ItemContainerStyle>
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <CheckBox Content="{Binding Name}" 
+                                                 IsChecked="{Binding IsSelected}"
+                                                 Style="{StaticResource ModernCheckBox}"/>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Border>
+                    </StackPanel>
+                </Border>
+
+                <!-- Opções -->
+                <Border Background="{StaticResource PanelColor}" 
+                        CornerRadius="4" 
+                        Padding="18"
+                        Margin="0,0,0,12">
+                    <StackPanel>
+                        <TextBlock Text="Opções" Style="{StaticResource SectionHeader}"/>
+                        
+                        <CheckBox x:Name="CheckBox_EnableCrop" 
+                                 Content="Ativar Crop se estiver desativado" 
+                                 Style="{StaticResource ModernCheckBox}"
+                                 IsChecked="True"
+                                 Margin="0,0,0,8"/>
+                        
+                        <CheckBox x:Name="CheckBox_ShowCropBox" 
+                                 Content="Mostrar Caixa de Corte (Crop Box)" 
+                                 Style="{StaticResource ModernCheckBox}"
+                                 IsChecked="False"
+                                 Margin="0,0,0,8"/>
+                        
+                        <CheckBox x:Name="CheckBox_CopyAnnotationCrop" 
+                                 Content="Copiar também Annotation Crop" 
+                                 Style="{StaticResource ModernCheckBox}"
+                                 Margin="0,0,0,8"/>
+                        
+                        <CheckBox x:Name="CheckBox_ShowAnnotationCrop" 
+                                 Content="Mostrar Recorte de Anotação" 
+                                 Style="{StaticResource ModernCheckBox}"
+                                 IsChecked="False"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- FOOTER -->
+        <Grid Grid.Row="2" Margin="0,15,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            
+            <!-- Botões -->
+            <StackPanel Grid.Column="1" 
+                       Orientation="Horizontal">
+                <Button x:Name="Button_Cancel" 
+                       Content="Cancelar" 
+                       Style="{StaticResource SecondaryActionButton}" 
+                       Width="90" 
+                       Margin="0,0,8,0"/>
+                
+                <Button x:Name="Button_Apply" 
+                       Content="✓ APLICAR A 0 VISTAS" 
+                       Style="{StaticResource PrimaryActionButton}" 
+                       Width="200"/>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

@@ -1,0 +1,41 @@
+<Window x:Name="ToastWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="320" Height="90"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize">
+    
+    <Border Background="#F82d2d2d" 
+            CornerRadius="6" 
+            BorderBrush="#4fc3f7" 
+            BorderThickness="2"
+            Padding="15">
+        <StackPanel Orientation="Horizontal">
+            <!-- Ícone animado/texto -->
+            <TextBlock x:Name="ToastIcon" 
+                       Text="💾" 
+                       FontSize="28" 
+                       VerticalAlignment="Center"
+                       Margin="0,0,15,0"/>
+            
+            <!-- Conteúdo -->
+            <StackPanel VerticalAlignment="Center">
+                <TextBlock x:Name="ToastTitle" 
+                          Text="Salvando projeto..." 
+                          FontWeight="Bold" 
+                          FontSize="15"
+                          Foreground="White"/>
+                <TextBlock x:Name="ToastMessage" 
+                          Text="Aguarde..." 
+                          FontWeight="SemiBold"
+                          FontSize="13" 
+                          Foreground="#E0E0E0"
+                          Margin="0,3,0,0"/>
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</Window>
