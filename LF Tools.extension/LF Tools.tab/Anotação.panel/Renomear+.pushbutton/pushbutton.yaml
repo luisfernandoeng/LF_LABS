@@ -1,0 +1,8 @@
+# Configuração do botão no ribbon do pyRevit
+tooltip: Renumerar elementos MEP com prefixo
+icon: icon.png
+script: script.py
+long_description: >
+    Plugin para renumerar elementos MEP (como luminárias, caixas ou conduítes) na ordem de seleção.
+    Permite definir um prefixo (ex.: EL-, CAB-) e escolher um parâmetro de texto para aplicar a numeração sequencial.
+    Ideal para organização de projetos elétricos e aumento de produtividade.

@@ -1,0 +1,5 @@
+title: Inspecionar Tipo
+tooltip: Gera um relatório com todos os parâmetros, tipo e família dos elementos selecionados no modelo.
+author: Luís Fernando + Revit Wizard
+script: script.py
+icon: icon.png
