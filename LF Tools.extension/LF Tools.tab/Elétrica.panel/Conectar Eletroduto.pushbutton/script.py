@@ -18,9 +18,11 @@ import clr
 clr.AddReference('RevitAPI')
 clr.AddReference('RevitAPIUI')
 from Autodesk.Revit.DB import *
+from Autodesk.Revit.DB.Electrical import *
+# Importação explícita para evitar problemas de escopo no IronPython
+from Autodesk.Revit.DB import BuiltInParameter, ElementId, StorageType
 from Autodesk.Revit.UI import *
 from Autodesk.Revit.UI.Selection import *
-from Autodesk.Revit.DB.Electrical import *
 from Autodesk.Revit.Exceptions import OperationCanceledException 
 import math
 import System
@@ -34,15 +36,21 @@ doc = uidoc.Document
 # =====================================================================
 #  FUNÇÕES AUXILIARES
 # =====================================================================
-def get_connectors(element):
-    """Retorna todos os conectores de um elemento MEP."""
+def get_connectors(element, include_connected=False):
+    """Retorna todos os conectores de um elemento MEP, filtrando os já conectados por padrão."""
     connectors = []
     try:
+        mgr = None
         if hasattr(element, "MEPModel") and element.MEPModel and element.MEPModel.ConnectorManager:
-            for c in element.MEPModel.ConnectorManager.Connectors:
-                connectors.append(c)
+            mgr = element.MEPModel.ConnectorManager
         elif hasattr(element, "ConnectorManager") and element.ConnectorManager:
-            for c in element.ConnectorManager.Connectors:
+            mgr = element.ConnectorManager
+            
+        if mgr:
+            for c in mgr.Connectors:
+                # Se include_connected for False, só pega os livres
+                if not include_connected and c.IsConnected:
+                    continue
                 connectors.append(c)
     except:
         pass
@@ -57,17 +65,23 @@ def get_connector_name_or_desc(connector):
         return ""
 
 
-def get_conduit_type(doc):
-    """Pega tipo do ÚLTIMO eletroduto criado no projeto (mais recente por Id)."""
+def get_last_conduit(doc):
+    """Pega o ÚLTIMO eletroduto criado no projeto (mais recente por Id)."""
     try:
-        all_conduits = FilteredElementCollector(doc).OfClass(Conduit).ToElements()
-        if all_conduits:
-            last = max(all_conduits, key=lambda c: c.Id.IntegerValue)
-            return last.GetTypeId()
+        # Pega IDs de todos os eletrodutos (muito mais rápido)
+        all_ids = FilteredElementCollector(doc).OfClass(Conduit).ToElementIds()
+        if all_ids:
+            # Encontra o maior ID inteiro
+            max_val = max(eid.IntegerValue for eid in all_ids)
+            # Cria o ElementId corretamente
+            return doc.GetElement(ElementId(System.Int64(max_val)))
     except:
         pass
-    
-    # Fallback: tipo padrão da UI do Revit
+    return None
+
+
+def get_default_conduit_type(doc):
+    """Fallback para pegar um tipo de eletroduto padrão."""
     try:
         default_id = doc.GetDefaultElementTypeId(ElementTypeGroup.ConduitType)
         if default_id != ElementId.InvalidElementId:
@@ -75,9 +89,69 @@ def get_conduit_type(doc):
     except:
         pass
     
-    # Fallback final
     collector = FilteredElementCollector(doc).OfClass(clr.GetClrType(ConduitType))
     return collector.FirstElementId()
+
+
+def copy_conduit_parameters(source, target):
+    """Copia parâmetros de instância (Comentários e Tipos) do source para o target."""
+    if not source or not target:
+        return
+    
+    def try_copy_p(src, tgt_el):
+        if not src or not src.HasValue: return
+        try:
+            # Tenta encontrar o parâmetro correspondente no target
+            dst = None
+            if src.IsShared:
+                dst = tgt_el.get_Parameter(src.GUID)
+            else:
+                dst = tgt_el.get_Parameter(src.Definition.BuiltInParameter) if hasattr(src.Definition, "BuiltInParameter") and src.Definition.BuiltInParameter != BuiltInParameter.INVALID else tgt_el.LookupParameter(src.Definition.Name)
+            
+            if not dst or dst.IsReadOnly: return
+            
+            st = src.StorageType
+            if st == StorageType.String: target.get_Parameter(dst.Definition).Set(src.AsString())
+            elif st == StorageType.Integer: target.get_Parameter(dst.Definition).Set(src.AsInteger())
+            elif st == StorageType.Double: target.get_Parameter(dst.Definition).Set(src.AsDouble())
+            elif st == StorageType.ElementId: target.get_Parameter(dst.Definition).Set(src.AsElementId())
+        except:
+            # Fallback simples caso a lógica de BIP/GUID falhe
+            try:
+                p_tgt = target.LookupParameter(src.Definition.Name)
+                if p_tgt and not p_tgt.IsReadOnly:
+                    if src.StorageType == StorageType.String: p_tgt.Set(src.AsString())
+                    else: p_tgt.Set(src.AsValueString())
+            except: pass
+
+    # 1. Copiar Comentários
+    try:
+        p_comments = source.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)
+        try_copy_p(p_comments, target)
+    except: pass
+
+    # 2. Copiar Tipo de Serviço / Sistema / Service Type
+    found_service = False
+    for bip_name in ["RBS_SERVICE_TYPE", "RBS_CONDUIT_SERVICE_TYPE"]:
+        try:
+            if hasattr(BuiltInParameter, bip_name):
+                bip = getattr(BuiltInParameter, bip_name)
+                p = source.get_Parameter(bip)
+                if p and p.HasValue:
+                    try_copy_p(p, target)
+                    found_service = True
+                    break
+        except: pass
+        
+    if not found_service:
+        # Busca por nomes comuns caso não seja BIP
+        for name in ["Tipo de Serviço", "Service Type", "Serviço", "Tipo de Sistema"]:
+            try:
+                p = source.LookupParameter(name)
+                if p and p.HasValue:
+                    try_copy_p(p, target)
+                    break
+            except: pass
 
 
 # =====================================================================
@@ -246,7 +320,7 @@ def create_90_degree_path(pt1, pt2, dir1, dir2):
 # =====================================================================
 #  CRIAÇÃO DE ELETRODUTOS
 # =====================================================================
-def draw_conduit_and_connect(doc, conduit_type_id, p_start, p_end, level_id, diameter, prev_cond=None):
+def draw_conduit_and_connect(doc, conduit_type_id, p_start, p_end, level_id, diameter, prev_cond=None, last_ref_conduit=None):
     """Cria trecho de eletroduto e tenta conectar ao anterior.
     Se o fitting não encaixar, deixa os tubos sem curva (o usuário ajusta manual)."""
     if p_start.DistanceTo(p_end) < 0.01:
@@ -254,6 +328,10 @@ def draw_conduit_and_connect(doc, conduit_type_id, p_start, p_end, level_id, dia
         
     c_new = Conduit.Create(doc, conduit_type_id, p_start, p_end, level_id)
     c_new.get_Parameter(BuiltInParameter.RBS_CONDUIT_DIAMETER_PARAM).Set(diameter)
+    
+    # Herança de parâmetros
+    if last_ref_conduit:
+        copy_conduit_parameters(last_ref_conduit, c_new)
     
     if prev_cond:
         try:
@@ -268,7 +346,9 @@ def draw_conduit_and_connect(doc, conduit_type_id, p_start, p_end, level_id, dia
             if c1 and c2:
                 try:
                     c1.ConnectTo(c2)
-                    doc.Create.NewElbowFitting(c1, c2)
+                    new_elbow = doc.Create.NewElbowFitting(c1, c2)
+                    if new_elbow and last_ref_conduit:
+                        copy_conduit_parameters(last_ref_conduit, new_elbow)
                 except:
                     # Fitting não coube → deixa sem curva, segue em frente
                     pass
@@ -338,10 +418,32 @@ def execute_connection():
     # Determinar propriedades
     level_id = el1.LevelId
     if str(level_id) == str(ElementId.InvalidElementId):
-        level_id = doc.ActiveView.GenLevel.Id if doc.ActiveView.GenLevel else FilteredElementCollector(doc).OfClass(Level).FirstElementId()
+        view = doc.ActiveView
+        level_id = view.GenLevel.Id if hasattr(view, "GenLevel") and view.GenLevel else FilteredElementCollector(doc).OfClass(Level).FirstElementId()
     
-    conduit_type_id = get_conduit_type(doc)
-    diameter = conn1.Radius * 2 if conn1.Shape == ConnectorProfileType.Round else 0.082021
+    last_ref_conduit = get_last_conduit(doc)
+    if last_ref_conduit:
+        conduit_type_id = last_ref_conduit.GetTypeId()
+    else:
+        conduit_type_id = get_default_conduit_type(doc)
+        
+    # Lógica de Diâmetro: Prioridade para o ÚLTIMO usado pelo usuário
+    diameter = 0.082021 # Padrão ~25mm
+    
+    # 1. Tentar pegar do último eletroduto (Memória)
+    found_memory_diam = False
+    if last_ref_conduit:
+        try:
+            p_diam = last_ref_conduit.get_Parameter(BuiltInParameter.RBS_CONDUIT_DIAMETER_PARAM)
+            if p_diam and p_diam.HasValue:
+                diameter = p_diam.AsDouble()
+                found_memory_diam = True
+        except:
+            pass
+            
+    # 2. Se não tem memória ou o conector for muito específico (Round), validar se mantém
+    if not found_memory_diam and conn1.Shape == ConnectorProfileType.Round:
+        diameter = conn1.Radius * 2
     
     t = Transaction(doc, "Conectar Eletrodutos Inteligente")
     t.Start()
@@ -371,15 +473,63 @@ def execute_connection():
         dy_stubs = abs(p_stub1.Y - p_stub2.Y)
         is_aligned = (dx_stubs < 0.05 or dy_stubs < 0.05)
         
+        is_piso = False
+        is_same_family = False
+        try:
+            fam1_name = el1.Symbol.FamilyName.lower() if hasattr(el1, "Symbol") and hasattr(el1.Symbol, "FamilyName") else ""
+            fam2_name = el2.Symbol.FamilyName.lower() if hasattr(el2, "Symbol") and hasattr(el2.Symbol, "FamilyName") else ""
+
+            if fam1_name and fam2_name and fam1_name == fam2_name:
+                is_same_family = True
+                
+            if "piso" in fam1_name or "piso" in fam2_name:
+                is_piso = True
+        except:
+            pass
+            
+        use_1_segment_no_stub = False
+        # Regra: Só faz 1 segmento sem stubs se forem famílias IGUAIS (mas não a mesma caixa real)
+        # e estiverem no mesmo nível e não for piso.
+        if not is_piso and is_flat and is_same_family and not same_box:
+            use_1_segment_no_stub = True
+
+        if use_1_segment_no_stub:
+            # Ligação direta com apens 1 segmento, sem stubs
+            cond = Conduit.Create(doc, conduit_type_id, pt1, pt2, level_id)
+            cond.get_Parameter(BuiltInParameter.RBS_CONDUIT_DIAMETER_PARAM).Set(diameter)
+            copy_conduit_parameters(last_ref_conduit, cond)
+            
+            for c in cond.ConnectorManager.Connectors:
+                if c.Origin.DistanceTo(pt1) < 0.05:
+                    try: c.ConnectTo(conn1)
+                    except: pass
+                elif c.Origin.DistanceTo(pt2) < 0.05:
+                    try: c.ConnectTo(conn2)
+                    except: pass
+                    
+            t.Commit()
+            return
+
         use_direct = False
-        if dist_direct < 0.66:  # < 0.2m → muito perto, direto
-            use_direct = True
-        elif dist_direct < 3.28 and is_flat and is_aligned:  # < 1m, plano, alinhado
-            use_direct = True
+        if not is_piso:
+            if dist_direct < 0.66:  # < 0.2m → muito perto, direto
+                use_direct = True
+            elif dist_direct < 3.28 and is_flat and is_aligned and not same_box:
+                use_direct = True
+                
+        use_3_segments = False
+        if is_piso:
+            use_3_segments = True
+        elif same_box:
+            # Mesma caixa SEMPRE usa 3 segmentos (45°) para garantir que a geometria não quebre
+            use_3_segments = True
         
         # 1. Criar Stub inicial e conectar na caixa 1
         cond1 = Conduit.Create(doc, conduit_type_id, pt1, p_stub1, level_id)
         cond1.get_Parameter(BuiltInParameter.RBS_CONDUIT_DIAMETER_PARAM).Set(diameter)
+        
+        # Herança de parâmetros
+        copy_conduit_parameters(last_ref_conduit, cond1)
         for c in cond1.ConnectorManager.Connectors:
             if c.Origin.DistanceTo(pt1) < 0.05:
                 c.ConnectTo(conn1); break
@@ -388,23 +538,26 @@ def execute_connection():
         
         if use_direct:
             # Conexão direta entre stubs
-            last_cond = draw_conduit_and_connect(doc, conduit_type_id, p_stub1, p_stub2, level_id, diameter, last_cond)
-        elif same_box:
-            # MESMA CAIXA → 45° (3 segmentos, mais suave para puxar fio)
+            last_cond = draw_conduit_and_connect(doc, conduit_type_id, p_stub1, p_stub2, level_id, diameter, last_cond, last_ref_conduit)
+        elif use_3_segments:
+            # MESMA CAIXA OU PISO → 45° (3 segmentos, mais suave para puxar fio)
             segments = create_45_degree_path(p_stub1, p_stub2, dir1, dir2)
             for (p_start, p_end) in segments:
                 if p_start.DistanceTo(p_end) > 0.05:
-                    last_cond = draw_conduit_and_connect(doc, conduit_type_id, p_start, p_end, level_id, diameter, last_cond)
+                    last_cond = draw_conduit_and_connect(doc, conduit_type_id, p_start, p_end, level_id, diameter, last_cond, last_ref_conduit)
         else:
             # CAIXAS DIFERENTES → 90° ortogonal (instalação embutida)
             segments = create_90_degree_path(p_stub1, p_stub2, dir1, dir2)
             for (p_start, p_end) in segments:
                 if p_start.DistanceTo(p_end) > 0.05:
-                    last_cond = draw_conduit_and_connect(doc, conduit_type_id, p_start, p_end, level_id, diameter, last_cond)
+                    last_cond = draw_conduit_and_connect(doc, conduit_type_id, p_start, p_end, level_id, diameter, last_cond, last_ref_conduit)
         
         # 3. Stub final e conectar na caixa 2
         cond2 = Conduit.Create(doc, conduit_type_id, pt2, p_stub2, level_id)
         cond2.get_Parameter(BuiltInParameter.RBS_CONDUIT_DIAMETER_PARAM).Set(diameter)
+        
+        # Herança de parâmetros
+        copy_conduit_parameters(last_ref_conduit, cond2)
         for c in cond2.ConnectorManager.Connectors:
             if c.Origin.DistanceTo(pt2) < 0.05:
                 c.ConnectTo(conn2); break
@@ -416,7 +569,9 @@ def execute_connection():
                 c_last = next(c for c in cond2.ConnectorManager.Connectors if c.Origin.DistanceTo(p_stub2) < 0.05)
                 if c_mid and c_last:
                     c_mid.ConnectTo(c_last)
-                    doc.Create.NewElbowFitting(c_mid, c_last)
+                    final_elbow = doc.Create.NewElbowFitting(c_mid, c_last)
+                    if final_elbow and last_ref_conduit:
+                        copy_conduit_parameters(last_ref_conduit, final_elbow)
             except:
                 pass
                 
