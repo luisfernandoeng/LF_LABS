@@ -1,34 +1,175 @@
+#! python3
 # coding: utf-8
 """
-EXPORTADOR PRO | LUIS FERNANDO
-Versao Final: Selecionar Tudo + Interface Corrigida
+GERAR FOLHAS | LUIS FERNANDO
 """
 import clr
 import System
-from pyrevit import revit, forms, script
+import clr as _clr2
+_clr2.AddReference('RevitAPI')
+from Autodesk.Revit import DB
 
-# --- CARREGAMENTO DE DLLs ---
-clr.AddReference('RevitAPI')
-clr.AddReference('RevitAPIUI')
-clr.AddReference('System.Windows.Forms') 
+# Stubs para forms/script — substituem pyrevit sem disparar events.py
+class _FormsStub: pass
+forms = _FormsStub()
 
-import Autodesk.Revit.DB as DB
+class _ScriptStub:
+    @staticmethod
+    def get_bundle_file(name):
+        import os as _os
+        try:
+            return _os.path.join(__commandpath__, name)
+        except NameError:
+            return _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), name)
+script = _ScriptStub()
+
+# RevitAPI/RevitAPIUI are already loaded by pyRevit — no AddReference needed.
+clr.AddReference('System.Windows.Forms')
 from System.Collections.ObjectModel import ObservableCollection
 from System.Collections.Generic import List
 from System.Windows.Forms import Application as WinFormsApp
-from System.Windows import Input
+from System.Windows import Input, Window as _Window
 from System.Windows.Data import CollectionViewSource
+from System.Windows.Media import BrushConverter
+import System.Windows.Controls as Controls
+import System.Windows.Media as Media
 import os
 import re
 import time
-import io
 import json
 
-doc = revit.doc
-uidoc = revit.uidoc
+# As variáveis 'doc' e 'uidoc' serão inicializadas logo abaixo, antes do uso.
+
+# ==================== CPYTHON COMPAT ====================
+try:
+    clr.AddReference('PresentationFramework')
+except Exception:
+    pass
+import System.Windows.Forms as _WF
+from System.Windows import MessageBox as _MB_WPF # Apenas como fallback
+
+def _alert(msg, title="LF Tools", yes=False, no=False, exitscript=False, **kw):
+    try:
+        if yes and no:
+            # Usando WinForms por ser mais estável no CPython/Revit
+            r = _WF.MessageBox.Show(str(msg), str(title), _WF.MessageBoxButtons.YesNo)
+            ans = (r == _WF.DialogResult.Yes)
+            if exitscript and not ans:
+                import sys
+                sys.exit(0)
+            return ans
+        _WF.MessageBox.Show(str(msg), str(title))
+    except Exception as e:
+        try:
+            print("{}: {}".format(title, msg))
+        except:
+            pass # Ignora se o output console estiver corrompido
+    
+    if exitscript:
+        import sys
+        sys.exit(0)
+
+def _ask_for_string(prompt="", title="Input", **kw):
+    form = _WF.Form()
+    form.Text = str(title)
+    form.Width = 420
+    form.Height = 165
+    form.FormBorderStyle = _WF.FormBorderStyle.FixedDialog
+    form.StartPosition = _WF.FormStartPosition.CenterScreen
+    lbl = _WF.Label(); lbl.Text = str(prompt); lbl.SetBounds(12, 10, 380, 25)
+    txt = _WF.TextBox(); txt.SetBounds(12, 40, 380, 25)
+    btn_ok = _WF.Button(); btn_ok.Text = "OK"; btn_ok.SetBounds(230, 80, 80, 28)
+    btn_ok.DialogResult = _WF.DialogResult.OK
+    btn_cancel = _WF.Button(); btn_cancel.Text = "Cancelar"; btn_cancel.SetBounds(320, 80, 80, 28)
+    btn_cancel.DialogResult = _WF.DialogResult.Cancel
+    form.Controls.AddRange([lbl, txt, btn_ok, btn_cancel])
+    form.AcceptButton = btn_ok
+    form.CancelButton = btn_cancel
+    return txt.Text if form.ShowDialog() == _WF.DialogResult.OK else None
+
+def _pick_folder(**kw):
+    dlg = _WF.FolderBrowserDialog()
+    return dlg.SelectedPath if dlg.ShowDialog() == _WF.DialogResult.OK else None
+
+class _WPFWindowCPy:
+    """CPython drop-in for pyrevit.forms.WPFWindow."""
+    # WPF event attribute names that cannot be resolved against a Python
+    # wrapper class — stripped from XAML before loading so XamlReader
+    # doesn't try to bind them.  Events are connected via Python += instead.
+    _XAML_EVENTS = re.compile(
+        r'\s+(?:x:Class|'
+        r'Click|DoubleClick|'
+        r'Mouse(?:Down|Up|Move|Enter|Leave|Wheel)|'
+        r'Preview(?:Mouse(?:Down|Up|Move|LeftButtonDown|LeftButtonUp)|'
+        r'Key(?:Down|Up)|TextInput)|'
+        r'Key(?:Down|Up)|TextInput|TextChanged|SelectionChanged|'
+        r'SelectedItemChanged|ValueChanged|ScrollChanged|'
+        r'Got(?:Focus|KeyboardFocus)|Lost(?:Focus|KeyboardFocus)|'
+        r'Checked|Unchecked|Indeterminate|'
+        r'Loaded|Unloaded|Initialized|'
+        r'Clos(?:ing|ed)|Activated|Deactivated|'
+        r'SizeChanged|LayoutUpdated|ContentRendered|'
+        r'Drag(?:Enter|Leave|Over)|Drop|'
+        r'ContextMenu(?:Opening|Closing)|'
+        r'ToolTip(?:Opening|Closing)|'
+        r'DataContextChanged|IsVisibleChanged|IsEnabledChanged|'
+        r'RequestBringIntoView|SourceUpdated|TargetUpdated)'
+        r'\s*=\s*(?:"[^"]*"|\'[^\']*\')'
+    )
+
+    def __init__(self, xaml_source, literal_string=None):
+        from System.IO import StringReader
+        from System.Windows.Markup import XamlReader
+        import System.Xml
+        stripped = str(xaml_source).strip()
+        is_inline = (literal_string is True or
+                     (literal_string is None and stripped.startswith('<')))
+        if not is_inline:
+            with open(str(xaml_source), 'r', encoding='utf-8') as _f:
+                stripped = _f.read().strip()
+        xaml_clean = self._XAML_EVENTS.sub('', stripped)
+        rdr = System.Xml.XmlReader.Create(StringReader(xaml_clean))
+        self._window = XamlReader.Load(rdr)
+        
+        # Owner não pode ser definido via pyrevit no CPython — janela flutua normalmente
+
+    def __getattr__(self, name):
+        if name.startswith('_'):
+            raise AttributeError(name)
+        win = object.__getattribute__(self, '_window')
+        el = win.FindName(name)
+        if el is not None:
+            return el
+        return getattr(win, name)
+
+    def ShowDialog(self):
+        return self._window.ShowDialog()
+
+    def Show(self):
+        return self._window.Show()
+
+    def Close(self):
+        self._window.Close()
+
+forms.WPFWindow      = _WPFWindowCPy
+forms.alert          = _alert
+forms.ask_for_string = _ask_for_string
+forms.pick_folder    = _pick_folder
+# ==================== FIM CPYTHON COMPAT ====================
 
 # --- DETECAO DE VERSAO ---
-REVIT_YEAR = int(doc.Application.VersionNumber)
+try:
+    REVIT_YEAR = int(__revit__.Application.VersionNumber)
+except:
+    REVIT_YEAR = 2024
+
+# --- INICIALIZAÇÃO DO DOCUMENTO ---
+uidoc = __revit__.ActiveUIDocument
+doc = uidoc.Document if uidoc else None
+
+if not doc:
+    forms.alert("Erro Crítico de Inicialização:\nO CPython não conseguiu localizar nenhum projeto aberto no Revit.\n\nPor favor, feche e abra o Revit ou verifique se há um arquivo (.rvt) ativo.", exitscript=True)
+
 HAS_PDF_SUPPORT = REVIT_YEAR >= 2022
 
 # --- CAMINHO DE CONFIGURACAO ---
@@ -36,100 +177,120 @@ CONFIG_DIR = os.path.join(os.getenv('APPDATA'), 'LFTools')
 CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
 
 # --- CLASSE DE DADOS PARA FOLHAS ---
+import System.ComponentModel as ComponentModel
+
 class SheetItem(object):
     def __init__(self, sheet, name_pattern="{Nome da folha}"):
         self.Element = sheet
         self.Id = sheet.Id
         self.Number = sheet.SheetNumber
-        self.Name = sheet.Name if sheet.Name else "" 
-        self.IsSelected = False
+        self.Name = sheet.Name if sheet.Name else ""
+        self._is_selected = False
         self.name_pattern = name_pattern
-        self._file_name = "" 
+        self._file_name = ""
         self.PdfFileName = ""
-        
-        # Status Properties
-        self.StatusIcon = ""
-        self.StatusColor = "Transparent"
-        self.StatusToolTip = ""
-        self.HasViews = True # Padrao True, verificado dps
-        
-        # Inicializa via setter
-        self.FileName = self._generate_filename(sheet, name_pattern)
+
+        # Status
+        self._status_icon = ""
+        self._status_color = "Transparent"
+        self._status_tooltip = ""
+        self.HasViews = True
+
+        self._file_name = self._generate_filename(sheet, name_pattern)
+        self.PdfFileName = self._file_name
+
+    @property
+    def IsSelected(self):
+        return self._is_selected
+
+    @IsSelected.setter
+    def IsSelected(self, value):
+        self._is_selected = value
+
+    @property
+    def StatusIcon(self):
+        return self._status_icon
+
+    @StatusIcon.setter
+    def StatusIcon(self, value):
+        self._status_icon = value
+
+    @property
+    def StatusColor(self):
+        return self._status_color
+
+    @StatusColor.setter
+    def StatusColor(self, value):
+        self._status_color = value
+
+    @property
+    def StatusToolTip(self):
+        return self._status_tooltip
+
+    @StatusToolTip.setter
+    def StatusToolTip(self, value):
+        self._status_tooltip = value
 
     @property
     def FileName(self):
         return self._file_name
-    
+
     @FileName.setter
     def FileName(self, value):
         self._file_name = value
-        self.PdfFileName = value # Sincroniza PDF com o nome editado 
+        self.PdfFileName = value
 
     def _get_param_value(self, sheet, p_name):
-        val = ""
         if p_name == "Sheet Number": return sheet.SheetNumber
         if p_name == "Sheet Name": return sheet.Name
-        if p_name == "Current Revision": return sheet.GetCurrentRevision()
-            
+        if p_name == "Current Revision": return str(sheet.GetCurrentRevision())
         try:
             param = sheet.LookupParameter(p_name)
             if not param:
                 p_list = sheet.GetParameters(p_name)
                 if p_list: param = p_list[0]
-            
             if param:
                 if param.StorageType == DB.StorageType.String:
-                    val = param.AsString()
+                    return param.AsString() or ""
                 else:
-                    val = param.AsValueString()
+                    return param.AsValueString() or ""
         except:
-            val = ""
-        return val if val else ""
+            pass
+        return ""
 
     def _generate_filename(self, sheet, pattern):
         final_name = pattern
-        tags = re.findall(r'\{(.*?)\}', pattern)
-        for tag in tags:
+        for tag in re.findall(r'\{(.*?)\}', pattern):
             val = self._get_param_value(sheet, tag)
-            final_name = final_name.replace("{" + tag + "}", val)
-        clean_val = re.sub(r'[<>:"/\\|?*]', '', final_name)
-        return clean_val.strip()
-    
+            final_name = final_name.replace("{" + tag + "}", str(val))
+        return re.sub(r'[<>:"/\\|?*]', '', final_name).strip()
+
     def update_filename(self, new_pattern):
         self.name_pattern = new_pattern
         self.FileName = self._generate_filename(self.Element, new_pattern)
-        self.PdfFileName = self.FileName
 
     def update_status(self, folder_path):
-        """Atualiza icone e cor baseado na existencia do arquivo e conteudo"""
         self.StatusIcon = ""
         self.StatusColor = "Transparent"
         self.StatusToolTip = ""
 
-        # 1. Verifica se folha esta vazia (sem views)
         if not self.HasViews:
-            self.StatusIcon = "📄"
-            self.StatusColor = "#FF888888" # Cinza
+            self.StatusIcon = "\U0001f4c4"
+            self.StatusColor = "#FF888888"
             self.StatusToolTip = "Folha vazia (sem vistas)"
-        
-        # 2. Verifica se arquivo ja existe (sobrescreve o aviso de vazia se for o caso, ou soma?)
-        # Vamos dar prioridade ao aviso de sobrescrita pois eh destrutivo
+
         if folder_path and os.path.exists(folder_path):
-            # Verifica PDF
-            pdf_path = os.path.join(folder_path, "{}.pdf".format(self.PdfFileName))
-            # Verifica DWG
-            dwg_path = os.path.join(folder_path, "{}.dwg".format(self.FileName))
-            
-            exists_pdf = os.path.exists(pdf_path)
-            exists_dwg = os.path.exists(dwg_path)
-            
+            exists_pdf = os.path.exists(os.path.join(folder_path, "{}.pdf".format(self.PdfFileName)))
+            exists_dwg = os.path.exists(os.path.join(folder_path, "{}.dwg".format(self.FileName)))
             if exists_pdf or exists_dwg:
-                self.StatusIcon = "⚠️"
-                self.StatusColor = "#FFD7BA7D" # Amarelo Warning
+                # Usa sinal de warning padrao texto sem "Variacao Emoji" (\uFE0F) para permitir customizacao de cor 
+                self.StatusIcon = "\u26A0"
+                self.StatusColor = "#FFF7C453"
                 found = []
                 if exists_pdf: found.append("PDF")
                 if exists_dwg: found.append("DWG")
                 self.StatusToolTip = "Arquivo(s) existente(s): {}".format(", ".join(found))
+
 
 # --- FUNCAO AUXILIAR PARA DWG SETTINGS ---
 def create_default_dwg_settings():
@@ -175,7 +336,7 @@ def load_config():
     }
     try:
         if os.path.exists(CONFIG_FILE):
-            with io.open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 # Garante que as chaves de profiles existam caso o arquivo seja antigo
                 if "profiles" not in data:
@@ -190,7 +351,7 @@ def save_config(config):
     try:
         if not os.path.exists(CONFIG_DIR):
             os.makedirs(CONFIG_DIR)
-        with io.open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
     except Exception as ex:
         forms.alert("Erro ao salvar config: " + str(ex))
@@ -202,13 +363,17 @@ class LuisExporterWindow(forms.WPFWindow):
         xaml_file = script.get_bundle_file('folhas_window.xaml')
         forms.WPFWindow.__init__(self, xaml_file)
         
-        self.sheet_items = ObservableCollection[SheetItem]()
-        
+        # ObservableCollection[System.Object] é mais estável no CPython/pythonnet 3.
+        # Estamos usando System.Object em vez de object para evitar o erro 'types expected'.
+        self.sheet_items = ObservableCollection[System.Object]()
+
         # Configurar CollectionView para filtragem
         self.view_source = CollectionViewSource.GetDefaultView(self.sheet_items)
-        self.view_source.Filter = System.Predicate[object](self.filter_sheets)
+        # No CPython 3/PythonNet 3, às vezes é necessário definir o Predicate explicitamente
+        from System import Predicate
+        self.view_source.Filter = Predicate[System.Object](self.filter_sheets)
         
-        self.dg_Sheets.ItemsSource = self.view_source
+        self.lst_Sheets.ItemsSource = self.view_source
         
         # Eventos Principais
         self.btn_SelectFolder.Click += self.pick_folder
@@ -219,11 +384,10 @@ class LuisExporterWindow(forms.WPFWindow):
         
         # NOVO: Evento Selecionar Tudo
         self.chk_SelectAll.Click += self.toggle_all_sheets
-        self.btn_InvertSelection.Click += self.invert_selection
+        self.lst_Sheets.SelectionChanged += self.on_list_selection_changed
         
         # NOVO: Busca e Filtros
         self.txt_Search.TextChanged += self.on_search_text_changed
-        self.btn_SelectVisible.Click += self.select_visible
 
         # NOVO: Perfis de Exportação (Presets)
         if hasattr(self, 'cb_Profiles'):
@@ -236,10 +400,9 @@ class LuisExporterWindow(forms.WPFWindow):
         self.config = load_config()
         self.txt_OutputFolder.Text = self.config.get("last_folder", "")
         self.chk_OpenFolderAfter.IsChecked = self.config.get("open_folder_after", True)
-
-
-        # Evento de clique na linha (RESTAURADO)
-        self.dg_Sheets.SelectionChanged += self.on_row_clicked
+        
+        # Deixamos o controle de clique inteiramente para o WPF (CheckBox) 
+        # para evitar conflitos e travamentos de Refresh no CPython.
         self.is_handling_click = False 
         
 
@@ -267,6 +430,13 @@ class LuisExporterWindow(forms.WPFWindow):
             self.chk_ExportPDF.Content = "PDF Requer Revit 2022+"
             self.pnl_PDFSettings.IsEnabled = False
 
+    def force_refresh_sheets(self):
+        """Atualiza a lista de forma mais leve no CPython"""
+        try:
+            self.lst_Sheets.Items.Refresh()
+        except:
+            pass
+
     # --- LOGICA SELECIONAR TUDO ---
     def toggle_all_sheets(self, sender, args):
         """Marca ou desmarca todas as folhas VISIVEIS"""
@@ -275,36 +445,27 @@ class LuisExporterWindow(forms.WPFWindow):
             # Bugfix: Respeitar o filtro
             if self.filter_sheets(item):
                 item.IsSelected = is_checked
-        self.dg_Sheets.Items.Refresh()
+        self.force_refresh_sheets()
 
-    def invert_selection(self, sender, args):
-        """Inverte a seleção atual"""
-        for item in self.sheet_items:
-            item.IsSelected = not item.IsSelected
-        self.dg_Sheets.Items.Refresh()
 
     def Window_PreviewKeyDown(self, sender, args):
         """Atalhos de teclado: Ctrl+A (Tudo), Ctrl+Shift+A (Inverter)"""
         try:
             if args.Key == Input.Key.A and (Input.Keyboard.Modifiers & Input.ModifierKeys.Control) == Input.ModifierKeys.Control:
-                if (Input.Keyboard.Modifiers & Input.ModifierKeys.Shift) == Input.ModifierKeys.Shift:
-                    # Ctrl + Shift + A -> Inverter
-                    self.invert_selection(None, None)
-                else:
-                    # Ctrl + A -> Selecionar Tudo (respeitando filtro)
-                    visible_items = [i for i in self.sheet_items if self.filter_sheets(i)]
+                # Ctrl + A -> Selecionar Tudo (respeitando filtro)
+                visible_items = [i for i in self.sheet_items if self.filter_sheets(i)]
+                
+                if visible_items:
+                    # Se TODOS os visiveis estao selecionados -> Desseleciona eles
+                    # Senao -> Seleciona todos os visiveis
+                    all_visible_selected = all(i.IsSelected for i in visible_items)
+                    new_state = not all_visible_selected
                     
-                    if visible_items:
-                        # Se TODOS os visiveis estao selecionados -> Desseleciona eles
-                        # Senao -> Seleciona todos os visiveis
-                        all_visible_selected = all(i.IsSelected for i in visible_items)
-                        new_state = not all_visible_selected
-                        
-                        self.chk_SelectAll.IsChecked = new_state
-                        for item in visible_items:
-                            item.IsSelected = new_state
-                        
-                        self.dg_Sheets.Items.Refresh()
+                    self.chk_SelectAll.IsChecked = new_state
+                    for item in visible_items:
+                        item.IsSelected = new_state
+                    
+                    self.lst_Sheets.Items.Refresh()
                 args.Handled = True
         except Exception as ex:
             print("Erro KeyDown: " + str(ex))
@@ -321,17 +482,6 @@ class LuisExporterWindow(forms.WPFWindow):
     def on_search_text_changed(self, sender, args):
         self.view_source.Refresh()
 
-    def select_visible(self, sender, args):
-        """Seleciona apenas os itens visiveis no filtro atual"""
-        for item in self.sheet_items:
-            # Verifica se item passa no filtro
-            if self.filter_sheets(item):
-                item.IsSelected = True
-            else:
-                 # Opcional: Desselecionar os que nao estao visiveis?
-                 # Melhor nao mexer nos invisiveis para nao perder selecao anterior
-                 pass
-        self.dg_Sheets.Items.Refresh()
 
     # --- LOGICA DE VERIFICACAO DE ARQUIVOS ---
     def check_existing_files(self, folder=None):
@@ -346,7 +496,7 @@ class LuisExporterWindow(forms.WPFWindow):
             for item in self.sheet_items:
                 item.update_status(folder)
             
-            self.dg_Sheets.Items.Refresh()
+            self._hard_refresh()
         except:
             pass
 
@@ -393,7 +543,8 @@ class LuisExporterWindow(forms.WPFWindow):
             # DWG Setup
             if "dwg_setup" in data and hasattr(self, 'cb_DWGSetups'):
                 dwg_setup = data["dwg_setup"]
-                if dwg_setup in self.cb_DWGSetups.Items:
+                # No CPython 3, use .Contains() em vez de 'in' para Items
+                if self.cb_DWGSetups.Items.Contains(dwg_setup):
                     self.cb_DWGSetups.SelectedItem = dwg_setup
 
             # PDF
@@ -419,11 +570,15 @@ class LuisExporterWindow(forms.WPFWindow):
             # Folhas selecionadas
             selected_numbers = data.get("selected_sheets", None)
             if selected_numbers is not None:
-                # Se a lista existir, marca apenas as folhas que constam no perfil
+                self.lst_Sheets.UnselectAll()
                 sel_set = set(selected_numbers)
                 for item in self.sheet_items:
-                    item.IsSelected = (item.Number in sel_set)
-                self.dg_Sheets.Items.Refresh()
+                    if item.Number in sel_set:
+                        try:
+                            self.lst_Sheets.SelectedItems.Add(item)
+                        except:
+                            pass
+                self.force_refresh_sheets()
                 
         except Exception as ex:
             print("Erro ao aplicar perfil: " + str(ex))
@@ -499,18 +654,61 @@ class LuisExporterWindow(forms.WPFWindow):
             self.load_profiles()
             forms.alert("Perfil deletado.", title="Excluído")
 
-    # --- LOGICA DE CLIQUE NA LINHA (RESTAURADA) ---
-    def on_row_clicked(self, sender, args):
-        if self.is_handling_click: return
-        self.is_handling_click = True
+    # --- LOGICA DE SELECAO VISUAL ---
+    def _hard_refresh(self):
+        """Força a UI a descartar o cache redesenhando a DataGrid inteira via novo CollectionView."""
         try:
-            if args.AddedItems and args.AddedItems.Count > 0:
-                for item in args.AddedItems:
-                    item.IsSelected = not item.IsSelected
-                self.dg_Sheets.UnselectAll()
-                self.dg_Sheets.Items.Refresh()
-        except: pass
-        self.is_handling_click = False
+            from System import Predicate
+            
+            # Desacopla da interface completamente
+            self.lst_Sheets.ItemsSource = None
+            
+            # Recria o controlador de visualizacao
+            self.view_source = CollectionViewSource.GetDefaultView(self.sheet_items)
+            self.view_source.Filter = Predicate[System.Object](self.filter_sheets)
+            
+            # Devolve pra DataGrid e forca atualizacao visual na marra
+            self.lst_Sheets.ItemsSource = self.view_source
+            self.lst_Sheets.Items.Refresh()
+        except:
+            pass
+
+    def toggle_all_sheets(self, sender, args):
+        """Seleciona ou desseleciona todos os itens visiveis na tabela."""
+        try:
+            new_state = bool(self.chk_SelectAll.IsChecked)
+            
+            if new_state:
+                # Seleciona todos os itens que passam pelo filtro
+                for item in self.sheet_items:
+                    if self.filter_sheets(item):
+                        if not self.lst_Sheets.SelectedItems.Contains(item):
+                            self.lst_Sheets.SelectedItems.Add(item)
+            else:
+                # Limpa selecao (ou remove apenas os visiveis se preferir)
+                self.lst_Sheets.UnselectAll()
+                
+            self.force_refresh_sheets()
+        except Exception as ex:
+            print("Erro ao selecionar tudo: " + str(ex))
+
+
+    def on_list_selection_changed(self, sender, args):
+        """Sincroniza a selecao do ListBox com a propriedade IsSelected do objeto."""
+        try:
+            # Para cada item que foi SELECIONADO agora:
+            for item in args.AddedItems:
+                item.IsSelected = True
+            
+            # Para cada item que foi DESSELECIONADO agora:
+            for item in args.RemovedItems:
+                item.IsSelected = False
+        except:
+            pass
+
+    def on_row_clicked(self, sender, args):
+        """Mantido apenas para compatibilidade, o ListBox ja lida com a selecao."""
+        pass
 
     # --- FUNCOES DE UI E PROGRESSO ---
 
@@ -580,9 +778,6 @@ class LuisExporterWindow(forms.WPFWindow):
     def add_export_item(self, sheet_number, file_name, status, file_type=""):
         """Adiciona um item na lista de exportados com status visual"""
         try:
-            import System.Windows.Controls as Controls
-            import System.Windows.Media as Media
-            
             # Container do item
             border = Controls.Border()
             border.CornerRadius = System.Windows.CornerRadius(4)
@@ -697,9 +892,18 @@ class LuisExporterWindow(forms.WPFWindow):
         new_pattern = self.txt_NamePattern.Text
         if not new_pattern: return
         for item in self.sheet_items: item.update_filename(new_pattern)
-        # Re-checar existencia pois nomes mudaram
-        self.check_existing_files() 
-        self.dg_Sheets.Items.Refresh()
+        
+        # No CPython, usamos BeginInvoke para rodar o Refresh fora do evento de texto
+        # Isso evita o "Fatall Error" por reentrancia no Revit.
+        try:
+            from System.Windows.Threading import DispatcherPriority
+            import System
+            self.lst_Sheets.Dispatcher.BeginInvoke(
+                DispatcherPriority.Background,
+                System.Action(self.force_refresh_sheets)
+            )
+        except:
+            pass
 
     def load_sheets(self):
         try:
@@ -844,6 +1048,7 @@ class LuisExporterWindow(forms.WPFWindow):
                 return
         
         # UI Setup
+        self._window.IsEnabled = False # Desativa a janela toda p/ evitar cliques que derrubam o Revit
         self.btn_Start.IsEnabled = False
         self.btn_Cancel.Visibility = System.Windows.Visibility.Visible
         self.tab_Main.SelectedIndex = 1 
@@ -904,9 +1109,15 @@ class LuisExporterWindow(forms.WPFWindow):
             self.update_progress(current_num, total_items, "Exportando: {} - {}{}".format(item.Number, item.Name, remaining_txt))
             self.update_counters(success_count, error_count, est_remaining)
             
+            # Pequeno respiro para evitar que o Revit trave no CPython durante o loop
+            if (idx + 1) % 5 == 0:
+                WinFormsApp.DoEvents()
+                time.sleep(0.01)
+
             try:
                 self.log_message("PROCESSANDO: {} - {}".format(item.Number, item.Name))
-                view_ids = List[DB.ElementId]([item.Element.Id])
+                view_ids = List[DB.ElementId]()
+                view_ids.Add(item.Element.Id)
 
                 # --- DWG ---
                 if do_dwg:
@@ -949,55 +1160,29 @@ class LuisExporterWindow(forms.WPFWindow):
                             pdf_opts = self.create_pdf_options()
                             pdf_opts.FileName = item.PdfFileName
 
-                            # --- ESTRATEGIA UNIVERSAL SNAPSHOT ---
-                            # 1. Tenta limpar o arquivo esperado final (se existir)
                             expected_path = os.path.join(folder, "{}.pdf".format(item.PdfFileName))
                             try:
                                 if os.path.exists(expected_path): os.remove(expected_path)
                             except: pass
 
-                            # 2. Tira foto da pasta ANTES
+                            # Revit ignora pdf_opts.FileName e gera com nome próprio,
+                            # então detectamos o arquivo novo pela diferença de listagem.
                             before_files = set(f for f in os.listdir(folder) if f.lower().endswith(".pdf"))
-                            
-                            # 3. Exporta
                             doc.Export(folder, view_ids, pdf_opts)
-                            
-                            # 4. Procura QUALQUER arquivo novo
+
                             final_path = None
-                            found_new_file = None
-                            
-                            for _ in range(30): # 10s
+                            for _ in range(30):  # até 10s
                                 if self.is_cancelled: break
-                                
-                                try:
-                                    current_files = set(f for f in os.listdir(folder) if f.lower().endswith(".pdf"))
-                                    new_files = current_files - before_files
-                                    
-                                    if new_files:
-                                        # Achou arquivo(s) novo(s)!
-                                        found_new_file = list(new_files)[0] # Pega o primeiro
-                                        
-                                        # Log do que foi achado
-                                        self.log_message("  > Arquivo gerado: '{}'".format(found_new_file))
-                                        
-                                        generated_path = os.path.join(folder, found_new_file)
-                                        
-                                        # Renomeia para o esperado
-                                        if self.safe_rename_file(generated_path, expected_path):
-                                            final_path = expected_path
-                                            self.log_message("  > Renomeado com sucesso!")
-                                        else:
-                                            # Se falhar renomear (ex: mesmo nome), assume que eh ele
-                                            if found_new_file.lower() == "{}.pdf".format(item.PdfFileName).lower():
-                                                 final_path = generated_path
-                                            else:
-                                                 self.log_message("  > Falha ao renomear.")
-                                        break
-                                except: pass
-                                
+                                current_files = set(f for f in os.listdir(folder) if f.lower().endswith(".pdf"))
+                                new_files = current_files - before_files
+                                if new_files:
+                                    generated = os.path.join(folder, next(iter(new_files)))
+                                    if self.safe_rename_file(generated, expected_path):
+                                        final_path = expected_path
+                                    break
                                 time.sleep(0.33)
                                 WinFormsApp.DoEvents()
-                            
+
                             if final_path:
                                 self.log_message("  [PDF] OK: {}".format(item.PdfFileName))
                                 self.add_export_item(item.Number, item.FileName, "success", "PDF")
@@ -1057,6 +1242,7 @@ class LuisExporterWindow(forms.WPFWindow):
 
         # --- FINALIZACAO ---
         total_time = time.time() - start_time
+        self._window.IsEnabled = True # Reativa a janela
         self.btn_Start.IsEnabled = True
         self.btn_Cancel.Visibility = System.Windows.Visibility.Collapsed
         self.lbl_TimeLabel.Text = "Tempo Total"

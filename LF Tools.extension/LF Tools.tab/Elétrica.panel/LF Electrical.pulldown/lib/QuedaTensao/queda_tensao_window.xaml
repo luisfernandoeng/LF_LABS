@@ -1,0 +1,318 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="⚡ Queda de Tensão PRO (NBR 5410)" 
+        Height="780" Width="480"
+        WindowStartupLocation="CenterScreen"
+        Background="#FF111317" 
+        Foreground="#FFF2F4F8"
+        FontFamily="Segoe UI" 
+        ShowInTaskbar="False" 
+        ResizeMode="NoResize">
+    
+    <Window.Resources>
+        <SolidColorBrush x:Key="PanelColor" Color="#FF171A1F"/>
+        <SolidColorBrush x:Key="BorderColor" Color="#FF313844"/>
+        <SolidColorBrush x:Key="AccentColor" Color="#FFfac87a"/> <!-- Amarelo Elétrica -->
+        <SolidColorBrush x:Key="TextPrimary" Color="#FFF2F4F8"/>
+        <SolidColorBrush x:Key="TextSecondary" Color="#FFC4CAD4"/>
+        
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+        </Style>
+        
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#FF13161C"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}"/>
+            <Setter Property="Padding" Value="8,5"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" 
+                                BorderBrush="{TemplateBinding BorderBrush}" 
+                                BorderThickness="1" CornerRadius="12">
+                            <ScrollViewer x:Name="PART_ContentHost" Margin="4,0"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="border" Property="BorderBrush" Value="{StaticResource AccentColor}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="#FF13161C"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}"/>
+            <Setter Property="Padding" Value="5"/>
+            <Setter Property="Height" Value="38"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton Name="ToggleButton" 
+                                          Grid.Column="2" Focusable="false"
+                                          IsChecked="{Binding Path=IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                          ClickMode="Press">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border Background="{StaticResource PanelColor}" 
+                                                BorderBrush="{StaticResource BorderColor}" 
+                                                BorderThickness="1" CornerRadius="12">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="20"/>
+                                                </Grid.ColumnDefinitions>
+                                                <Path Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center" 
+                                                      Data="M 0 0 L 4 4 L 8 0 Z" Fill="{StaticResource TextSecondary}"/>
+                                            </Grid>
+                                        </Border>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <ContentPresenter Name="ContentSite" IsHitTestVisible="False" 
+                                              Content="{TemplateBinding SelectionBoxItem}"
+                                              Margin="8,0,25,0" VerticalAlignment="Center" HorizontalAlignment="Left"/>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        
+        <Style x:Key="PrimaryButton" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource AccentColor}"/>
+            <Setter Property="Foreground" Value="#10243f"/>
+            <Setter Property="Padding" Value="15,10"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
+            <Setter Property="RenderTransform">
+                <Setter.Value><ScaleTransform ScaleX="1" ScaleY="1"/></Setter.Value>
+            </Setter>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" CornerRadius="22">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Opacity" Value="0.9"/>
+                            </Trigger>
+                            <EventTrigger RoutedEvent="MouseEnter">
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleX" To="1.03" Duration="0:0:0.15"/>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleY" To="1.03" Duration="0:0:0.15"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                            <EventTrigger RoutedEvent="MouseLeave">
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleX" To="1" Duration="0:0:0.15"/>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleY" To="1" Duration="0:0:0.15"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                            <EventTrigger RoutedEvent="PreviewMouseDown">
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleX" To="0.95" Duration="0:0:0.05"/>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleY" To="0.95" Duration="0:0:0.05"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                            <EventTrigger RoutedEvent="PreviewMouseUp">
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleX" To="1" Duration="0:0:0.15"/>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleY" To="1" Duration="0:0:0.15"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        
+        <Style x:Key="SecondaryButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="Padding" Value="8,8"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="10">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#0AFFFFFF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    
+    <Grid Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/> <!-- Titulo -->
+            <RowDefinition Height="Auto"/> <!-- Elemento -->
+            <RowDefinition Height="Auto"/> <!-- Inputs -->
+            <RowDefinition Height="Auto"/> <!-- Botao Calculo -->
+            <RowDefinition Height="*"/>    <!-- Resultados -->
+            <RowDefinition Height="Auto"/> <!-- Botao Aplicar -->
+        </Grid.RowDefinitions>
+        
+        <!-- HEADER -->
+        <TextBlock Grid.Row="0" Text="⚡ Dimensionamento Queda de Tensão" FontSize="18" FontWeight="Bold" Foreground="{StaticResource AccentColor}" Margin="0,0,0,10"/>
+        
+        <!-- ESTADO DO ELETRODUTO -->
+        <Border Grid.Row="1" Background="#FF1D2128" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="14" Padding="12" Margin="0,0,0,15">
+            <StackPanel>
+                <TextBlock Text="Eletroduto Selecionado:" FontWeight="SemiBold" Foreground="{StaticResource TextSecondary}"/>
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                    <TextBlock Text="Diâmetro Nominal:" Margin="10,0,5,0" Foreground="{StaticResource TextSecondary}"/>
+                    <TextBlock x:Name="TxtDiametro" Text="Ø -- mm" FontWeight="Bold" Foreground="{StaticResource TextPrimary}" Width="100"/>
+                    <TextBlock Text="Comprimento:" Margin="10,0,5,0" Foreground="{StaticResource TextSecondary}"/>
+                    <TextBlock x:Name="TxtComprimento" Text="-- m" FontWeight="Bold" Foreground="{StaticResource TextPrimary}"/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+        
+        <!-- FORM DE ENTRADA -->
+        <Border Grid.Row="2" Background="{StaticResource PanelColor}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="18" Padding="15" Margin="0,0,0,15">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1*"/>
+                    <ColumnDefinition Width="10"/>
+                    <ColumnDefinition Width="1*"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                
+                <!-- Coluna 1 -->
+                <StackPanel Grid.Column="0" Grid.Row="0" Margin="0,0,0,10">
+                    <TextBlock Text="Tipo de Carga:" Foreground="{StaticResource TextSecondary}" Margin="0,0,0,2"/>
+                    <ComboBox x:Name="ComboCarga" SelectedIndex="1">
+                        <ComboBoxItem Content="Iluminação"/>
+                        <ComboBoxItem Content="TUG (Uso Geral)"/>
+                        <ComboBoxItem Content="TUE (Específico)"/>
+                        <ComboBoxItem Content="Motor"/>
+                    </ComboBox>
+                </StackPanel>
+
+                <StackPanel Grid.Column="0" Grid.Row="1" Margin="0,0,0,10">
+                    <TextBlock Text="Potência Ativa (W):" Foreground="{StaticResource TextSecondary}" Margin="0,0,0,2"/>
+                    <TextBox x:Name="InputPotencia" Text="1200"/>
+                </StackPanel>
+                
+                <StackPanel Grid.Column="0" Grid.Row="2" Margin="0,0,0,10">
+                    <TextBlock Text="Ou Corrente Direta (A):" Foreground="{StaticResource TextSecondary}" Margin="0,0,0,2"/>
+                    <TextBox x:Name="InputCorrente" Text=""/>
+                </StackPanel>
+
+                <StackPanel Grid.Column="0" Grid.Row="3" Margin="0,0,0,10">
+                    <TextBlock Text="Tensão (V):" Foreground="{StaticResource TextSecondary}" Margin="0,0,0,2"/>
+                    <ComboBox x:Name="ComboTensao" SelectedIndex="1">
+                        <ComboBoxItem Content="127"/>
+                        <ComboBoxItem Content="220"/>
+                        <ComboBoxItem Content="380"/>
+                    </ComboBox>
+                </StackPanel>
+
+                <!-- Coluna 2 -->
+                <StackPanel Grid.Column="2" Grid.Row="0" Margin="0,0,0,10">
+                    <TextBlock Text="Esquema elétrico:" Foreground="{StaticResource TextSecondary}" Margin="0,0,0,2"/>
+                    <ComboBox x:Name="ComboCircuito" SelectedIndex="0">
+                        <ComboBoxItem Content="1F + N + T (3 fios)"/>
+                        <ComboBoxItem Content="2F + T (3 fios)"/>
+                        <ComboBoxItem Content="2F + N + T (4 fios)"/>
+                        <ComboBoxItem Content="3F + T (4 fios)"/>
+                        <ComboBoxItem Content="3F + N + T (5 fios)"/>
+                    </ComboBox>
+                </StackPanel>
+                
+                <StackPanel Grid.Column="2" Grid.Row="1" Margin="0,0,0,10">
+                    <TextBlock Text="Fator de Potência (fp):" Foreground="{StaticResource TextSecondary}" Margin="0,0,0,2"/>
+                    <TextBox x:Name="InputFP" Text="0.92"/>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Grid.Row="2" Margin="0,0,0,10">
+                    <TextBlock Text="Bitola do Fio (mm²):" Foreground="{StaticResource TextSecondary}" Margin="0,0,0,2"/>
+                    <ComboBox x:Name="ComboBitola" SelectedIndex="0">
+                        <ComboBoxItem Content="Automático"/>
+                        <ComboBoxItem Content="1.5"/>
+                        <ComboBoxItem Content="2.5"/>
+                        <ComboBoxItem Content="4.0"/>
+                        <ComboBoxItem Content="6.0"/>
+                        <ComboBoxItem Content="10"/>
+                        <ComboBoxItem Content="16"/>
+                        <ComboBoxItem Content="25"/>
+                        <ComboBoxItem Content="35"/>
+                        <ComboBoxItem Content="50"/>
+                        <ComboBoxItem Content="70"/>
+                        <ComboBoxItem Content="95"/>
+                        <ComboBoxItem Content="120"/>
+                        <ComboBoxItem Content="150"/>
+                        <ComboBoxItem Content="185"/>
+                        <ComboBoxItem Content="240"/>
+                    </ComboBox>
+                </StackPanel>
+
+                <StackPanel Grid.Column="0" Grid.Row="4" Grid.ColumnSpan="3" Margin="0,0,0,0">
+                    <TextBlock Text="Circuitos Agrupados no Tubo:" Foreground="{StaticResource TextSecondary}" Margin="0,0,0,2"/>
+                    <TextBox x:Name="InputAgrupamento" Text="1" Width="100" HorizontalAlignment="Left"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Button Grid.Row="3" Content="📐 Calcular Dimensionamento" Style="{StaticResource PrimaryButton}" Margin="0,0,0,15" Click="on_calc_click"/>
+
+        <!-- CAIXA DE RESULTADOS -->
+        <Border Grid.Row="4" Background="#FF1D2128" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="18" Padding="15">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <TextBlock Text="Resultados e Recomendações" FontWeight="Bold" FontSize="14" Foreground="{StaticResource AccentColor}" Margin="0,0,0,10"/>
+                    
+                    <TextBlock x:Name="ResBitola" Text="Bitola Recomendada: -- mm²" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                    <TextBlock x:Name="ResCorrente" Text="Corrente de Projeto: -- A (Corrigida: -- A)" Foreground="#aaa" Margin="0,0,0,15"/>
+
+                    <TextBlock x:Name="ResOcupacao" Text="Condutores: -- | Ocupação: --%" Margin="0,0,0,5"/>
+                    <TextBlock x:Name="ResTuboDir" Text="Status Eletroduto: Aguardando..." Foreground="#aaa" Margin="0,0,0,15" TextWrapping="Wrap"/>
+                    
+                    <TextBlock x:Name="ResQueda" Text="Queda de Tensão (Dist. Atual): --%" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                    <TextBlock x:Name="ResDistMax" Text="Distância Máxima para essa Bitola: -- m" Foreground="#aaa" Margin="0,0,0,15"/>
+
+                    <TextBlock x:Name="ResStatusGlobal" Text="Status Final: Aguardando Cálculo" FontSize="15" FontWeight="Bold" Foreground="{StaticResource TextSecondary}" TextAlignment="Center" Margin="0,10,0,0"/>
+                </StackPanel>
+            </ScrollViewer>
+        </Border>
+
+        <!-- FOOTER APLICAR -->
+        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,15,0,0">
+            <Button Content="Fechar" Style="{StaticResource SecondaryButton}" Margin="0,0,10,0" IsCancel="True"/>
+            <Button x:Name="BtnAplicar" Content="💾 Aplicar ao Eletroduto" Style="{StaticResource PrimaryButton}" Background="#FF58D68D" Width="180" Click="on_apply_click" IsEnabled="False"/>
+        </StackPanel>
+    </Grid>
+</Window>

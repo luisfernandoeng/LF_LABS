@@ -44,31 +44,29 @@ class ToastNotificationWindow(forms.WPFWindow):
         self.close_timer.Start()
         
     def fade_in(self):
-        """Animação fade-in suave."""
-        self.fade_in_timer = DispatcherTimer()
-        self.fade_in_timer.Interval = TimeSpan.FromMilliseconds(20)
-        self.fade_in_timer.Tick += self._fade_in_tick
-        self.fade_in_timer.Start()
-        
-    def _fade_in_tick(self, sender, e):
-        self.Opacity += 0.1
-        if self.Opacity >= 1.0:
-            self.Opacity = 1.0
-            self.fade_in_timer.Stop()
+        """Animação fade-in suave via WPF."""
+        from System.Windows.Media.Animation import DoubleAnimation
+        from System import TimeSpan
+        anim = DoubleAnimation()
+        anim.From = 0.0
+        anim.To = 1.0
+        anim.Duration = TimeSpan.FromMilliseconds(400)
+        self.BeginAnimation(Window.OpacityProperty, anim)
             
     def trigger_fade_out(self, sender, e):
         """Chama fade-out e para o timer principal."""
         self.close_timer.Stop()
-        self.fade_out_timer = DispatcherTimer()
-        self.fade_out_timer.Interval = TimeSpan.FromMilliseconds(20)
-        self.fade_out_timer.Tick += self._fade_out_tick
-        self.fade_out_timer.Start()
+        from System.Windows.Media.Animation import DoubleAnimation
+        from System import TimeSpan
+        anim = DoubleAnimation()
+        anim.From = self.Opacity
+        anim.To = 0.0
+        anim.Duration = TimeSpan.FromMilliseconds(400)
+        anim.Completed += self._on_fade_out_completed
+        self.BeginAnimation(Window.OpacityProperty, anim)
         
-    def _fade_out_tick(self, sender, e):
-        self.Opacity -= 0.1
-        if self.Opacity <= 0:
-            self.fade_out_timer.Stop()
-            self.Close()
+    def _on_fade_out_completed(self, sender, e):
+        self.Close()
 
 # Global instance reference to allow updating while saving
 _current_toast = None
@@ -76,6 +74,11 @@ _current_toast = None
 def show(title="Salvando projeto...", message="Aguarde...", icon="💾", duration=3):
     global _current_toast
     try:
+        if _current_toast is not None:
+            try:
+                _current_toast.Close()
+            except:
+                pass
         cur_dir = os.path.dirname(__file__)
         xaml_path = os.path.join(cur_dir, 'toast_notification.xaml')
         _current_toast = ToastNotificationWindow(xaml_path)

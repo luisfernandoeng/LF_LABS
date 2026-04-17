@@ -1,0 +1,4 @@
+tooltip: Desconecta circuitos do quadro de origem e reconecta no destino especificado.
+engine:
+  type: cpython
+  version: 3

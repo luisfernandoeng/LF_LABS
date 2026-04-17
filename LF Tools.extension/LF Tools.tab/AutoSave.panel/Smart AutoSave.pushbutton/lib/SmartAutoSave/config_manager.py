@@ -11,17 +11,11 @@ class ConfigManager:
         
         # Default settings
         self.settings = {
-            "enabled": True,
+            "enabled":          True,
             "interval_minutes": 10,
-            "create_backups": True,
-            "max_backups": 5,
-            "backup_folder": None,
-            "show_toast": True,
-            "play_sound": False,
-            "log_history": True,
-            "wait_safe_state": True,
-            "timeout_seconds": 30,
-            "block_ui": True
+            "show_toast":       True,
+            "log_history":      True,
+            "wait_safe_state":  True,
         }
         
         self.load()

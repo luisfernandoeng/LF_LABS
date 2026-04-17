@@ -1,0 +1,547 @@
+#! python3
+# -*- coding: utf-8 -*-
+"""
+Conectar Eletrocalha - Roteamento sequencial automático entre elementos.
+
+Shift-Click: Abre menu de configuração (Tipo, Tamanho, Elevação)
+Normal: Seleção sequencial de elementos
+
+A ferramenta criará trechos retos de eletrocalha (nível mantido constante)
+e o próprio Revit tratará de colocar as curvas/junções automaticamente.
+"""
+
+__title__ = 'Conectar\nEletrocalha'
+__author__ = 'Luis Fernando'
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║                    MODO DEBUG                                ║
+# ║  True  = imprime tudo no console pyRevit + mostra erros      ║
+# ║  False = silencioso (só mostra alert em caso de erro fatal)  ║
+# ╚══════════════════════════════════════════════════════════════╝
+DEBUG_MODE = False
+
+# =====================================================================
+#  IMPORTS
+# =====================================================================
+import clr
+clr.AddReference('RevitAPI')
+clr.AddReference('RevitAPIUI')
+from Autodesk.Revit.DB import *
+from Autodesk.Revit.DB.Electrical import *
+from Autodesk.Revit.UI import *
+from Autodesk.Revit.UI.Selection import *
+from Autodesk.Revit.Exceptions import OperationCanceledException
+import System
+from System.Collections.Generic import List
+from collections import OrderedDict
+import traceback
+
+from pyrevit import forms           # script importado de forma lazy em load/save_config
+from lf_utils import DebugLogger, get_revit_context, patch_forms, make_warning_swallower, get_script_config, save_script_config
+
+patch_forms(forms)
+
+# Instância global — usar `dbg` em todo o script
+dbg = DebugLogger(DEBUG_MODE)
+
+# Referências globais — preenchidas no início de execute_connection()
+uidoc = None
+doc   = None
+
+# =====================================================================
+#  HELPERS DE NOME
+# =====================================================================
+def __get_name__(obj):
+    try: return obj.Name
+    except: pass
+    try: return Element.Name.GetValue(obj)
+    except: pass
+    try:
+        p = obj.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+        if p and p.HasValue: return p.AsString()
+    except: pass
+    return ""
+
+# =====================================================================
+#  CONFIGURAÇÕES
+# =====================================================================
+def load_config():
+    return get_script_config(__commandpath__, defaults={
+        'cabletray_type': '',
+        'default_width':  '200',
+        'default_height': '100',
+        'default_offset': '3.00',  # metros
+    })
+
+def save_config(settings):
+    save_script_config(__commandpath__, settings)
+
+def show_settings():
+    settings = load_config()
+
+    while True:
+        cur_type   = settings.get('cabletray_type', '') or '(Padrão do Revit)'
+        cur_width  = settings.get('default_width', '200')
+        cur_height = settings.get('default_height', '100')
+        cur_offset = settings.get('default_offset', '3.00')
+
+        opcoes = OrderedDict([
+            ("1. Tipo de Eletrocalha: " + cur_type, "cabletray_type"),
+            ("2. Largura (mm): "         + cur_width,  "width"),
+            ("3. Altura (mm): "          + cur_height, "height"),
+            ("4. Elevação/Deslocamento (m): " + cur_offset, "offset"),
+            ("5. Salvar e Sair", "save"),
+        ])
+
+        escolha = forms.CommandSwitchWindow.show(
+            opcoes.keys(),
+            message="Configurações: Conectar Eletrocalha",
+            title="Shift+Click - Configurações"
+        )
+
+        if not escolha or opcoes.get(escolha) == "save":
+            save_config(settings)
+            forms.toast("Configurações salvas!", title="Conectar Eletrocalha")
+            break
+
+        key = opcoes[escolha]
+
+        if key == 'cabletray_type':
+            collector = FilteredElementCollector(doc).OfClass(clr.GetClrType(CableTrayType))
+            types = {}
+            for t in collector:
+                name = __get_name__(t)
+                if name:
+                    types[name] = name
+            if not types:
+                forms.alert("Nenhum tipo de eletrocalha encontrado.")
+                continue
+            chosen = forms.CommandSwitchWindow.show(
+                ["(Padrão do Revit)"] + sorted(types.keys()),
+                message="Selecione o Tipo de Eletrocalha:",
+                title="Tipo de Eletrocalha"
+            )
+            if chosen:
+                settings['cabletray_type'] = chosen
+
+        elif key == 'width':
+            val = forms.ask_for_string(
+                default=settings.get('default_width', '200'),
+                prompt="Largura da Eletrocalha em mm (ex: 100, 200, 300):",
+                title="Largura"
+            )
+            if val is not None:
+                settings['default_width'] = val.strip()
+
+        elif key == 'height':
+            val = forms.ask_for_string(
+                default=settings.get('default_height', '100'),
+                prompt="Altura da Eletrocalha em mm (ex: 50, 100):",
+                title="Altura"
+            )
+            if val is not None:
+                settings['default_height'] = val.strip()
+
+        elif key == 'offset':
+            val = forms.ask_for_string(
+                default=settings.get('default_offset', '3.00'),
+                prompt="Elevação/Deslocamento base em metros (ex: 2.80, 3.00):",
+                title="Elevação Base"
+            )
+            if val is not None:
+                settings['default_offset'] = val.strip()
+
+# =====================================================================
+#  LÓGICA E UTILIDADES
+# =====================================================================
+def get_connectors(element):
+    """Obtém conectores do domínio CableTray de um elemento."""
+    connectors = []
+    try:
+        mgr = None
+        if hasattr(element, "MEPModel") and element.MEPModel and element.MEPModel.ConnectorManager:
+            mgr = element.MEPModel.ConnectorManager
+        elif hasattr(element, "ConnectorManager") and element.ConnectorManager:
+            mgr = element.ConnectorManager
+        if mgr:
+            for c in mgr.Connectors:
+                if c.Domain == Domain.DomainCableTrayConduit:
+                    connectors.append(c)
+    except Exception:
+        pass
+    return connectors
+
+def get_element_point(element, reference_point=None):
+    """Tenta achar o ponto ideal de um elemento (conector mais próximo ou Location)."""
+    conns = get_connectors(element)
+    if conns and reference_point:
+        best_conn = min(conns, key=lambda c: c.Origin.DistanceTo(reference_point))
+        return best_conn.Origin, best_conn
+    elif conns:
+        return conns[0].Origin, conns[0]
+    try:
+        loc = element.Location
+        if isinstance(loc, LocationPoint):
+            return loc.Point, None
+        elif isinstance(loc, LocationCurve):
+            return loc.Curve.Evaluate(0.5, True), None
+    except Exception:
+        pass
+    try:
+        bbox = element.get_BoundingBox(None)
+        if bbox:
+            return (bbox.Min + bbox.Max) / 2.0, None
+    except Exception:
+        pass
+    return None, None
+
+def get_default_cabletray_type():
+    try:
+        default_id = doc.GetDefaultElementTypeId(ElementTypeGroup.CableTrayType)
+        if default_id != ElementId.InvalidElementId:
+            return default_id
+    except Exception:
+        pass
+    col = FilteredElementCollector(doc).OfClass(clr.GetClrType(CableTrayType))
+    return col.FirstElementId()
+
+# WarningSwallower vem de lf_utils.make_warning_swallower() — importado no topo
+
+# =====================================================================
+#  EXECUÇÃO PRINCIPAL
+# =====================================================================
+def execute_connection():
+    global uidoc, doc
+    try:
+        uidoc, doc = get_revit_context()
+    except RuntimeError as e:
+        forms.alert(str(e), title="Conectar Eletrocalha")
+        return
+
+    try:
+        is_shift = __shiftclick__
+    except NameError:
+        is_shift = False
+
+    if is_shift:
+        show_settings()
+        return
+
+    dbg.section("Conectar Eletrocalha — Início")
+    dbg.timer_start("total")
+
+    settings = load_config()
+    dbg.dump("settings", settings)
+
+    # ── 1. Seleção sequencial de elementos ───────────────────────
+    dbg.section("Fase 1: Seleção de Elementos")
+    picked_elements = []
+    uidoc.Selection.SetElementIds(List[ElementId]())
+
+    try:
+        while True:
+            msg = "Selecione o elemento {} (ESC para finalizar rota)".format(
+                len(picked_elements) + 1)
+            ref = uidoc.Selection.PickObject(ObjectType.Element, msg)
+            el = doc.GetElement(ref)
+            if el:
+                picked_elements.append(el)
+                dbg.info("Elemento {} selecionado: Id={} Categoria={}".format(
+                    len(picked_elements), el.Id,
+                    el.Category.Name if el.Category else "N/A"))
+    except OperationCanceledException:
+        dbg.info("Seleção encerrada pelo usuário (ESC). Total: {} elemento(s).".format(
+            len(picked_elements)))
+
+    if len(picked_elements) < 2:
+        if len(picked_elements) == 1:
+            forms.alert(
+                "Você selecionou apenas 1 elemento.\n"
+                "É necessário pelo menos 2 para formar uma rota.",
+                title="Aviso"
+            )
+        else:
+            dbg.info("Nenhum elemento selecionado. Operação cancelada.")
+        return
+
+    # ── 2. Resolver tipo e parâmetros ────────────────────────────
+    dbg.section("Fase 2: Parâmetros")
+
+    pref_type_name = settings.get('cabletray_type', '')
+    ct_type_id = None
+    if pref_type_name and pref_type_name != "(Padrão do Revit)":
+        for t in FilteredElementCollector(doc).OfClass(clr.GetClrType(CableTrayType)):
+            if __get_name__(t) == pref_type_name:
+                ct_type_id = t.Id
+                break
+        dbg.result(ct_type_id is not None,
+                   "Tipo '{}' encontrado: Id={}".format(pref_type_name, ct_type_id))
+
+    if not ct_type_id:
+        ct_type_id = get_default_cabletray_type()
+        dbg.warn("Tipo preferido não encontrado. Usando default: Id={}".format(ct_type_id))
+
+    if not ct_type_id or ct_type_id == ElementId.InvalidElementId:
+        forms.alert(
+            "Nenhum tipo de eletrocalha encontrado no projeto.\n"
+            "Carregue um tipo de eletrocalha antes de usar esta ferramenta.",
+            title="Erro"
+        )
+        return
+
+    width_ft  = float(settings.get('default_width',  '200')) / 304.8
+    height_ft = float(settings.get('default_height', '100')) / 304.8
+    offset_ft = float(settings.get('default_offset', '3.00')) / 0.3048
+
+    dbg.debug("ct_type_id = {}".format(ct_type_id))
+    dbg.debug("width_ft   = {:.6f}  ({} mm)".format(width_ft,  settings.get('default_width')))
+    dbg.debug("height_ft  = {:.6f}  ({} mm)".format(height_ft, settings.get('default_height')))
+    dbg.debug("offset_ft  = {:.6f}  ({} m)".format(offset_ft,  settings.get('default_offset')))
+
+    # ── 3. Nível de referência ───────────────────────────────────
+    base_level_id = picked_elements[0].LevelId
+    if base_level_id == ElementId.InvalidElementId:
+        view = doc.ActiveView
+        if hasattr(view, "GenLevel") and view.GenLevel:
+            base_level_id = view.GenLevel.Id
+        else:
+            base_level_id = FilteredElementCollector(doc).OfClass(Level).FirstElementId()
+        dbg.warn("Elemento 0 sem LevelId. Usando nível da view: Id={}".format(base_level_id))
+
+    base_level      = doc.GetElement(base_level_id)
+    level_elevation = base_level.Elevation if base_level else 0.0
+    dbg.debug("Nível: Id={}  elevation={:.4f} ft  Z_alvo={:.4f} ft".format(
+        base_level_id, level_elevation, level_elevation + offset_ft))
+
+    # ── 4. Transação ─────────────────────────────────────────────
+    dbg.section("Fase 3: Criação das Eletrocalhas")
+    t = Transaction(doc, "Conectar Eletrocalhas Inteligente")
+    ops = t.GetFailureHandlingOptions()
+    ops.SetFailuresPreprocessor(make_warning_swallower())
+    t.SetFailureHandlingOptions(ops)
+    t.Start()
+
+    try:
+        drawn_trays    = []
+        creation_errors = []
+        true_z = level_elevation + offset_ft
+
+        for i in range(len(picked_elements) - 1):
+            el1 = picked_elements[i]
+            el2 = picked_elements[i + 1]
+
+            dbg.sub("Par {}/{}: Id={} → Id={}".format(
+                i + 1, len(picked_elements) - 1, el1.Id, el2.Id))
+
+            temp_pt_target, _ = get_element_point(el2)
+            temp_pt_start, _  = get_element_point(el1)
+            pt1, conn1 = get_element_point(el1, temp_pt_target)
+            pt2, conn2 = get_element_point(el2, temp_pt_start)
+
+            dbg.xyz("  pt1 (original)", pt1)
+            dbg.xyz("  pt2 (original)", pt2)
+            dbg.debug("  conn1={}  conn2={}".format(
+                "OK" if conn1 else "None (Location fallback)",
+                "OK" if conn2 else "None (Location fallback)"))
+
+            if not pt1 or not pt2:
+                msg = "Par {}: Coordenadas inválidas — pt1={} pt2={}".format(i + 1, pt1, pt2)
+                dbg.error(msg)
+                creation_errors.append(msg)
+                continue
+
+            # Usa Z real do conector se o elemento é MEP (CableTray, painel, etc.)
+            # Só aplica offset configurado para elementos sem conector (ex: mobiliário, genéricos)
+            z1 = pt1.Z if conn1 is not None else true_z
+            z2 = pt2.Z if conn2 is not None else true_z
+            route_pt1 = XYZ(pt1.X, pt1.Y, z1)
+            route_pt2 = XYZ(pt2.X, pt2.Y, z2)
+            dist = route_pt1.DistanceTo(route_pt2)
+
+            dbg.xyz("  route_pt1 (Z final)", route_pt1)
+            dbg.xyz("  route_pt2 (Z final)", route_pt2)
+            dbg.debug("  z1={:.4f} ft ({}) z2={:.4f} ft ({})".format(
+                z1, "conector" if conn1 else "offset cfg",
+                z2, "conector" if conn2 else "offset cfg"))
+            dbg.debug("  dist = {:.4f} ft  ({:.3f} m)".format(dist, dist * 0.3048))
+
+            if dist < 0.1:
+                msg = "Par {}: Pontos muito próximos ({:.4f} ft). Pulando.".format(i + 1, dist)
+                dbg.warn(msg)
+                creation_errors.append(msg)
+                continue
+
+            # ── Detectar tamanho das bandejas vizinhas ────────────────
+            # Prioridade: el1 → el2 → configurações
+            def _read_dim(el, bip):
+                try:
+                    p = el.get_Parameter(bip)
+                    if p and p.HasValue and p.AsDouble() > 0:
+                        return p.AsDouble()
+                except Exception:
+                    pass
+                return None
+
+            pair_w = (_read_dim(el1, BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM)
+                   or _read_dim(el2, BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM)
+                   or width_ft)
+            pair_h = (_read_dim(el1, BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
+                   or _read_dim(el2, BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
+                   or height_ft)
+            dbg.debug("  Tamanho par: w={:.4f} ft  h={:.4f} ft".format(pair_w, pair_h))
+
+            try:
+                dbg.timer_start("CableTray.Create #{}".format(i))
+                ctray = CableTray.Create(doc, ct_type_id, route_pt1, route_pt2, base_level_id)
+                dbg.timer_end("CableTray.Create #{}".format(i))
+
+                if ctray is None:
+                    msg = "Par {}: CableTray.Create retornou None.".format(i + 1)
+                    dbg.error(msg)
+                    creation_errors.append(msg)
+                    continue
+
+                # ── Definir dimensões da nova bandeja ─────────────────
+                p_w = ctray.get_Parameter(BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM)
+                if p_w and not p_w.IsReadOnly:
+                    p_w.Set(pair_w)
+                    dbg.debug("  Width setado: {:.4f} ft".format(pair_w))
+                else:
+                    dbg.warn("  Width param ausente ou read-only.")
+
+                p_h = ctray.get_Parameter(BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
+                if p_h and not p_h.IsReadOnly:
+                    p_h.Set(pair_h)
+                    dbg.debug("  Height setado: {:.4f} ft".format(pair_h))
+                else:
+                    dbg.warn("  Height param ausente ou read-only.")
+
+                # ── Conectar fisicamente aos elementos originais ───────
+                # CableTray.Create posiciona geometricamente mas NÃO
+                # estabelece a conexão lógica MEP — precisa de ConnectTo explícito.
+                new_conns = get_connectors(ctray)
+                dbg.debug("  Conectores da nova bandeja: {}".format(len(new_conns)))
+
+                def _try_connect(new_c, orig_c, label):
+                    if orig_c is None:
+                        return
+                    dist_c = new_c.Origin.DistanceTo(orig_c.Origin)
+                    dbg.debug("  {} dist={:.4f} ft  new_connected={} orig_connected={}".format(
+                        label, dist_c, new_c.IsConnected, orig_c.IsConnected))
+                    if dist_c > 1.0:
+                        dbg.warn("  {} distância alta ({:.4f} ft) — ConnectTo ignorado.".format(
+                            label, dist_c))
+                        return
+                    if orig_c.IsConnected:
+                        dbg.warn("  {} orig_c já está conectado — pulando.".format(label))
+                        return
+                    try:
+                        new_c.ConnectTo(orig_c)
+                        dbg.result(True, "  {} ConnectTo OK".format(label))
+                    except Exception as ce:
+                        dbg.warn("  {} ConnectTo falhou: {}".format(label, ce))
+
+                if new_conns and len(new_conns) >= 2:
+                    # Associar conector da nova bandeja ao conector mais próximo de cada extremidade
+                    c_near_1 = min(new_conns, key=lambda c: c.Origin.DistanceTo(route_pt1))
+                    c_near_2 = min(new_conns, key=lambda c: c.Origin.DistanceTo(route_pt2))
+                    _try_connect(c_near_1, conn1, "conn→el1")
+                    _try_connect(c_near_2, conn2, "conn→el2")
+                else:
+                    dbg.warn("  Nova bandeja com <2 conectores — conexão pulada.")
+
+                drawn_trays.append(ctray)
+                dbg.result(True, "Eletrocalha criada: Id={}".format(ctray.Id))
+
+            except Exception as ex:
+                msg = "Par {}: EXCEÇÃO em CableTray.Create — {}".format(i + 1, ex)
+                dbg.error(msg)
+                dbg.error(traceback.format_exc())
+                creation_errors.append("{}: {}".format(msg, traceback.format_exc()))
+
+        # ── 5. Conectar com elbows ────────────────────────────────
+        if len(drawn_trays) > 1:
+            dbg.section("Fase 4: Conexão com Elbows/Fittings")
+            for i in range(len(drawn_trays) - 1):
+                tray1 = drawn_trays[i]
+                tray2 = drawn_trays[i + 1]
+
+                c1_candidates = get_connectors(tray1)
+                c2_candidates = get_connectors(tray2)
+
+                dbg.debug("Trays {}/{}: connectors tray1={} tray2={}".format(
+                    i + 1, len(drawn_trays) - 1,
+                    len(c1_candidates), len(c2_candidates)))
+
+                if not c1_candidates or not c2_candidates:
+                    dbg.warn("Sem conectores disponíveis para par {}.".format(i + 1))
+                    continue
+
+                best_c1, best_c2, min_dist = None, None, float('inf')
+                for c1 in c1_candidates:
+                    for c2 in c2_candidates:
+                        d = c1.Origin.DistanceTo(c2.Origin)
+                        if d < min_dist:
+                            min_dist, best_c1, best_c2 = d, c1, c2
+
+                dbg.debug("  Melhor par de conectores: dist={:.4f} ft".format(min_dist))
+
+                if best_c1 and best_c2 and min_dist < 2.0:
+                    try:
+                        doc.Create.NewElbowFitting(best_c1, best_c2)
+                        dbg.result(True, "Elbow/fitting criado para par {}.".format(i + 1))
+                    except Exception as ex:
+                        dbg.warn("NewElbowFitting falhou ({}). Tentando ConnectTo...".format(ex))
+                        try:
+                            best_c1.ConnectTo(best_c2)
+                            dbg.result(True, "ConnectTo OK para par {}.".format(i + 1))
+                        except Exception as ex2:
+                            dbg.error("ConnectTo também falhou: {}".format(ex2))
+                else:
+                    dbg.warn("Par {}: dist={:.4f} ft > 2.0 ft. Nenhuma curva criada.".format(
+                        i + 1, min_dist))
+
+        # ── Commit ────────────────────────────────────────────────
+        t.Commit()
+        dbg.section("Resultado")
+        dbg.info("Transação commitada.")
+        dbg.info("Eletrocalhas criadas: {}".format(len(drawn_trays)))
+        if creation_errors:
+            dbg.warn("Erros registrados durante a criação:")
+            for idx, err in enumerate(creation_errors, 1):
+                dbg.warn("  [{}] {}".format(idx, err))
+
+        if not drawn_trays:
+            err_detail = "\n\n".join(creation_errors) if creation_errors else "Sem detalhes."
+            forms.alert(
+                "Nenhuma eletrocalha foi criada.\n\nErros:\n{}".format(err_detail),
+                title="Conectar Eletrocalha — Sem Resultado"
+            )
+        else:
+            dbg.result(True, "{} eletrocalha(s) criada(s) com sucesso.".format(len(drawn_trays)))
+
+    except Exception as e:
+        if t.HasStarted():
+            t.RollBack()
+        raise e
+
+    dbg.timer_end("total")
+
+
+def safe_execution():
+    dbg.section("Conectar Eletrocalha — BOOT")
+    dbg.info("DEBUG_MODE = {}".format(DEBUG_MODE))
+    try:
+        execute_connection()
+        dbg.section("Ferramenta Finalizada")
+    except Exception as e:
+        err_tb = traceback.format_exc()
+        dbg.error("CRASH FATAL:\n{}".format(err_tb))
+        if DEBUG_MODE:
+            forms.alert("CRASH FATAL (DEBUG):\n\n" + err_tb, title="Conectar Eletrocalha — Erro")
+        else:
+            forms.alert("Erro ao conectar eletrocalhas:\n" + str(e), title="Aviso")
+
+
+if __name__ == "__main__":
+    safe_execution()

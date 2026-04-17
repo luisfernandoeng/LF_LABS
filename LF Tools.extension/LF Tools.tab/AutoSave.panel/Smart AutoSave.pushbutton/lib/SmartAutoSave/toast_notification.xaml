@@ -1,41 +1,53 @@
 <Window x:Name="ToastWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Width="320" Height="90"
+        Width="340" Height="100"
         WindowStyle="None"
         AllowsTransparency="True"
         Background="Transparent"
         Topmost="True"
         ShowInTaskbar="False"
-        ResizeMode="NoResize">
+        ResizeMode="NoResize"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display">
     
-    <Border Background="#F82d2d2d" 
-            CornerRadius="6" 
-            BorderBrush="#4fc3f7" 
-            BorderThickness="2"
-            Padding="15">
-        <StackPanel Orientation="Horizontal">
+    <Border Background="#E60D0E12" 
+            CornerRadius="20" 
+            BorderBrush="#FF3B82F6" 
+            BorderThickness="1.5"
+            Padding="20,15"
+            Margin="5">
+        <Border.Effect>
+            <DropShadowEffect BlurRadius="15" Color="Black" Opacity="0.4" ShadowDepth="2"/>
+        </Border.Effect>
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            
             <!-- Ícone animado/texto -->
-            <TextBlock x:Name="ToastIcon" 
-                       Text="💾" 
-                       FontSize="28" 
-                       VerticalAlignment="Center"
-                       Margin="0,0,15,0"/>
+            <Border Grid.Column="0" Background="#1A3B82F6" Width="42" Height="42" CornerRadius="21" Margin="0,0,15,0">
+                <TextBlock x:Name="ToastIcon" 
+                           Text="💾" 
+                           FontSize="22" 
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"/>
+            </Border>
             
             <!-- Conteúdo -->
-            <StackPanel VerticalAlignment="Center">
+            <StackPanel Grid.Column="1" VerticalAlignment="Center">
                 <TextBlock x:Name="ToastTitle" 
-                          Text="Salvando projeto..." 
-                          FontWeight="Bold" 
-                          FontSize="15"
-                          Foreground="White"/>
+                           Text="Salvando projeto..." 
+                           FontWeight="SemiBold" 
+                           FontSize="14"
+                           Foreground="#FFF8FAFC"/>
                 <TextBlock x:Name="ToastMessage" 
-                          Text="Aguarde..." 
-                          FontWeight="SemiBold"
-                          FontSize="13" 
-                          Foreground="#E0E0E0"
-                          Margin="0,3,0,0"/>
+                           Text="Aguarde um momento" 
+                           FontSize="12" 
+                           Foreground="#FF94A3B8"
+                           Margin="0,2,0,0"/>
             </StackPanel>
-        </StackPanel>
+        </Grid>
     </Border>
 </Window>

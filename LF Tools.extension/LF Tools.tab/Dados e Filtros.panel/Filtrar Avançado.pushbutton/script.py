@@ -1,5 +1,25 @@
 # -*- coding: utf-8 -*-
-from pyrevit import revit, forms, script
+
+# Stubs para forms/script/revit — substituem pyrevit sem disparar events.py
+class _FormsStub: pass
+forms = _FormsStub()
+
+class _ScriptStub:
+    @staticmethod
+    def get_bundle_file(name):
+        import os as _os
+        try:
+            return _os.path.join(__commandpath__, name)
+        except NameError:
+            return _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), name)
+script = _ScriptStub()
+
+class _RevitProxy:
+    def __getattr__(self, name):
+        if name == 'active_view':
+            return __revit__.ActiveUIDocument.ActiveView
+        raise AttributeError(name)
+revit = _RevitProxy()
 from Autodesk.Revit.DB import (
     FilteredElementCollector, BuiltInCategory, ElementId, StorageType,
     BuiltInParameter, Element, UnitUtils, UnitTypeId
@@ -8,12 +28,143 @@ from System.Collections.Generic import List
 import traceback
 import os
 import json
-import io
 import System
-import sys
 from System.Windows.Forms import Application as WinFormsApp
 import re
 import datetime
+
+# __revit__ is injected by the pyRevit CPython runtime as the UIApplication
+uidoc = __revit__.ActiveUIDocument
+doc = uidoc.Document
+import logging as _logging
+logger = _logging.getLogger(__name__)
+
+# ==================== CPYTHON COMPAT ====================
+try:
+    import clr as _clr
+    _clr.AddReference('System.Windows.Forms')
+    _clr.AddReference('PresentationFramework')
+except Exception:
+    pass
+import System.Windows.Forms as _WF
+from System.Windows import MessageBox as _MB, MessageBoxButton as _MBBtn, MessageBoxResult as _MBRes
+
+def _alert(msg, title="LF Tools", yes=False, no=False, exitscript=False, **kw):
+    if yes and no:
+        r = _MB.Show(str(msg), str(title), _MBBtn.YesNo)
+        ans = r == _MBRes.Yes
+        if exitscript and not ans:
+            raise SystemExit()
+        return ans
+    _MB.Show(str(msg), str(title))
+    if exitscript:
+        raise SystemExit()
+
+def _ask_for_string(prompt="", title="Input", **kw):
+    form = _WF.Form()
+    form.Text = str(title)
+    form.Width = 420
+    form.Height = 165
+    form.FormBorderStyle = _WF.FormBorderStyle.FixedDialog
+    form.StartPosition = _WF.FormStartPosition.CenterScreen
+    lbl = _WF.Label(); lbl.Text = str(prompt); lbl.SetBounds(12, 10, 380, 25)
+    txt = _WF.TextBox(); txt.SetBounds(12, 40, 380, 25)
+    btn_ok = _WF.Button(); btn_ok.Text = "OK"; btn_ok.SetBounds(230, 80, 80, 28)
+    btn_ok.DialogResult = _WF.DialogResult.OK
+    btn_cancel = _WF.Button(); btn_cancel.Text = "Cancelar"; btn_cancel.SetBounds(320, 80, 80, 28)
+    btn_cancel.DialogResult = _WF.DialogResult.Cancel
+    form.Controls.AddRange([lbl, txt, btn_ok, btn_cancel])
+    form.AcceptButton = btn_ok
+    form.CancelButton = btn_cancel
+    return txt.Text if form.ShowDialog() == _WF.DialogResult.OK else None
+
+class _SelectFromListHelper:
+    @staticmethod
+    def show(options, title="Selecionar", multiselect=False, button_name="OK", **kw):
+        form = _WF.Form()
+        form.Text = str(title)
+        form.Width = 520
+        form.Height = 420
+        form.FormBorderStyle = _WF.FormBorderStyle.Sizable
+        form.StartPosition = _WF.FormStartPosition.CenterScreen
+        lst = _WF.ListBox()
+        lst.SetBounds(12, 12, 480, 330)
+        lst.SelectionMode = _WF.SelectionMode.One if not multiselect else _WF.SelectionMode.MultiExtended
+        for opt in (options or []):
+            lst.Items.Add(str(opt))
+        btn_ok = _WF.Button(); btn_ok.Text = str(button_name); btn_ok.SetBounds(315, 352, 90, 28)
+        btn_ok.DialogResult = _WF.DialogResult.OK
+        btn_cancel = _WF.Button(); btn_cancel.Text = "Cancelar"; btn_cancel.SetBounds(415, 352, 80, 28)
+        btn_cancel.DialogResult = _WF.DialogResult.Cancel
+        form.Controls.AddRange([lst, btn_ok, btn_cancel])
+        form.AcceptButton = btn_ok
+        form.CancelButton = btn_cancel
+        if form.ShowDialog() != _WF.DialogResult.OK:
+            return None
+        if multiselect:
+            return [str(lst.Items[i]) for i in range(lst.Items.Count) if lst.GetSelected(i)]
+        return str(lst.SelectedItem) if lst.SelectedItem is not None else None
+
+class _WPFWindowCPy:
+    """CPython drop-in for pyrevit.forms.WPFWindow."""
+    _XAML_EVENTS = re.compile(
+        r'\s+(?:x:Class|'
+        r'Click|DoubleClick|'
+        r'Mouse(?:Down|Up|Move|Enter|Leave|Wheel)|'
+        r'Preview(?:Mouse(?:Down|Up|Move|LeftButtonDown|LeftButtonUp)|'
+        r'Key(?:Down|Up)|TextInput)|'
+        r'Key(?:Down|Up)|TextInput|TextChanged|SelectionChanged|'
+        r'SelectedItemChanged|ValueChanged|ScrollChanged|'
+        r'Got(?:Focus|KeyboardFocus)|Lost(?:Focus|KeyboardFocus)|'
+        r'Checked|Unchecked|Indeterminate|'
+        r'Loaded|Unloaded|Initialized|'
+        r'Clos(?:ing|ed)|Activated|Deactivated|'
+        r'SizeChanged|LayoutUpdated|ContentRendered|'
+        r'Drag(?:Enter|Leave|Over)|Drop|'
+        r'ContextMenu(?:Opening|Closing)|'
+        r'ToolTip(?:Opening|Closing)|'
+        r'DataContextChanged|IsVisibleChanged|IsEnabledChanged|'
+        r'RequestBringIntoView|SourceUpdated|TargetUpdated)'
+        r'\s*=\s*(?:"[^"]*"|\'[^\']*\')'
+    )
+
+    def __init__(self, xaml_source, literal_string=None):
+        from System.IO import StringReader
+        from System.Windows.Markup import XamlReader
+        import System.Xml
+        stripped = str(xaml_source).strip()
+        is_inline = (literal_string is True or
+                     (literal_string is None and stripped.startswith('<')))
+        if not is_inline:
+            with open(str(xaml_source), 'r', encoding='utf-8') as _f:
+                stripped = _f.read().strip()
+        xaml_clean = self._XAML_EVENTS.sub('', stripped)
+        rdr = System.Xml.XmlReader.Create(StringReader(xaml_clean))
+        self._window = XamlReader.Load(rdr)
+
+    def __getattr__(self, name):
+        if name.startswith('_'):
+            raise AttributeError(name)
+        win = object.__getattribute__(self, '_window')
+        el = win.FindName(name)
+        if el is not None:
+            return el
+        return getattr(win, name)
+
+    def ShowDialog(self):
+        return self._window.ShowDialog()
+
+    def Show(self):
+        return self._window.Show()
+
+    def Close(self):
+        self._window.Close()
+
+forms.WPFWindow      = _WPFWindowCPy
+forms.alert          = _alert
+forms.ask_for_string = _ask_for_string
+forms.SelectFromList = _SelectFromListHelper
+# ==================== FIM CPYTHON COMPAT ====================
 
 # ==================== LOGICA DE HISTORICO ====================
 class SelectionHistory:
@@ -31,15 +182,15 @@ class SelectionHistory:
     def load_history(self):
         if os.path.exists(self.history_file):
             try:
-                with io.open(self.history_file, 'r', encoding='utf-8') as f:
+                with open(self.history_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
             except:
                 pass
         return []
-    
+
     def save_history(self):
         try:
-            with io.open(self.history_file, 'w', encoding='utf-8') as f:
+            with open(self.history_file, 'w', encoding='utf-8') as f:
                 json.dump(self.history, f, indent=4, ensure_ascii=False)
         except:
             pass
@@ -67,72 +218,7 @@ class SelectionHistory:
         self.save_history()
 
 
-
-# --- HELPER UNICODE PARA IRONPYTHON 2.7 (CODEC-FREE) ---
-def to_unicode(val):
-    """
-    Converte para unicode SEM usar o sistema de codecs do Python (decode/encode),
-    pois o registro de encodings parece estar corrompido no ambiente do usuario.
-    """
-    if val is None: return u""
-    if isinstance(val, unicode): return val
-    
-    # Se ja for tipo basico
-    if isinstance(val, (int, float, bool, System.Guid)):
-        return unicode(val)
-
-    # Se for string .NET ou byte string python (str)
-    # No IronPython 2.7, str eh basicamente um array de bytes
-    if isinstance(val, (str, bytes)):
-        try:
-            # Mapeamento Manual (0-255 Latin-1) - Nao faz lookup de codec
-            return u"".join([unichr(ord(c)) for c in val])
-        except:
-            pass
-    
-    # Fallback para objetos .NET (como Element.Name)
-    try:
-        res = val.ToString() if hasattr(val, "ToString") else unicode(val)
-        # Se o ToString retornar uma byte string com acento, limpamos de novo
-        if isinstance(res, str):
-            return u"".join([unichr(ord(c)) for c in res])
-        return unicode(res)
-    except:
-        return u""
-
-def force_unicode(data):
-    """Garante recursivamente que TUDO eh unicode purista para o json.dumps"""
-    if isinstance(data, dict):
-        new_dict = {}
-        for k, v in data.items():
-            k_u = to_unicode(k)
-            v_u = force_unicode(v)
-            new_dict[k_u] = v_u
-        return new_dict
-    elif isinstance(data, (list, tuple)):
-        return [force_unicode(v) for v in data]
-    else:
-        return to_unicode(data)
-
-def safe_unicode_inspect(obj, path="root"):
-    """Inspeciona recursivamente um objeto para achar problemas de encode"""
-    issues = []
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            issues.extend(safe_unicode_inspect(k, "{}.KEY".format(path)))
-            issues.extend(safe_unicode_inspect(v, "{}.{}".format(path, k)))
-    elif isinstance(obj, list):
-        for i, v in enumerate(obj):
-            issues.extend(safe_unicode_inspect(v, "{}[{}]".format(path, i)))
-    elif isinstance(obj, (str, unicode)):
-        try:
-            json.dumps(obj)
-        except Exception as e:
-            hex_val = " ".join([hex(ord(c)) for c in str(obj)]) if isinstance(obj, str) else "unicode_str"
-            issues.append(u"ERRO em '{}': {} | Tipo: {} | Hex: {}".format(path, unicode(e), type(obj), hex_val))
-    return issues
-
-# ARQUIVO DE PRESETS (Pasta segura) - Garantir Unicode no IronPython usando .NET
+# ARQUIVO DE PRESETS
 def get_config_path():
     try:
         appdata = os.getenv('APPDATA')
@@ -151,7 +237,7 @@ def load_presets():
     default_data = {"LastUsed": "", "Presets": {}}
     try:
         if os.path.exists(PRESETS_FILE):
-            with io.open(PRESETS_FILE, 'r', encoding='utf-8') as f:
+            with open(PRESETS_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
     except Exception as e:
         logger.error("Erro ao carregar presets: " + str(e))
@@ -161,17 +247,13 @@ def save_presets(data):
     try:
         if not os.path.exists(CONFIG_DIR):
             os.makedirs(CONFIG_DIR)
-        with io.open(PRESETS_FILE, 'w', encoding='utf-8') as f:
+        with open(PRESETS_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
         return True
     except Exception as e:
         logger.error("Erro ao salvar presets: " + str(e))
         forms.alert("Erro ao salvar configuração: " + str(e))
         return False
-
-doc = revit.doc
-uidoc = revit.uidoc
-logger = script.get_logger()
 
 # ==================== HELPERS DE ELEVAÇÃO ====================
 def get_element_elevation(el):
@@ -820,7 +902,7 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                             break
                             
                         t_doc = getattr(self, '_target_doc', doc)
-                        if usar_vista_atual and t_doc.Title == doc.Title and not t_doc.IsFamilyDocument:
+                        if usar_vista_atual and t_doc.Equals(doc) and not t_doc.IsFamilyDocument:
                             col = FilteredElementCollector(t_doc, revit.active_view.Id)
                         else:
                             col = FilteredElementCollector(t_doc)
@@ -968,17 +1050,17 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                     param1 = self.find_parameter(el, p1_nome)
                     # Se foi Virtual Parameter, ele volta como STRING do find_parameter()
                     if param1 is not None:
-                        if isinstance(param1, (str, unicode)):
+                        if isinstance(param1, str):
                              # Rotear para Text Compare diretamente sem passar pelo tratador de Double do Parameter
                              res1 = self.check_condition(param1, c1, v1)
                         else:
                              res1 = smart_parameter_compare(param1, c1, v1, self.check_condition)
-                    
+
                     res2 = False
                     if usar_f2:
                         param2 = self.find_parameter(el, p2_nome)
                         if param2 is not None:
-                            if isinstance(param2, (str, unicode)):
+                            if isinstance(param2, str):
                                  res2 = self.check_condition(param2, c2, v2)
                             else:
                                  res2 = smart_parameter_compare(param2, c2, v2, self.check_condition)
@@ -1035,7 +1117,7 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                 
                 t_doc = getattr(self, '_target_doc', doc)
                 for cat in todas_categorias_analisar:
-                    if usar_vista_atual and t_doc.Title == doc.Title and not t_doc.IsFamilyDocument:
+                    if usar_vista_atual and t_doc.Equals(doc) and not t_doc.IsFamilyDocument:
                         col = FilteredElementCollector(t_doc, revit.active_view.Id)
                     else:
                         col = FilteredElementCollector(t_doc)
@@ -1050,7 +1132,7 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                     pool = []
                     for el in col:
                         try:
-                            if usar_vista_atual and t_doc.Title == doc.Title and el.IsHidden(view_atual):
+                            if usar_vista_atual and t_doc.Equals(doc) and el.IsHidden(view_atual):
                                 continue
                                 
                             if config:
@@ -1097,21 +1179,23 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                     if refs.Count > 0:
                         uidoc.Selection.SetReferences(refs)
                 else:
-                    sel_ids_list = List[ElementId](ids_selecionados)
+                    sel_ids_list = List[ElementId]()
+                    for _eid in ids_selecionados:
+                        sel_ids_list.Add(_eid)
                     uidoc.Selection.SetElementIds(sel_ids_list)
                 
                 # ADICIONAR AO HISTÓRICO
-                cat_name_history = to_unicode(categoria_nome) if categoria_nome else to_unicode(self.ComboBox_Categoria.Text)
-                p1_name_history = to_unicode(p1_nome) if p1_nome else to_unicode(self.ComboBox_Parametro1.Text)
-                p2_name_history = to_unicode(p2_nome) if p2_nome else (to_unicode(self.ComboBox_Parametro2.Text) if usar_f2 else "")
-                
-                desc = u"{} {} {}".format(p1_name_history, c1, v1)
+                cat_name_history = str(categoria_nome) if categoria_nome else str(self.ComboBox_Categoria.Text)
+                p1_name_history = str(p1_nome) if p1_nome else str(self.ComboBox_Parametro1.Text)
+                p2_name_history = str(p2_nome) if p2_nome else (str(self.ComboBox_Parametro2.Text) if usar_f2 else "")
+
+                desc = "{} {} {}".format(p1_name_history, c1, v1)
                 if usar_f2:
-                    desc += u" ({} {} {} {})".format("E" if operador_e else "OU", p2_name_history, c2, v2)
-                
+                    desc += " ({} {} {} {})".format("E" if operador_e else "OU", p2_name_history, c2, v2)
+
                 state = {
-                    'p1': p1_name_history, 'c1': to_unicode(c1), 'v1': to_unicode(v1),
-                    'usar_f2': usar_f2, 'p2': p2_name_history, 'c2': to_unicode(c2) if c2 else "", 'v2': to_unicode(v2),
+                    'p1': p1_name_history, 'c1': str(c1) if c1 else "", 'v1': str(v1),
+                    'usar_f2': usar_f2, 'p2': p2_name_history, 'c2': str(c2) if c2 else "", 'v2': str(v2),
                     'op_e': operador_e,
                     'target_link_id': target_link_instance.Id.IntegerValue if target_link_instance else None
                 }
@@ -1127,8 +1211,8 @@ class FiltroAvancadoWindow(forms.WPFWindow):
             self.Button_AplicarFiltro.Content = "APLICAR FILTRO"
                 
         except Exception as e:
-            logger.error(u"Erro em aplicar_filtro_click: {}".format(to_unicode(e)))
-            forms.alert(u"Erro durante a filtragem:\n{}".format(to_unicode(e)))
+            logger.error("Erro em aplicar_filtro_click: {}".format(e))
+            forms.alert("Erro durante a filtragem:\n{}".format(e))
             self.Button_AplicarFiltro.IsEnabled = True
             self.Button_AplicarFiltro.Content = "APLICAR FILTRO"
 
@@ -1302,7 +1386,7 @@ class FiltroAvancadoWindow(forms.WPFWindow):
             else: self.Radio_Or.IsChecked = True
                 
         except Exception as e:
-            logger.error(u"Erro ao aplicar preset: " + to_unicode(e))
+            logger.error("Erro ao aplicar preset: " + str(e))
 
     def capturar_selecao_click(self, sender, args):
         """✨ NOVO: Preenche a Categoria automaticamente com base no elemento selecionado no Revit"""
@@ -1372,7 +1456,7 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                 self.atualizar_status(u"Categoria '{}' injetada da seleção!".format(cat.Name))
                 
         except Exception as e:
-            logger.error(u"Erro ao capturar seleção: " + to_unicode(e))
+            logger.error("Erro ao capturar seleção: " + str(e))
 
     def historico_anterior_click(self, sender, args):
         """Recupera a última seleção realizada na sessão."""
@@ -1428,7 +1512,10 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                     eids = [ElementId(int(eid)) for eid in h_entry['element_ids']]
                     valid_ids = [eid for eid in eids if doc.GetElement(eid)]
                     if valid_ids:
-                        uidoc.Selection.SetElementIds(List[ElementId](valid_ids))
+                        _vids = List[ElementId]()
+                        for _eid in valid_ids:
+                            _vids.Add(_eid)
+                        uidoc.Selection.SetElementIds(_vids)
                 
                 # 2. Restaurar UI
                 if state:
@@ -1438,7 +1525,7 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                     cat_name = h_entry['category']
                     found_cat = False
                     for item in self.ComboBox_Categoria.Items:
-                        if to_unicode(item) == to_unicode(cat_name):
+                        if str(item) == str(cat_name):
                             self.ComboBox_Categoria.SelectedItem = item
                             found_cat = True
                             break
@@ -1455,7 +1542,7 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                     p1_val = state.get('p1')
                     found_p1 = False
                     for item in self.ComboBox_Parametro1.Items:
-                        if to_unicode(item) == to_unicode(p1_val):
+                        if str(item) == str(p1_val):
                             self.ComboBox_Parametro1.SelectedItem = item
                             found_p1 = True
                             break
@@ -1477,7 +1564,7 @@ class FiltroAvancadoWindow(forms.WPFWindow):
                         p2_val = state.get('p2')
                         found_p2 = False
                         for item in self.ComboBox_Parametro2.Items:
-                            if to_unicode(item) == to_unicode(p2_val):
+                            if str(item) == str(p2_val):
                                 self.ComboBox_Parametro2.SelectedItem = item
                                 found_p2 = True
                                 break

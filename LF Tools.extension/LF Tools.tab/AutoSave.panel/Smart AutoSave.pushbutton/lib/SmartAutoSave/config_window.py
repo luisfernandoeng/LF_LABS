@@ -58,7 +58,6 @@ class ConfigWindow(forms.WPFWindow):
         # Read from UI
         config.set("enabled", bool(self.EnableAutoSave.IsChecked))
         config.set("show_toast", bool(self.ShowToast.IsChecked))
-        config.set("block_ui", False) # Forçado para false
         
         interval = 10
         if self.Radio1min.IsChecked: interval = 1

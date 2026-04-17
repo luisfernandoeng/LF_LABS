@@ -1,11 +1,40 @@
+#! python3
 # -*- coding: utf-8 -*-
-from pyrevit import revit, DB, forms, script
 import os
+import re
+import json
 
-# Get UI environment
-doc = revit.doc
-uidoc = revit.uidoc
-active_view = doc.ActiveView
+import clr
+clr.AddReference('RevitAPI')
+clr.AddReference('RevitAPIUI')
+from Autodesk.Revit import DB
+
+def _script_dir():
+    try:
+        return __commandpath__
+    except NameError:
+        return os.path.dirname(os.path.abspath(__file__))
+
+_CONFIG_FILE = os.path.join(_script_dir(), "sss_config.json")
+
+def _load_config():
+    try:
+        with open(_CONFIG_FILE, 'r') as _f:
+            return json.load(_f)
+    except Exception:
+        return {}
+
+def _save_config(data):
+    try:
+        with open(_CONFIG_FILE, 'w') as _f:
+            json.dump(data, _f)
+    except Exception:
+        pass
+
+# Get UI environment  (__revit__ is injected by pyRevit CPython runtime)
+uidoc = __revit__.ActiveUIDocument
+doc = uidoc.Document
+active_view = uidoc.ActiveView
 
 import System
 import clr
@@ -14,6 +43,133 @@ from System.Windows import Window, Thickness, FontWeight, FontWeights, Media, Vi
 from System.Windows.Controls import TextBlock, CheckBox, TextBox
 from System.Collections.Generic import List
 from System.Windows.Forms import Control, Keys
+
+# ==================== CPYTHON COMPAT ====================
+try:
+    clr.AddReference('PresentationFramework')
+except Exception:
+    pass
+import System.Windows.Forms as _WF
+from System.Windows import MessageBox as _MB, MessageBoxButton as _MBBtn, MessageBoxResult as _MBRes
+
+def _alert(msg, title="LF Tools", yes=False, no=False, exitscript=False, **kw):
+    if yes and no:
+        r = _MB.Show(str(msg), str(title), _MBBtn.YesNo)
+        ans = r == _MBRes.Yes
+        if exitscript and not ans:
+            raise SystemExit()
+        return ans
+    _MB.Show(str(msg), str(title))
+    if exitscript:
+        raise SystemExit()
+
+def _toast(msg, **kw):
+    pass  # No-op: pyrevit script logger not available in CPython standalone
+
+class _WPFWindowCPy:
+    """CPython drop-in for pyrevit.forms.WPFWindow."""
+    _XAML_EVENTS = re.compile(
+        r'\s+(?:x:Class|'
+        r'Click|DoubleClick|'
+        r'Mouse(?:Down|Up|Move|Enter|Leave|Wheel)|'
+        r'Preview(?:Mouse(?:Down|Up|Move|LeftButtonDown|LeftButtonUp)|'
+        r'Key(?:Down|Up)|TextInput)|'
+        r'Key(?:Down|Up)|TextInput|TextChanged|SelectionChanged|'
+        r'SelectedItemChanged|ValueChanged|ScrollChanged|'
+        r'Got(?:Focus|KeyboardFocus)|Lost(?:Focus|KeyboardFocus)|'
+        r'Checked|Unchecked|Indeterminate|'
+        r'Loaded|Unloaded|Initialized|'
+        r'Clos(?:ing|ed)|Activated|Deactivated|'
+        r'SizeChanged|LayoutUpdated|ContentRendered|'
+        r'Drag(?:Enter|Leave|Over)|Drop|'
+        r'ContextMenu(?:Opening|Closing)|'
+        r'ToolTip(?:Opening|Closing)|'
+        r'DataContextChanged|IsVisibleChanged|IsEnabledChanged|'
+        r'RequestBringIntoView|SourceUpdated|TargetUpdated)'
+        r'\s*=\s*(?:"[^"]*"|\'[^\']*\')'
+    )
+
+    def __init__(self, xaml_source, literal_string=None):
+        from System.IO import StringReader
+        from System.Windows.Markup import XamlReader
+        import System.Xml
+        stripped = str(xaml_source).strip()
+        is_inline = (literal_string is True or
+                     (literal_string is None and stripped.startswith('<')))
+        if not is_inline:
+            with open(str(xaml_source), 'r', encoding='utf-8') as _f:
+                stripped = _f.read().strip()
+        xaml_clean = self._XAML_EVENTS.sub('', stripped)
+        rdr = System.Xml.XmlReader.Create(StringReader(xaml_clean))
+        self._window = XamlReader.Load(rdr)
+
+    def __getattr__(self, name):
+        if name.startswith('_'):
+            raise AttributeError(name)
+        win = object.__getattribute__(self, '_window')
+        el = win.FindName(name)
+        if el is not None:
+            return el
+        return getattr(win, name)
+
+    def ShowDialog(self):
+        return self._window.ShowDialog()
+
+    def Show(self):
+        return self._window.Show()
+
+    def Close(self):
+        self._window.Close()
+
+# ==================== FIM CPYTHON COMPAT ====================
+
+def set_red_highlight(view, element_ids, apply=True):
+    """Aplica ou remove o preenchimento vermelho sólido nos elementos."""
+    doc = view.Document
+    if apply:
+        # Busca o padrão de preenchimento sólido no documento
+        solid_fill = None
+        fill_patterns = DB.FilteredElementCollector(doc).OfClass(DB.FillPatternElement)
+        for fp in fill_patterns:
+            try:
+                if fp.GetFillPattern().IsSolidFill:
+                    solid_fill = fp
+                    break
+            except: continue
+        
+        ogs = DB.OverrideGraphicSettings()
+        red = DB.Color(255, 0, 0)
+        
+        # Configura as linhas em vermelho e com espessura maior
+        ogs.SetProjectionLineColor(red)
+        try: ogs.SetProjectionLineWeight(8)
+        except: pass
+        
+        # Se encontrou o padrão sólido, aplica preenchimento (Foreground e Background)
+        if solid_fill:
+            # Foreground
+            try:
+                ogs.SetSurfaceForegroundPatternId(solid_fill.Id)
+                ogs.SetSurfaceForegroundPatternColor(red)
+                ogs.SetSurfaceForegroundPatternVisible(True)
+            except: pass
+            
+            # Background
+            try:
+                ogs.SetSurfaceBackgroundPatternId(solid_fill.Id)
+                ogs.SetSurfaceBackgroundPatternColor(red)
+                ogs.SetSurfaceBackgroundPatternVisible(True)
+            except: pass
+            
+        for eid in element_ids:
+            try: view.SetElementOverrides(eid, ogs)
+            except: pass
+    else:
+        # Limpa todos os overrides aplicados
+        blank = DB.OverrideGraphicSettings()
+        for eid in element_ids:
+            try: view.SetElementOverrides(eid, blank)
+            except: pass
 
 
 def get_element_parameters(element):
@@ -52,11 +208,12 @@ def get_element_parameters(element):
             params_dict['Workset'] = workset.Name if workset else None
             
         # Design Option
-        do_id = element.DesignOption
-        if do_id:
-            do_el = element.Document.GetElement(do_id)
-            if do_el:
-                params_dict['Design Option'] = do_el.Name
+        try:
+            do_obj = element.DesignOption
+            if do_obj:
+                params_dict['Design Option'] = do_obj.Name
+        except:
+            pass
 
         # Phase Created
         pc_param = element.get_Parameter(DB.BuiltInParameter.PHASE_CREATED)
@@ -103,7 +260,7 @@ def filter_similar_elements(target_doc, reference_params, selected_criteria, sco
     Filtra elementos no doc alvo (pode ser o host ou um link).
     Se scope for active_view e for o host, usa o ActiveView. Se for link, ignora view.
     """
-    if scope == 'active_view' and target_doc.IsFamilyDocument == False and target_doc.Title == doc.Title:
+    if scope == 'active_view' and target_doc.Equals(doc) and not target_doc.IsFamilyDocument:
         collector = DB.FilteredElementCollector(target_doc, active_view.Id)
     else:
         # Para vínculos, scope 'active_view' não é diretamente suportado com Id da Vista do Host.
@@ -136,9 +293,9 @@ def filter_similar_elements(target_doc, reference_params, selected_criteria, sco
     return matching_elements
 
 
-class SmartSelectSimilarWindow(forms.WPFWindow):
+class SmartSelectSimilarWindow(_WPFWindowCPy):
     def __init__(self, xaml_file, selected_element, is_linked, target_doc, link_instance):
-        forms.WPFWindow.__init__(self, xaml_file)
+        _WPFWindowCPy.__init__(self, xaml_file)
         
         self.selected_element = selected_element
         self.is_linked = is_linked
@@ -149,6 +306,7 @@ class SmartSelectSimilarWindow(forms.WPFWindow):
         self.element_params = get_element_parameters(selected_element)
         self.selected_criteria = []
         self.matching_elements = []  # Elementos do target_doc
+        self.last_highlighted_ids = [] # Cache para limpar o highlight anterior
         
         # Setup UI initial state
         prefix = "[VÍNCULO] " if is_linked else ""
@@ -162,6 +320,36 @@ class SmartSelectSimilarWindow(forms.WPFWindow):
         
         self.populate_parameters()
         self.update_preview()
+
+        # Reconecta eventos removidos pelo regex do _WPFWindowCPy
+        self.SearchBox.TextChanged += self.on_search_changed
+        self.RadioActiveView.Checked += self.on_scope_changed
+        self.RadioProject.Checked += self.on_scope_changed
+        self.BtnPresetFamilyType.Click += self.on_preset_family_type
+        self.BtnPresetFamilyComments.Click += self.on_preset_family_comments
+        self.BtnClearAll.Click += self.on_clear_all
+        self.PaintButton.Click += self.on_paint_click
+        self.ZoomButton.Click += self.on_zoom_click
+        self.BtnPreview.Click += self.on_preview_click
+        self.BtnSelect.Click += self.do_select
+
+        # Evento para limpar highlight ao fechar
+        self.Closed += self.on_window_closed
+    
+    def on_window_closed(self, sender, args):
+        self.clear_highlight()
+
+    def clear_highlight(self):
+        if self.last_highlighted_ids:
+            t = DB.Transaction(doc, "Limpar Highlight")
+            t.Start()
+            try:
+                set_red_highlight(active_view, self.last_highlighted_ids, apply=False)
+                t.Commit()
+            except:
+                if t.HasStarted() and not t.HasEnded():
+                    t.RollBack()
+            self.last_highlighted_ids = []
     
     def populate_parameters(self):
         self.ParametersPanel.Children.Clear()
@@ -223,15 +411,21 @@ class SmartSelectSimilarWindow(forms.WPFWindow):
                 
                 self.ParametersPanel.Children.Add(cb)
 
+    def on_scope_changed(self, sender, args):
+        self.update_preview()
+
     def on_search_changed(self, sender, args):
-        search_text = self.SearchBox.Text.lower()
+        search_text = str(self.SearchBox.Text).lower()
         for child in self.ParametersPanel.Children:
             if isinstance(child, CheckBox):
-                param_text = child.Content.lower()
+                param_text = str(child.Content or "").lower()
                 child.Visibility = Visibility.Visible if search_text in param_text else Visibility.Collapsed
 
     def on_criteria_changed(self, sender, args):
-        self.selected_criteria = [c.Tag for c in self.ParametersPanel.Children if isinstance(c, CheckBox) and c.IsChecked]
+        self.selected_criteria = []
+        for c in self.ParametersPanel.Children:
+            if isinstance(c, CheckBox) and c.IsChecked == True:
+                self.selected_criteria.append(str(c.Tag))
         self.update_preview()
 
     def update_preview(self):
@@ -249,6 +443,20 @@ class SmartSelectSimilarWindow(forms.WPFWindow):
             self.reference_cat_id
         )
         self.PreviewLabel.Text = "📊 {} elementos encontrados".format(len(self.matching_elements))
+        
+        # Atualiza o destaque vermelho em tempo real
+        if not self.is_linked: # Só destaca elementos no documento host (ActiveView)
+            self.clear_highlight()
+            if self.matching_elements:
+                self.last_highlighted_ids = [e.Id for e in self.matching_elements]
+                t = DB.Transaction(doc, "Highlight Temporário")
+                t.Start()
+                try:
+                    set_red_highlight(active_view, self.last_highlighted_ids, apply=True)
+                    t.Commit()
+                except:
+                    if t.HasStarted() and not t.HasEnded():
+                        t.RollBack()
 
     def on_preset_family_type(self, sender, args):
         self._batch_set_checks(['Category', 'Family', 'Type'])
@@ -262,25 +470,76 @@ class SmartSelectSimilarWindow(forms.WPFWindow):
     def _batch_set_checks(self, tags):
         for child in self.ParametersPanel.Children:
             if isinstance(child, CheckBox):
-                child.IsChecked = child.Tag in tags
+                child.IsChecked = (str(child.Tag) in tags)
         self.on_criteria_changed(None, None)
 
     def on_preview_click(self, sender, args):
         if self.matching_elements:
             if self.is_linked:
-                forms.alert("Preview Isolate/Show não suportado nativamente para vínculos da forma tradicional.", title="Preview")
+                # Para links, a melhor forma de preview é selecionar e dar zoom aproximado
+                refs = List[DB.Reference]()
+                for e in self.matching_elements:
+                    try:
+                        ref = DB.Reference(e).CreateLinkReference(self.link_instance)
+                        refs.Add(ref)
+                    except: pass
+                uidoc.Selection.SetReferences(refs)
+                uidoc.ShowElements(self.link_instance.Id)
             else:
-                ids = List[DB.ElementId]([e.Id for e in self.matching_elements])
+                ids = List[DB.ElementId]()
+                for e in self.matching_elements:
+                    ids.Add(e.Id)
                 uidoc.Selection.SetElementIds(ids)
+                uidoc.ShowElements(ids)
+
+    def on_paint_click(self, sender, args):
+        """Pintura persistente (não limpa ao fechar)."""
+        if self.matching_elements:
+            if self.is_linked:
+                _alert("Pintura individual de elementos em VÍNCULOS não é suportada diretamente pelo Revit nesta versão. Use o Zoom para identificá-los.", title="Aviso")
+                return
+
+            ids = [e.Id for e in self.matching_elements]
+            t = DB.Transaction(doc, "Pintar Elementos")
+            t.Start()
+            try:
+                set_red_highlight(active_view, ids, apply=True)
+                t.Commit()
+            except:
+                if t.HasStarted() and not t.HasEnded():
+                    t.RollBack()
+            
+            # Se forem os mesmos do preview, desvincula da limpeza automática
+            if ids == self.last_highlighted_ids:
+                self.last_highlighted_ids = []
+            
+            _toast("🎨 Seleção pintada de vermelho!")
+
+    def on_zoom_click(self, sender, args):
+        """Dá zoom nos elementos encontrados."""
+        if self.matching_elements:
+            if self.is_linked:
+                refs = List[DB.Reference]()
+                for e in self.matching_elements:
+                    try:
+                        ref = DB.Reference(e).CreateLinkReference(self.link_instance)
+                        refs.Add(ref)
+                    except: pass
+                uidoc.Selection.SetReferences(refs)
+                uidoc.ShowElements(self.link_instance.Id)
+            else:
+                ids = List[DB.ElementId]()
+                for e in self.matching_elements:
+                    ids.Add(e.Id)
                 uidoc.ShowElements(ids)
 
     def do_select(self, sender, args):
         if self.matching_elements:
             try:
-                config = script.get_config()
-                config.set_option('criteria', ",".join(self.selected_criteria))
-                config.set_option('scope', 'active_view' if self.RadioActiveView.IsChecked else 'project')
-                script.save_config()
+                _save_config({
+                    'criteria': ",".join(self.selected_criteria),
+                    'scope': 'active_view' if self.RadioActiveView.IsChecked == True else 'project',
+                })
             except: pass
             
             if self.is_linked:
@@ -298,20 +557,36 @@ class SmartSelectSimilarWindow(forms.WPFWindow):
                 if refs.Count > 0:
                     uidoc.Selection.SetReferences(refs)
                 else:
-                    forms.alert("Falha ao criar referências vinculadas.")
+                    _alert("Falha ao criar referências vinculadas.")
             else:
                 # Documento Host (padrão)
-                ids = List[DB.ElementId]([e.Id for e in self.matching_elements])
+                ids = List[DB.ElementId]()
+                for e in self.matching_elements:
+                    ids.Add(e.Id)
                 uidoc.Selection.SetElementIds(ids)
                 
         self.Close()
 
 
 # --- Entry Point ---
-# 1. Tentar pegar seleção existente
-selection_refs = uidoc.Selection.GetReferences()
+# 1. Tentar pegar seleção existente — CPython usa GetElementIds (não GetReferences)
+selection_refs = None
+try:
+    sel_ids = uidoc.Selection.GetElementIds()
+    if sel_ids and sel_ids.Count > 0:
+        # Converter ElementIds para References fake para manter compatibilidade
+        first_id = list(sel_ids)[0]
+        first_elem = doc.GetElement(first_id)
+        if first_elem:
+            class _FakeRef:
+                def __init__(self, eid, linked_eid=None):
+                    self.ElementId = eid
+                    self.LinkedElementId = linked_eid or DB.ElementId.InvalidElementId
+            selection_refs = [_FakeRef(first_id)]
+except:
+    pass
 
-if not selection_refs or len(selection_refs) == 0:
+if not selection_refs:
     # Se nada selecionado, pedir para selecionar um elemento (suporta vinculados e locais)
     try:
         from Autodesk.Revit.UI.Selection import ObjectType
@@ -319,7 +594,7 @@ if not selection_refs or len(selection_refs) == 0:
         if picked:
             selection_refs = [picked]
     except:
-        script.exit()
+        raise SystemExit()
 
 if selection_refs and len(selection_refs) >= 1:
     ref = selection_refs[0]
@@ -336,14 +611,14 @@ if selection_refs and len(selection_refs) >= 1:
         target_doc = link_instance.GetLinkDocument()
         
         if not target_doc:
-            forms.alert("Não foi possível acessar o documento do vínculo (talvez esteja descarregado).", exitscript=True)
-            
+            _alert("Não foi possível acessar o documento do vínculo (talvez esteja descarregado).", exitscript=True)
+
         # Pega o elemento REAL dentro do vínculo (Id contido no LinkedElementId da Referência)
         linked_id = ref.LinkedElementId
         if linked_id and linked_id != DB.ElementId.InvalidElementId:
             elem = target_doc.GetElement(linked_id)
         else:
-            forms.alert("Elemento inválido no vínculo.", exitscript=True)
+            _alert("Elemento inválido no vínculo.", exitscript=True)
     else:
         # Se GetElement(Reference) não for RevitLinkInstance, também testamos Reference.LinkedElementId para ter certeza
         # pois o pickObject pode retornar o RevitLinkInstance, mas o GetReferences as vezes traz host.
@@ -361,18 +636,18 @@ if selection_refs and len(selection_refs) >= 1:
             pass
             
     if not elem:
-        forms.alert("Não foi possível acessar as propriedades do elemento.", exitscript=True)
-    
-    xaml_path = os.path.join(os.path.dirname(__file__), "ui.xaml")
-    
+        _alert("Não foi possível acessar as propriedades do elemento.", exitscript=True)
+
+    xaml_path = os.path.join(_script_dir(), "ui.xaml")
+
     # Load config
-    config = script.get_config()
     saved_criteria = None
     saved_scope = 'active_view'
     try:
-        c_str = config.get_option('criteria', None)
-        if c_str: saved_criteria = c_str.split(",")
-        saved_scope = config.get_option('scope', 'active_view')
+        _cfg = _load_config()
+        c_str = _cfg.get('criteria', None)
+        if c_str: saved_criteria = str(c_str).split(",")
+        saved_scope = str(_cfg.get('scope', 'active_view'))
     except: pass
     
     shift_pressed = (Control.ModifierKeys & Keys.Shift) == Keys.Shift
@@ -398,6 +673,9 @@ if selection_refs and len(selection_refs) >= 1:
                 if refs.Count > 0:
                     uidoc.Selection.SetReferences(refs)
             else:
-                uidoc.Selection.SetElementIds(List[DB.ElementId]([e.Id for e in matching]))
+                _ids = List[DB.ElementId]()
+                for e in matching:
+                    _ids.Add(e.Id)
+                uidoc.Selection.SetElementIds(_ids)
         else:
-            forms.alert("Nenhum similar encontrado.", title="Smart Select Similar")
+            _alert("Nenhum similar encontrado.", title="Smart Select Similar")

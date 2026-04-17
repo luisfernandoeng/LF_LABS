@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 # Auditoria Elétrica Completa - Múltiplos Painéis
 
 from pyrevit import revit, DB
@@ -28,7 +28,7 @@ def salvar_erro(mensagem):
             f.write(mensagem)
         
         print("Erro salvo em: {}".format(arquivo))
-    except:
+    except Exception:
         print("Não foi possível salvar o arquivo de erro")
 
 
@@ -88,9 +88,9 @@ def processar_painel(painel, dispositivos):
                                     ref_el = ref.Owner
                                     if ref_el:
                                         elementos_do_sistema.add(ref_el.Id)
-                    except:
+                    except Exception:
                         pass
-            except:
+            except Exception:
                 pass
         
         for c in circuitos_derivados:

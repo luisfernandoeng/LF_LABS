@@ -8,6 +8,7 @@ Dois modos:
   - Cotar elementos selecionados (misto)
   - Cotar por categorias: Referência (base) + Alvos (o que cotar)
     Ex: Paredes (ref) → Conduítes, Dispositivos (alvos)
+    Cada categoria-alvo gera sua própria cadeia de cotas.
 """
 import clr
 import math
@@ -15,13 +16,14 @@ import System
 from System.Collections.Generic import List
 from Autodesk.Revit.DB import (
     FilteredElementCollector, BuiltInCategory, ElementId,
-    Transaction, Line, XYZ, 
+    Transaction, Line, XYZ,
     FamilyInstance, Wall,
     Reference, ReferenceArray, Options,
-    DimensionType, ViewPlan, ViewSection,
+    Dimension, DimensionType, ViewPlan, ViewSection,
     LocationCurve, LocationPoint,
     Grid as RevitGrid
 )
+import Autodesk.Revit.DB as DB
 
 from pyrevit import revit, forms, script
 
@@ -41,26 +43,26 @@ class CategoryOption(object):
 
 # Referências (elementos de base)
 REF_CATEGORIES = [
-    ("Paredes", BuiltInCategory.OST_Walls),
-    ("Pisos", BuiltInCategory.OST_Floors),
-    ("Eixos (Grids)", BuiltInCategory.OST_Grids),
-    ("Pilares Estruturais", BuiltInCategory.OST_StructuralColumns),
-    ("Colunas Arquitetônicas", BuiltInCategory.OST_Columns),
+    ("Paredes",                  BuiltInCategory.OST_Walls),
+    ("Pisos",                    BuiltInCategory.OST_Floors),
+    ("Eixos (Grids)",            BuiltInCategory.OST_Grids),
+    ("Pilares Estruturais",      BuiltInCategory.OST_StructuralColumns),
+    ("Colunas Arquitetônicas",   BuiltInCategory.OST_Columns),
 ]
 
 # Alvos (o que cotar em relação à referência)
 TARGET_CATEGORIES = [
-    ("Conduítes", BuiltInCategory.OST_Conduit),
-    ("Eletrocalhas", BuiltInCategory.OST_CableTray),
-    ("Tubulações", BuiltInCategory.OST_PipeCurves),
-    ("Dutos (HVAC)", BuiltInCategory.OST_DuctCurves),
-    ("Dispositivos Elétricos", BuiltInCategory.OST_ElectricalFixtures),
-    ("Dispositivos de Iluminação", BuiltInCategory.OST_LightingDevices),
-    ("Luminárias", BuiltInCategory.OST_LightingFixtures),
+    ("Conduítes",                   BuiltInCategory.OST_Conduit),
+    ("Eletrocalhas",                BuiltInCategory.OST_CableTray),
+    ("Tubulações",                  BuiltInCategory.OST_PipeCurves),
+    ("Dutos (HVAC)",                BuiltInCategory.OST_DuctCurves),
+    ("Dispositivos Elétricos",      BuiltInCategory.OST_ElectricalFixtures),
+    ("Dispositivos de Iluminação",  BuiltInCategory.OST_LightingDevices),
+    ("Luminárias",                  BuiltInCategory.OST_LightingFixtures),
     ("Dispositivos de Comunicação", BuiltInCategory.OST_CommunicationDevices),
-    ("Equipamentos Mecânicos", BuiltInCategory.OST_MechanicalEquipment),
-    ("Conexões de Conduíte", BuiltInCategory.OST_ConduitFitting),
-    ("Conexões de Tubulação", BuiltInCategory.OST_PipeFitting),
+    ("Equipamentos Mecânicos",      BuiltInCategory.OST_MechanicalEquipment),
+    ("Conexões de Conduíte",        BuiltInCategory.OST_ConduitFitting),
+    ("Conexões de Tubulação",       BuiltInCategory.OST_PipeFitting),
 ]
 
 # ====== Funções Geométricas ======
@@ -76,192 +78,263 @@ def get_element_curve(el):
 
 
 def get_element_reference(el):
-    """Obtém uma Reference válida para criar dimensão."""
+    """Obtém uma Reference geométrica válida para criar dimensão."""
     if isinstance(el, RevitGrid):
+        try: return Reference(el)
+        except: pass
+
+    opt = Options()
+    opt.ComputeReferences = True
+    opt.IncludeNonVisibleObjects = True
+    opt.View = active_view
+
+    if isinstance(el, Wall):
         try:
-            return Reference(el)
-        except:
-            pass
-    
-    try:
-        opt = Options()
-        opt.ComputeReferences = True
-        opt.IncludeNonVisibleObjects = True
-        opt.View = active_view
-        
-        geom = el.get_Geometry(opt)
-        if geom:
-            for geom_obj in geom:
-                if hasattr(geom_obj, 'Reference') and geom_obj.Reference:
-                    return geom_obj.Reference
-                if hasattr(geom_obj, 'GetInstanceGeometry'):
-                    inst_geom = geom_obj.GetInstanceGeometry()
-                    if inst_geom:
-                        for sub in inst_geom:
-                            if hasattr(sub, 'Reference') and sub.Reference:
-                                return sub.Reference
-    except:
-        pass
-    
-    try:
-        return Reference(el)
-    except:
-        pass
-    
+            geom = el.get_Geometry(opt)
+            for obj in geom:
+                if hasattr(obj, 'Faces'):
+                    for face in obj.Faces:
+                        if face.Reference:
+                            return face.Reference
+        except: pass
+
+    geom = el.get_Geometry(opt)
+    if geom:
+        for obj in geom:
+            if hasattr(obj, 'Reference') and obj.Reference:
+                return obj.Reference
+            if hasattr(obj, 'GetInstanceGeometry'):
+                inst_geom = obj.GetInstanceGeometry()
+                for sub in inst_geom:
+                    if hasattr(sub, 'Reference') and sub.Reference:
+                        return sub.Reference
+                    if hasattr(sub, 'Faces'):
+                        for f in sub.Faces:
+                            if f.Reference: return f.Reference
+            if hasattr(obj, 'Faces'):
+                for face in obj.Faces:
+                    if face.Reference:
+                        return face.Reference
+
+    try: return Reference(el)
+    except: pass
+
     return None
 
 
-def project_point_on_axis(point, axis_direction):
-    """Projeta um ponto no eixo dado."""
-    return point.X * axis_direction.X + point.Y * axis_direction.Y + point.Z * axis_direction.Z
-
-
-def get_element_position_on_axis(el, axis_direction):
-    """Obtém posição do ponto médio do elemento no eixo."""
+def get_element_position_on_axis(el, axis):
+    """Obtém posição do ponto médio do elemento projetada no eixo."""
     curve = get_element_curve(el)
     if curve:
-        p0 = curve.GetEndPoint(0)
-        p1 = curve.GetEndPoint(1)
-        mid = XYZ((p0.X + p1.X) / 2.0, (p0.Y + p1.Y) / 2.0, (p0.Z + p1.Z) / 2.0)
-        return project_point_on_axis(mid, axis_direction)
-    
+        mid = curve.Evaluate(0.5, True)
+        return mid.DotProduct(axis)
+
     loc = el.Location
     if isinstance(loc, LocationPoint):
-        return project_point_on_axis(loc.Point, axis_direction)
-    
-    # Fallback: bounding box center
+        return loc.Point.DotProduct(axis)
+
     try:
         bb = el.get_BoundingBox(active_view)
         if bb:
-            center = XYZ((bb.Min.X + bb.Max.X) / 2.0, (bb.Min.Y + bb.Max.Y) / 2.0, (bb.Min.Z + bb.Max.Z) / 2.0)
-            return project_point_on_axis(center, axis_direction)
+            center = (bb.Min + bb.Max) * 0.5
+            return center.DotProduct(axis)
     except:
         pass
-    
+
     return None
 
 
 def get_dim_types():
-    """Coleta DimensionTypes lineares."""
+    """Coleta DimensionTypes de estilo Alinhado (Aligned) ou Linear."""
     col = FilteredElementCollector(doc).OfClass(DimensionType)
     types = []
     for dt in col:
         try:
-            if dt.StyleType.ToString() == "Linear":
+            style = dt.StyleType.ToString()
+            if style in ["Aligned", "Linear"]:
                 types.append(dt)
         except:
-            types.append(dt)
+            pass
+
+    def sort_key(x):
+        try:
+            s = x.StyleType.ToString()
+            if s == "Aligned": return 0
+            if s == "Linear":  return 1
+            return 2
+        except: return 3
+
+    types.sort(key=sort_key)
     return types
 
 
-def create_individual_dimensions(elements, direction, offset_mm, dim_type=None):
+def create_individual_dimensions(elements, direction, offset_mm, dim_type=None, base_offset_ft=0.0):
     """
-    Cria cotas individuais entre pares adjacentes de elementos.
-    Junta todos os elementos (referência + alvos), ordena e cota.
+    Cria uma cadeia de cotas (multi-segmento) para os elementos dados.
+
+    Retorna (n_elementos_cotados, final_offset_ft_usado).
+    Retorna (0, base_offset_ft) se não foi possível criar a cota.
+
+    base_offset_ft: posição mínima (em pés) para a linha de cota — usado para
+                    empilhar cadeias de diferentes categorias sem sobreposição.
     """
     view = active_view
     offset_ft = offset_mm / MM_PER_FT
-    
+
+    # 1. Direção de ordenação
+    master_dir = None
+    for el in elements:
+        c = get_element_curve(el)
+        if c and isinstance(c, Line):
+            master_dir = (c.GetEndPoint(1) - c.GetEndPoint(0)).Normalize()
+            break
+
+    view_right  = view.RightDirection
+    view_up     = view.UpDirection
+    view_normal = view.ViewDirection
+    view_plane_depth = view.Origin.DotProduct(view_normal)
+
     if direction == "horizontal":
-        sort_axis = XYZ(1, 0, 0)
-        offset_dir = XYZ(0, 1, 0)
+        if master_dir and abs(master_dir.DotProduct(view_up)) > 0.8:
+            master_dir = None
+
+        sort_axis = master_dir if master_dir else view_right
+        if sort_axis.DotProduct(view_right) < 0:
+            sort_axis = sort_axis.Negate()
+
+        # BUG 1 FIX: perpendicular no plano da vista usando cross product com view_normal
+        # Funciona corretamente em plantas, cortes e elevações.
+        offset_axis = view_normal.CrossProduct(sort_axis).Normalize()
+        if offset_axis.DotProduct(view_up) < 0:
+            offset_axis = offset_axis.Negate()
     else:
-        sort_axis = XYZ(0, 1, 0)
-        offset_dir = XYZ(1, 0, 0)
-    
-    # Filtra elementos válidos
-    valid_elements = []
+        if master_dir and abs(master_dir.DotProduct(view_right)) > 0.8:
+            master_dir = None
+
+        sort_axis = master_dir if master_dir else view_up
+        if sort_axis.DotProduct(view_up) < 0:
+            sort_axis = sort_axis.Negate()
+
+        # BUG 1 FIX: mesmo cálculo para direção vertical
+        offset_axis = view_normal.CrossProduct(sort_axis).Normalize()
+        if offset_axis.DotProduct(view_right) < 0:
+            offset_axis = offset_axis.Negate()
+
+    # 2. Coleta posições e referências
+    valid_data = []
     for el in elements:
         pos = get_element_position_on_axis(el, sort_axis)
         ref = get_element_reference(el)
         if pos is not None and ref is not None:
-            valid_elements.append((pos, el, ref))
-    
-    if len(valid_elements) < 2:
-        return 0
-    
-    valid_elements.sort(key=lambda x: x[0])
-    
-    # Calcula offset da linha de cota
-    max_offset_point = None
-    for _, el, _ in valid_elements:
+            valid_data.append((pos, el, ref))
+
+    if len(valid_data) < 2:
+        return 0, base_offset_ft
+
+    valid_data.sort(key=lambda x: x[0])
+
+    # BUG 3 FIX: limiar de 10 mm em vez de ShortCurveTolerance (~0,008 mm)
+    min_dist = 10.0 / MM_PER_FT
+
+    filtered = []
+    seen_refs = set()
+    last_pos = None
+
+    for pos, el, ref in valid_data:
+        try:
+            ref_stable = ref.ConvertToStableRepresentation(doc)
+            if ref_stable in seen_refs: continue
+            if last_pos is not None and abs(pos - last_pos) < min_dist: continue
+
+            filtered.append((pos, el, ref))
+            seen_refs.add(ref_stable)
+            last_pos = pos
+        except: pass
+
+    if len(filtered) < 2:
+        return 0, base_offset_ft
+
+    # 3. Posição da linha de cota
+    max_offset = None
+    for _, el, _ in filtered:
         bb = el.get_BoundingBox(view)
         if bb:
-            if direction == "horizontal":
-                candidate = bb.Max.Y
-            else:
-                candidate = bb.Max.X
-            if max_offset_point is None or candidate > max_offset_point:
-                max_offset_point = candidate
-    
-    if max_offset_point is None:
-        max_offset_point = 0
-    
-    dim_offset = max_offset_point + offset_ft
-    
-    # Tolerância mínima do Revit
+            for corner in [bb.Min, bb.Max]:
+                candidate = corner.DotProduct(offset_axis)
+                if max_offset is None or candidate > max_offset:
+                    max_offset = candidate
+
+    if max_offset is None:
+        max_offset = 0.0
+
+    # Respeita o base_offset (para empilhar cadeias de categorias diferentes)
+    final_offset_val = max(max_offset, base_offset_ft) + offset_ft
+
+    # 4. Cria a cota
+    ref_array = ReferenceArray()
+    for _, _, ref in filtered:
+        ref_array.Append(ref)
+
+    def get_pt(s_val):
+        return (sort_axis * s_val) + (offset_axis * final_offset_val) + (view_normal * view_plane_depth)
+
+    p1 = get_pt(filtered[0][0])
+    p2 = get_pt(filtered[-1][0])
+
     try:
-        min_length = app.ShortCurveTolerance * 2.0
-    except:
-        min_length = 0.01
-    
-    count = 0
-    
-    for i in range(len(valid_elements) - 1):
-        pos_a, el_a, ref_a = valid_elements[i]
-        pos_b, el_b, ref_b = valid_elements[i + 1]
-        
-        # Pula pares muito próximos
-        dist_ft = abs(pos_b - pos_a)
-        if dist_ft < min_length:
-            continue
-        
-        ref_array = ReferenceArray()
-        ref_array.Append(ref_a)
-        ref_array.Append(ref_b)
-        
-        if direction == "horizontal":
-            p1 = XYZ(pos_a, dim_offset, 0)
-            p2 = XYZ(pos_b, dim_offset, 0)
-        else:
-            p1 = XYZ(dim_offset, pos_a, 0)
-            p2 = XYZ(dim_offset, pos_b, 0)
-        
+        dim_line = Line.CreateBound(p1, p2)
+        dim = None
+
         try:
-            dim_line = Line.CreateBound(p1, p2)
             if dim_type:
-                dim = doc.Create.NewDimension(view, dim_line, ref_array, dim_type)
+                dim = DB.Dimension.Create(doc, view.Id, dim_line, ref_array, dim_type.Id)
             else:
-                dim = doc.Create.NewDimension(view, dim_line, ref_array)
-            if dim:
-                count += 1
-        except Exception as ex:
-            pass  # Silenciosamente pula falhas individuais
-    
-    return count
+                dim = DB.Dimension.Create(doc, view.Id, dim_line, ref_array)
+        except:
+            try:
+                if dim_type:
+                    dim = doc.Create.NewAlignedDimension(view, dim_line, ref_array, dim_type)
+                else:
+                    dim = doc.Create.NewAlignedDimension(view, dim_line, ref_array)
+            except:
+                try:
+                    if dim_type:
+                        dim = doc.Create.NewDimension(view, dim_line, ref_array, dim_type)
+                    else:
+                        dim = doc.Create.NewDimension(view, dim_line, ref_array)
+                except Exception as e_final:
+                    import traceback
+                    print("Falha total na criação de cota: {}".format(traceback.format_exc()))
+                    return 0, base_offset_ft
+
+        if dim:
+            return len(filtered), final_offset_val
+        return 0, base_offset_ft
+
+    except Exception as ex:
+        print("Erro crítico ao criar cadeia: {}".format(ex))
+        return 0, base_offset_ft
 
 
 # ====== Janela WPF ======
 class AutoCotasWindow(forms.WPFWindow):
     def __init__(self, xaml_file):
         forms.WPFWindow.__init__(self, xaml_file)
-        self.ref_categories = []
+        self.ref_categories    = []
         self.target_categories = []
-        self.dim_types = []
+        self.dim_types         = []
         self._init_categories()
         self._init_dim_types()
         self._bind_events()
         self._update_info()
-    
+
     def _init_categories(self):
-        """Popula as duas listas de categorias."""
-        self.ref_categories = [CategoryOption(n, b, False) for n, b in REF_CATEGORIES]
-        self.target_categories = [CategoryOption(n, b, False) for n, b in TARGET_CATEGORIES]
-        self.lb_RefCategories.ItemsSource = self.ref_categories
+        self.ref_categories    = [CategoryOption(n, b) for n, b in REF_CATEGORIES]
+        self.target_categories = [CategoryOption(n, b) for n, b in TARGET_CATEGORIES]
+        self.lb_RefCategories.ItemsSource    = self.ref_categories
         self.lb_TargetCategories.ItemsSource = self.target_categories
-    
+
     def _init_dim_types(self):
-        """Popula ComboBox de tipos de cota."""
         self.dim_types = get_dim_types()
         type_names = []
         for dt in self.dim_types:
@@ -269,19 +342,18 @@ class AutoCotasWindow(forms.WPFWindow):
                 type_names.append(dt.Name if hasattr(dt, 'Name') else "Tipo {}".format(dt.Id.IntegerValue))
             except:
                 type_names.append("Tipo {}".format(dt.Id.IntegerValue))
-        
+
         if type_names:
-            self.cb_DimType.ItemsSource = type_names
+            self.cb_DimType.ItemsSource  = type_names
             self.cb_DimType.SelectedIndex = 0
-    
+
     def _bind_events(self):
-        self.btn_Generate.Click += self.generate_dimensions
-        self.btn_Cancel.Click += lambda s, a: self.Close()
-        self.rb_ModeSelected.Checked += self._update_info
-        self.rb_ModeCategory.Checked += self._update_info
-    
+        self.btn_Generate.Click       += self.generate_dimensions
+        self.btn_Cancel.Click         += lambda s, a: self.Close()
+        self.rb_ModeSelected.Checked  += self._update_info
+        self.rb_ModeCategory.Checked  += self._update_info
+
     def _update_info(self, sender=None, args=None):
-        """Atualiza texto informativo e visibilidade do painel."""
         if self.rb_ModeSelected.IsChecked:
             self.panel_Categories.Visibility = System.Windows.Visibility.Collapsed
             sel_count = len(uidoc.Selection.GetElementIds())
@@ -291,34 +363,35 @@ class AutoCotasWindow(forms.WPFWindow):
                 self.lbl_Info.Text = "Nenhum elemento selecionado. Feche a janela e selecione primeiro."
         else:
             self.panel_Categories.Visibility = System.Windows.Visibility.Visible
-            self.lbl_Info.Text = "Marque as categorias de REFERÊNCIA (base) e ALVOS (o que cotar). Todos serão cotados juntos na vista."
-    
+            self.lbl_Info.Text = (
+                "Referências = base da cota. Alvos = o que será cotado. "
+                "Cada categoria-alvo gera uma cadeia separada."
+            )
+
     def generate_dimensions(self, sender, args):
-        """Ação principal."""
         use_selected = self.rb_ModeSelected.IsChecked
-        
+
         try:
             offset_mm = float(self.txt_Offset.Text)
         except:
             forms.alert("Offset inválido. Use um número (ex: 500).")
             return
-        
-        # Tipo de cota
+
         selected_dim_type = None
-        if self.cb_DimType.SelectedIndex >= 0 and self.cb_DimType.SelectedIndex < len(self.dim_types):
+        if 0 <= self.cb_DimType.SelectedIndex < len(self.dim_types):
             selected_dim_type = self.dim_types[self.cb_DimType.SelectedIndex]
-        
-        # Direção
+
         do_horizontal = self.chk_DirHorizontal.IsChecked
-        do_vertical = self.chk_DirVertical.IsChecked
-        
+        do_vertical   = self.chk_DirVertical.IsChecked
+
         if not do_horizontal and not do_vertical:
             forms.alert("Marque pelo menos uma direção.")
             return
-        
-        # Coletar elementos
-        elements = []
-        
+
+        # --- Monta grupos de elementos ---
+        # Cada grupo vira uma cadeia de cotas independente.
+        element_groups = []
+
         if use_selected:
             sel_ids = uidoc.Selection.GetElementIds()
             if not sel_ids:
@@ -326,48 +399,83 @@ class AutoCotasWindow(forms.WPFWindow):
                 return
             elements = [doc.GetElement(eid) for eid in sel_ids]
             elements = [e for e in elements if e is not None]
+            if len(elements) < 2:
+                forms.alert("São necessários pelo menos 2 elementos.\nSelecionados: {}".format(len(elements)))
+                return
+            element_groups.append(elements)
+
         else:
-            # Por categorias: junta referências + alvos
-            ref_bics = [c.bic for c in self.ref_categories if c.is_checked]
+            ref_bics    = [c.bic for c in self.ref_categories    if c.is_checked]
             target_bics = [c.bic for c in self.target_categories if c.is_checked]
-            
+
             if not ref_bics and not target_bics:
                 forms.alert("Marque pelo menos uma categoria de referência ou alvo.")
                 return
-            
-            all_bics = ref_bics + target_bics
-            for bic in all_bics:
-                col = FilteredElementCollector(doc, active_view.Id)
-                col.OfCategory(bic).WhereElementIsNotElementType()
-                elements.extend(list(col))
-        
-        if len(elements) < 2:
-            forms.alert("São necessários pelo menos 2 elementos.\nEncontrados: {}".format(len(elements)))
-            return
-        
+
+            # Coleta elementos de referência (âncoras comuns a todas as cadeias)
+            ref_elements = []
+            for bic in ref_bics:
+                ref_elements.extend(list(
+                    FilteredElementCollector(doc, active_view.Id)
+                    .OfCategory(bic).WhereElementIsNotElementType()
+                ))
+
+            if target_bics:
+                # MELHORIA 4: uma cadeia por categoria-alvo, cada uma ancorada nas referências
+                for bic in target_bics:
+                    target_els = list(
+                        FilteredElementCollector(doc, active_view.Id)
+                        .OfCategory(bic).WhereElementIsNotElementType()
+                    )
+                    group = ref_elements + target_els
+                    if len(group) >= 2:
+                        element_groups.append(group)
+            else:
+                if len(ref_elements) >= 2:
+                    element_groups.append(ref_elements)
+
+            if not element_groups:
+                forms.alert(
+                    "Nenhum grupo com elementos suficientes encontrado na vista.\n"
+                    "Verifique se as categorias selecionadas têm elementos visíveis."
+                )
+                return
+
         self.Close()
-        
-        total_created = 0
-        
+
+        total_elements = 0
+        total_chains   = 0
+
         with revit.Transaction("Auto-Cotas", doc):
-            if do_horizontal:
-                total_created += create_individual_dimensions(
-                    elements, "horizontal", offset_mm, selected_dim_type
-                )
-            if do_vertical:
-                total_created += create_individual_dimensions(
-                    elements, "vertical", offset_mm, selected_dim_type
-                )
-        
-        if total_created > 0:
-            forms.alert("✅ {} cotas criadas!".format(total_created), title="Auto-Cotas")
+            for direction in ([d for d in ["horizontal", "vertical"]
+                               if (d == "horizontal" and do_horizontal) or
+                                  (d == "vertical"   and do_vertical)]):
+                # Empilha as cadeias: cada nova cadeia começa depois da anterior
+                next_base_ft = 0.0
+                for group in element_groups:
+                    res, used_offset = create_individual_dimensions(
+                        group, direction, offset_mm, selected_dim_type,
+                        base_offset_ft=next_base_ft
+                    )
+                    if res > 0:
+                        total_elements += res
+                        total_chains   += 1
+                        # Próxima cadeia começa depois desta + um gap extra
+                        next_base_ft = used_offset + offset_mm / MM_PER_FT
+
+        if total_chains > 0:
+            forms.alert(
+                "✅ {} cadeia(s) criada(s) abrangendo {} elemento(s)!".format(
+                    total_chains, total_elements),
+                title="Auto-Cotas"
+            )
         else:
             forms.alert(
                 "Nenhuma cota criada.\n\n"
                 "Dicas:\n"
-                "• Eixos (Grids) têm referências mais simples\n"
-                "• Verifique se a vista é uma planta\n"
-                "• Aumente o offset se elementos estão sobrepostos",
+                "• Verifique se os elementos selecionados são paralelos entre si\n"
+                "• Aumente o offset se a cota estiver oculta atrás do elemento\n"
+                "• Garanta que as categorias possuem referências geométricas válidas",
                 title="Auto-Cotas"
             )
 

@@ -251,36 +251,43 @@ class RenameWindow(forms.WPFWindow):
     def _load_available_parameters(self):
         """Detecta parâmetros disponíveis nos elementos selecionados"""
         params = set([
-            "Type Name", "Nome do Tipo", 
-            "Comments", "Comentários", 
+            "Type Name", "Nome do Tipo",
+            "Comments", "Comentários",
             "Mark", "Marca"
         ])
-        
+
         # Amostra até 20 itens para performance
         sample_size = min(20, self.preview_items.Count)
-        
+        has_text_notes = False
+
         for i in range(sample_size):
             item = self.preview_items[i]
+
+            if isinstance(item.element, DB.TextNote):
+                has_text_notes = True
+                params.add("Text")
+                continue
+
             elements_to_check = [item.element]
             if not item.is_itemized and item.instances:
                 elements_to_check.append(item.instances[0])
-            
+
             for el in elements_to_check:
                 for p in el.Parameters:
                     if not p.IsReadOnly and p.StorageType == DB.StorageType.String:
                         params.add(p.Definition.Name)
-        
+
         # Atualiza ComboBox de Alvo
         if hasattr(self, 'param_cb'):
             current = self.param_cb.SelectedItem
             sorted_params = sorted(list(params))
             self.param_cb.ItemsSource = sorted_params
-            
+
             # Mantém seleção ou escolhe padrão
             if current in sorted_params:
                 self.param_cb.SelectedItem = current
             else:
-                defaults = ["Mark", "Marca", "Type Mark", "Marca de tipo"]
+                defaults = (["Text"] if has_text_notes else []) + ["Mark", "Marca", "Type Mark", "Marca de tipo"]
                 for d in defaults:
                     if d in sorted_params:
                         self.param_cb.SelectedItem = d
@@ -373,28 +380,27 @@ class RenameWindow(forms.WPFWindow):
         """Carrega valores atuais do parâmetro selecionado"""
         if not selected_param:
             return
-        
+
         for item in self.preview_items:
             val = ""
-            
-            if selected_param in ["Type Name", "Nome do Tipo"]:
-                # Lê nome do tipo
+
+            if selected_param == "Text" and isinstance(item.element, DB.TextNote):
+                val = item.element.Text or ""
+            elif selected_param in ["Type Name", "Nome do Tipo"]:
                 if item.is_itemized:
                     el_type = revit.doc.GetElement(item.element.GetTypeId())
                     val = revit.query.get_name(el_type) if el_type else ""
                 else:
                     val = revit.query.get_name(item.element)
             else:
-                # Tenta ler parâmetro do elemento principal
                 p = item.element.LookupParameter(selected_param)
                 if p:
                     val = p.AsString() or ""
                 elif not item.is_itemized and item.instances:
-                    # Fallback: tenta na primeira instância
                     p_inst = item.instances[0].LookupParameter(selected_param)
                     if p_inst:
                         val = p_inst.AsString() or ""
-            
+
             item.original = val
 
     def select_all(self, sender, args):
@@ -435,6 +441,12 @@ class RenameWindow(forms.WPFWindow):
             
             for item in items_to_apply:
                 try:
+                    # Texto de Nota de Texto
+                    if selected_param == "Text" and isinstance(item.element, DB.TextNote):
+                        item.element.Text = item.new
+                        count += 1
+                        continue
+
                     # Alteração de nome do tipo
                     if selected_param in ["Type Name", "Nome do Tipo"]:
                         if item.is_itemized:

@@ -2,22 +2,22 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Renomear+ - Luís Fernando"
         Height="900" Width="1300"
-        Background="#FF1E1E1E"
-        Foreground="#FFF1F1F1"
+        Background="#FF111317"
+        Foreground="#FFF2F4F8"
         WindowStartupLocation="CenterScreen"
         ResizeMode="CanResizeWithGrip"
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Display">
 
     <Window.Resources>
-        <SolidColorBrush x:Key="PanelColor" Color="#FF252526"/>
-        <SolidColorBrush x:Key="BorderColor" Color="#FF3F3F46"/>
-        <SolidColorBrush x:Key="InputColor" Color="#FF333337"/>
-        <SolidColorBrush x:Key="AccentBlue" Color="#FF569CD6"/>
-        <SolidColorBrush x:Key="AccentTeal" Color="#FF4EC9B0"/>
-        <SolidColorBrush x:Key="TextPrimary" Color="#FFF1F1F1"/>
-        <SolidColorBrush x:Key="TextSecondary" Color="#FFCCCCCC"/>
-        <SolidColorBrush x:Key="Danger" Color="#FFD25555"/>
+        <SolidColorBrush x:Key="PanelColor" Color="#FF171A1F"/>
+        <SolidColorBrush x:Key="BorderColor" Color="#FF313844"/>
+        <SolidColorBrush x:Key="InputColor" Color="#FF13161C"/>
+        <SolidColorBrush x:Key="AccentGreen" Color="#FF58D68D"/>
+        <SolidColorBrush x:Key="AccentBlue" Color="#FFC4A8FA"/>
+        <SolidColorBrush x:Key="TextPrimary" Color="#FFF2F4F8"/>
+        <SolidColorBrush x:Key="TextSecondary" Color="#FFC4CAD4"/>
+        <SolidColorBrush x:Key="Danger" Color="#FFF28B82"/>
 
         <Style TargetType="TextBlock">
             <Setter Property="FontFamily" Value="Segoe UI"/>
@@ -25,7 +25,7 @@
         </Style>
 
         <Style TargetType="TextBlock" x:Key="SectionHeader">
-            <Setter Property="Foreground" Value="{StaticResource AccentBlue}"/>
+            <Setter Property="Foreground" Value="{StaticResource AccentGreen}"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="Margin" Value="0,24,0,10"/>
@@ -41,28 +41,33 @@
             <Setter Property="Background" Value="{StaticResource PanelColor}"/>
             <Setter Property="BorderBrush" Value="{StaticResource BorderColor}"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="CornerRadius" Value="12"/>
             <Setter Property="Padding" Value="0"/>
         </Style>
 
         <Style TargetType="TextBox">
-            <Setter Property="Height" Value="32"/>
-            <Setter Property="Background" Value="White"/>
-            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="Height" Value="38"/>
+            <Setter Property="Background" Value="{StaticResource InputColor}"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
             <Setter Property="BorderBrush" Value="{StaticResource BorderColor}"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding" Value="6,0"/>
+            <Setter Property="Padding" Value="8,0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
-            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="FontSize" Value="13"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TextBox">
-                        <Border Background="{TemplateBinding Background}" 
+                        <Border x:Name="border" Background="{TemplateBinding Background}" 
                                 BorderBrush="{TemplateBinding BorderBrush}" 
                                 BorderThickness="{TemplateBinding BorderThickness}" 
-                                CornerRadius="4">
-                            <ScrollViewer x:Name="PART_ContentHost"/>
+                                CornerRadius="12">
+                            <ScrollViewer x:Name="PART_ContentHost" Margin="4,0"/>
                         </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="border" Property="BorderBrush" Value="{StaticResource AccentGreen}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -85,7 +90,7 @@
                                     <ControlTemplate TargetType="ToggleButton">
                                         <Border Background="{StaticResource InputColor}" 
                                                 BorderBrush="{StaticResource BorderColor}" 
-                                                BorderThickness="1" CornerRadius="3">
+                                                BorderThickness="1" CornerRadius="12">
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="*"/>
@@ -183,34 +188,70 @@
             </Setter>
             <Style.Triggers>
                 <Trigger Property="IsSelected" Value="True">
-                    <Setter Property="Background" Value="#264EC9B0"/>
+                    <Setter Property="Background" Value="#2658D68D"/>
                     <Setter Property="Foreground" Value="White"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
 
         <Style x:Key="PrimaryActionButton" TargetType="Button">
-            <Setter Property="Background" Value="{StaticResource AccentTeal}"/>
-            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Background" Value="{StaticResource AccentGreen}"/>
+            <Setter Property="Foreground" Value="#10243f"/>
             <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Height" Value="36"/>
-            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Height" Value="44"/>
+            <Setter Property="FontSize" Value="14"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
+            <Setter Property="RenderTransform">
+                <Setter.Value><ScaleTransform ScaleX="1" ScaleY="1"/></Setter.Value>
+            </Setter>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border Background="{TemplateBinding Background}" CornerRadius="4">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" CornerRadius="22">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#FF7ADBA4"/>
+                            </Trigger>
+                            <EventTrigger RoutedEvent="MouseEnter">
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleX" To="1.03" Duration="0:0:0.15"/>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleY" To="1.03" Duration="0:0:0.15"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                            <EventTrigger RoutedEvent="MouseLeave">
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleX" To="1" Duration="0:0:0.15"/>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleY" To="1" Duration="0:0:0.15"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                            <EventTrigger RoutedEvent="PreviewMouseDown">
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleX" To="0.95" Duration="0:0:0.05"/>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleY" To="0.95" Duration="0:0:0.05"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                            <EventTrigger RoutedEvent="PreviewMouseUp">
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleX" To="1.03" Duration="0:0:0.1"/>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleY" To="1.03" Duration="0:0:0.1"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                        </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#FF5ED6BD"/>
-                </Trigger>
-            </Style.Triggers>
         </Style>
 
         <Style x:Key="SecondaryActionButton" TargetType="Button">
@@ -218,24 +259,45 @@
             <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="BorderBrush" Value="{StaticResource BorderColor}"/>
-            <Setter Property="Height" Value="30"/>
+            <Setter Property="Height" Value="38"/>
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
+            <Setter Property="RenderTransform">
+                <Setter.Value><ScaleTransform ScaleX="1" ScaleY="1"/></Setter.Value>
+            </Setter>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="4">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="19">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#0AFFFFFF"/>
+                                <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+                                <Setter TargetName="border" Property="BorderBrush" Value="{StaticResource TextSecondary}"/>
+                            </Trigger>
+                            <EventTrigger RoutedEvent="PreviewMouseDown">
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleX" To="0.95" Duration="0:0:0.05"/>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleY" To="0.95" Duration="0:0:0.05"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                            <EventTrigger RoutedEvent="PreviewMouseUp">
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleX" To="1" Duration="0:0:0.1"/>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleY" To="1" Duration="0:0:0.1"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                        </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
-                    <Setter Property="BorderBrush" Value="{StaticResource TextSecondary}"/>
-                </Trigger>
-            </Style.Triggers>
         </Style>
     </Window.Resources>
 
@@ -254,7 +316,7 @@
                 </Grid.RowDefinitions>
 
                 <StackPanel Grid.Row="0" Margin="0,0,0,15">
-                    <TextBlock Text="RENOMEAR +" FontSize="20" FontWeight="Bold" Foreground="{StaticResource AccentBlue}"/>
+                    <TextBlock Text="RENOMEAR +" FontSize="20" FontWeight="Bold" Foreground="{StaticResource AccentGreen}"/>
                     <TextBlock Text="Edição Híbrida (Tipo e Instância)" FontSize="12" Foreground="{StaticResource TextSecondary}" Margin="0,6,0,0"/>
                     <Separator Background="{StaticResource BorderColor}" Margin="0,20,0,5"/>
                 </StackPanel>
@@ -301,7 +363,7 @@
                             <Button x:Name="btn_AddParam" Content="Add" Grid.Column="2" Height="32" Style="{StaticResource SecondaryActionButton}"/>
                         </Grid>
                         
-                        <Border Background="#1AFFFFFF" CornerRadius="4" Padding="14" Margin="0,24,0,0" BorderBrush="{StaticResource BorderColor}" BorderThickness="1">
+                        <Border Background="#0AFFFFFF" CornerRadius="12" Padding="14" Margin="0,24,0,0" BorderBrush="{StaticResource BorderColor}" BorderThickness="1">
                             <StackPanel>
                                 <CheckBox x:Name="numbering_cb" Content="Adicionar numeração sequencial" 
                                           FontWeight="SemiBold" Margin="0,0,0,12"/>
@@ -339,8 +401,8 @@
                             </StackPanel>
                         </Border>
 
-                        <TextBlock Text="BUSCA DE PADRÕES INTELIGENTES" Style="{StaticResource SectionHeader}" ToolTip="Use Padrões Inteligentes ou Regex Puro para criar regras de substituição."/>
-                        <Border Background="#1AFFFFFF" CornerRadius="4" Padding="14" Margin="0,0,0,10" BorderBrush="{StaticResource BorderColor}" BorderThickness="1">
+                        <TextBlock Text="BUSCA DE PADRÕES INTELIGENTES" Style="{StaticResource SectionHeader}" ToolTip="Use Padrões Inteligentes or Regex Puro para criar regras de substituição."/>
+                        <Border Background="#0AFFFFFF" CornerRadius="12" Padding="14" Margin="0,0,0,10" BorderBrush="{StaticResource BorderColor}" BorderThickness="1">
                             <StackPanel>
                                 <CheckBox x:Name="use_regex_cb" Content="Usar Regex Puro (Avançado)" Margin="0,0,0,10"
                                           ToolTip="Marque para usar sintaxe Regex padrão do Python. Se desmarcado, use a sintaxe inteligente simplificada."/>
@@ -372,7 +434,7 @@
             </Grid>
         </Border>
 
-        <Grid Grid.Column="1" Background="#FF1E1E1E" Margin="25">
+        <Grid Grid.Column="1" Background="#FF111317" Margin="25">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
@@ -441,7 +503,7 @@
                             <DataGridTextColumn.ElementStyle>
                                 <Style TargetType="TextBlock">
                                     <Setter Property="Margin" Value="10,0"/>
-                                    <Setter Property="Foreground" Value="{StaticResource AccentTeal}"/>
+                                    <Setter Property="Foreground" Value="{StaticResource AccentGreen}"/>
                                     <Setter Property="FontWeight" Value="Bold"/>
                                 </Style>
                             </DataGridTextColumn.ElementStyle>

@@ -3,8 +3,8 @@
         Title="Copiar Crop Region - Smart Crop"
         Height="720" 
         Width="580"
-        Background="#FF1E1E1E"
-        Foreground="#FFF1F1F1"
+        Background="#FF111317"
+        Foreground="#FFF2F4F8"
         WindowStartupLocation="CenterScreen"
         ResizeMode="NoResize"
         UseLayoutRounding="True"
@@ -14,14 +14,14 @@
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
 
         <!-- Paleta de Cores -->
-        <SolidColorBrush x:Key="PanelColor" Color="#FF252526"/>
-        <SolidColorBrush x:Key="BorderColor" Color="#FF3F3F46"/>
-        <SolidColorBrush x:Key="InputColor" Color="#FF333337"/>
-        <SolidColorBrush x:Key="AccentBlue" Color="#FF569CD6"/>
-        <SolidColorBrush x:Key="AccentTeal" Color="#FF4EC9B0"/>
-        <SolidColorBrush x:Key="AccentGreen" Color="#FF4EC99B"/>
-        <SolidColorBrush x:Key="TextPrimary" Color="#FFF1F1F1"/>
-        <SolidColorBrush x:Key="TextSecondary" Color="#FFCCCCCC"/>
+        <SolidColorBrush x:Key="PanelColor" Color="#FF171A1F"/>
+        <SolidColorBrush x:Key="BorderColor" Color="#FF313844"/>
+        <SolidColorBrush x:Key="InputColor" Color="#FF13161C"/>
+        <SolidColorBrush x:Key="AccentBlue" Color="#FFC4A8FA"/>
+        <SolidColorBrush x:Key="AccentTeal" Color="#FFA882F0"/>
+        <SolidColorBrush x:Key="AccentGreen" Color="#FFC4A8FA"/>
+        <SolidColorBrush x:Key="TextPrimary" Color="#FFF2F4F8"/>
+        <SolidColorBrush x:Key="TextSecondary" Color="#FFC4CAD4"/>
 
         <!-- Estilos Base -->
         <Style TargetType="TextBlock">
@@ -30,7 +30,7 @@
         </Style>
 
         <Style x:Key="SectionHeader" TargetType="TextBlock">
-            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="Foreground" Value="{StaticResource AccentBlue}"/>
             <Setter Property="Margin" Value="0,0,0,10"/>
@@ -62,19 +62,17 @@
                             </Grid.ColumnDefinitions>
                             
                             <Border x:Name="CheckBorder" 
-                                    Width="16" Height="16" 
-                                    BorderThickness="2" 
+                                    Width="18" Height="18" 
+                                    BorderThickness="1.5" 
                                     BorderBrush="{StaticResource BorderColor}"
-                                    CornerRadius="3"
-                                    Margin="0,0,8,0"
+                                    CornerRadius="9"
+                                    Margin="0,0,10,0"
                                     VerticalAlignment="Center">
                                 <Path x:Name="CheckMark"
                                       Width="10" Height="10"
                                       Stretch="Uniform"
-                                      Fill="White"
+                                      Fill="{StaticResource InputColor}"
                                       Data="M 0,4 L 3,7 L 8,0"
-                                      StrokeThickness="2"
-                                      Stroke="White"
                                       Visibility="Collapsed"/>
                             </Border>
                             
@@ -86,11 +84,11 @@
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsChecked" Value="True">
                                 <Setter TargetName="CheckMark" Property="Visibility" Value="Visible"/>
-                                <Setter TargetName="CheckBorder" Property="BorderBrush" Value="{StaticResource AccentTeal}"/>
-                                <Setter TargetName="CheckBorder" Property="Background" Value="{StaticResource AccentTeal}"/>
+                                <Setter TargetName="CheckBorder" Property="BorderBrush" Value="{StaticResource AccentBlue}"/>
+                                <Setter TargetName="CheckBorder" Property="Background" Value="{StaticResource AccentBlue}"/>
                             </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="CheckBorder" Property="BorderBrush" Value="{StaticResource AccentTeal}"/>
+                                <Setter TargetName="CheckBorder" Property="BorderBrush" Value="{StaticResource AccentBlue}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -107,6 +105,10 @@
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="BorderBrush" Value="{StaticResource BorderColor}"/>
             <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
+            <Setter Property="RenderTransform">
+                <Setter.Value><ScaleTransform ScaleX="1" ScaleY="1"/></Setter.Value>
+            </Setter>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -114,14 +116,31 @@
                                 Background="{TemplateBinding Background}" 
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="3">
+                                CornerRadius="16">
                             <ContentPresenter HorizontalAlignment="Center" 
                                             VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="border" Property="Background" Value="#33FFFFFF"/>
+                                <Setter TargetName="border" Property="Background" Value="#0AFFFFFF"/>
+                                <Setter TargetName="border" Property="BorderBrush" Value="{StaticResource TextSecondary}"/>
                             </Trigger>
+                            <EventTrigger RoutedEvent="PreviewMouseDown">
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleX" To="0.95" Duration="0:0:0.05"/>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleY" To="0.95" Duration="0:0:0.05"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                            <EventTrigger RoutedEvent="PreviewMouseUp">
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleX" To="1" Duration="0:0:0.1"/>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleY" To="1" Duration="0:0:0.1"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -129,25 +148,45 @@
         </Style>
 
         <Style x:Key="PrimaryActionButton" TargetType="Button">
-            <Setter Property="Background" Value="{StaticResource AccentTeal}"/>
-            <Setter Property="Foreground" Value="White"/>
-            <Setter Property="FontWeight" Value="Bold"/>
-            <Setter Property="FontSize" Value="13"/>
-            <Setter Property="Height" Value="42"/>
+            <Setter Property="Background" Value="{StaticResource AccentBlue}"/>
+            <Setter Property="Foreground" Value="#10243f"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Height" Value="44"/>
             <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
+            <Setter Property="RenderTransform">
+                <Setter.Value><ScaleTransform ScaleX="1" ScaleY="1"/></Setter.Value>
+            </Setter>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
                         <Border x:Name="border" 
                                 Background="{TemplateBinding Background}" 
-                                CornerRadius="3">
+                                CornerRadius="22">
                             <ContentPresenter HorizontalAlignment="Center" 
                                             VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="border" Property="Opacity" Value="0.9"/>
+                                <Setter TargetName="border" Property="Background" Value="#D8BFFF"/>
                             </Trigger>
+                            <EventTrigger RoutedEvent="MouseEnter">
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleX" To="1.03" Duration="0:0:0.15"/>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleY" To="1.03" Duration="0:0:0.15"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                            <EventTrigger RoutedEvent="MouseLeave">
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleX" To="1" Duration="0:0:0.15"/>
+                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleY" To="1" Duration="0:0:0.15"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -158,10 +197,15 @@
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
             <Setter Property="FontSize" Value="12"/>
-            <Setter Property="Height" Value="38"/>
+            <Setter Property="Height" Value="44"/>
+            <Setter Property="Padding" Value="8,0"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="BorderBrush" Value="{StaticResource BorderColor}"/>
             <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
+            <Setter Property="RenderTransform">
+                <Setter.Value><ScaleTransform ScaleX="1" ScaleY="1"/></Setter.Value>
+            </Setter>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -169,13 +213,14 @@
                                 Background="{TemplateBinding Background}" 
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="3">
+                                CornerRadius="12">
                             <ContentPresenter HorizontalAlignment="Center" 
                                             VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="border" Property="Background" Value="#33FFFFFF"/>
+                                <Setter TargetName="border" Property="Background" Value="#0AFFFFFF"/>
+                                <Setter TargetName="border" Property="BorderBrush" Value="{StaticResource TextSecondary}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -194,9 +239,9 @@
         <!-- HEADER -->
         <StackPanel Grid.Row="0" Margin="0,0,0,20">
             <TextBlock Text="📐 COPIAR CROP REGION" 
-                      FontSize="20" 
-                      FontWeight="Light" 
-                      Foreground="{StaticResource AccentTeal}"/>
+                       FontSize="20" 
+                       FontWeight="Light" 
+                       Foreground="{StaticResource AccentBlue}"/>
             <TextBlock Text="Aplicar o recorte da vista atual a outras vistas" 
                       FontSize="11" 
                       Foreground="{StaticResource TextSecondary}"
@@ -208,7 +253,7 @@
             <StackPanel>
                 <!-- Vista Atual Info -->
                 <Border Background="{StaticResource PanelColor}" 
-                        CornerRadius="4" 
+                        CornerRadius="18" 
                         Padding="18"
                         Margin="0,0,0,12">
                     <StackPanel>
@@ -235,7 +280,7 @@
 
                 <!-- Filtros Rápidos -->
                 <Border Background="{StaticResource PanelColor}" 
-                        CornerRadius="4" 
+                        CornerRadius="18" 
                         Padding="18"
                         Margin="0,0,0,12">
                     <StackPanel>
@@ -267,7 +312,7 @@
 
                 <!-- Lista de Vistas -->
                 <Border Background="{StaticResource PanelColor}" 
-                        CornerRadius="4" 
+                        CornerRadius="18" 
                         Padding="18"
                         Margin="0,0,0,12">
                     <StackPanel>
@@ -318,7 +363,7 @@
 
                 <!-- Opções -->
                 <Border Background="{StaticResource PanelColor}" 
-                        CornerRadius="4" 
+                        CornerRadius="18" 
                         Padding="18"
                         Margin="0,0,0,12">
                     <StackPanel>
