@@ -45,7 +45,11 @@ def get_item_description(element, room_name):
     return room_name if room_name else "Ponto de Dados"
 
 def select_and_configure_panel_data():
-    panel = forms.select_electrical_panels(title="Selecione o Quadro/Rack de Telecom", multiple=False)
+    try:
+        ref = uidoc.Selection.PickObject(ObjectType.Element, lf_electrical_core.PanelFilter(), "Selecione o Quadro/Rack de Telecom")
+    except Exception:
+        return
+    panel = doc.GetElement(ref.ElementId)
     if not panel: return
     set_current_panel(panel.Id)
     forms.toast("Rack configurado: " + get_panel_name(panel), title="Dados")
@@ -164,7 +168,9 @@ def main_menu():
         escolha = forms.CommandSwitchWindow.show(opcoes.keys(), message=status, title="📡 Telecom/Dados - " + status)
         if not escolha or "Sair" in escolha: break
         try: opcoes[escolha]()
-        except: forms.alert("Erro de software.")
+        except Exception as _err:
+            import traceback
+            forms.alert("Erro:\n" + traceback.format_exc())
 
 if __name__ == "__main__":
     try: is_shift = __shiftclick__
