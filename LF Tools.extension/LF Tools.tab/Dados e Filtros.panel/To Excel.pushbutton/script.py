@@ -1331,8 +1331,6 @@ class ExportImportWindow(forms.WPFWindow):
             if is_empty:
                 cb.Foreground = Brushes.Gray
                 cb.IsEnabled = False
-            else:
-                cb.Foreground = Brushes.White
             if style:
                 cb.Style = style
             cb.Click += self._on_checklist_changed
@@ -1440,7 +1438,9 @@ class ExportImportWindow(forms.WPFWindow):
             if is_panel:
                 _, headers = get_panel_schedule_data(schedule)
                 for h in headers:
-                    dt.Rows.Add([h, "Texto", "Não"])
+                    row = dt.NewRow()
+                    row[0] = h; row[1] = "Texto"; row[2] = "Não"
+                    dt.Rows.Add(row)
             else:
                 _, param_defs = get_schedule_elements_and_params(schedule)
                 for p in param_defs:
@@ -1450,7 +1450,9 @@ class ExportImportWindow(forms.WPFWindow):
                         tipo = "Inteiro"
                     else:
                         tipo = "Texto"
-                    dt.Rows.Add([p.name, tipo, "Não" if p.isreadonly else "Sim"])
+                    row = dt.NewRow()
+                    row[0] = p.name; row[1] = tipo; row[2] = "Não" if p.isreadonly else "Sim"
+                    dt.Rows.Add(row)
 
             self.dg_ExportPreview.ItemsSource = dt.DefaultView
             self.dg_ExportPreview.Visibility  = Visibility.Visible
