@@ -1,4 +1,1 @@
 tooltip: Filtro profundo por parâmetros, agrupamento por nested families e escopo selecionado.
-engine:
-  type: cpython
-  version: 3

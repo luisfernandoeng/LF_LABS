@@ -1,34 +1,40 @@
 # -*- coding: utf-8 -*-
 
-# Stubs para forms/script/revit — substituem pyrevit sem disparar events.py
-class _FormsStub: pass
-forms = _FormsStub()
-
-class _ScriptStub:
-    @staticmethod
-    def get_bundle_file(name):
-        import os as _os
-        try:
-            return _os.path.join(__commandpath__, name)
-        except NameError:
-            return _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), name)
-script = _ScriptStub()
-
-class _RevitProxy:
-    def __getattr__(self, name):
-        if name == 'active_view':
-            return __revit__.ActiveUIDocument.ActiveView
-        raise AttributeError(name)
-revit = _RevitProxy()
+try:
+    from pyrevit import forms, script, revit
+except ImportError:
+    class _FormsStub(object): pass
+    forms = _FormsStub()
+    class _ScriptStub(object):
+        @staticmethod
+        def get_bundle_file(name):
+            import os as _os
+            try:
+                return _os.path.join(__commandpath__, name)
+            except NameError:
+                return _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), name)
+    script = _ScriptStub()
+    class _RevitProxy(object):
+        def __getattr__(self, name):
+            if name == 'active_view':
+                return __revit__.ActiveUIDocument.ActiveView
+            raise AttributeError(name)
+    revit = _RevitProxy()
 from Autodesk.Revit.DB import (
     FilteredElementCollector, BuiltInCategory, ElementId, StorageType,
     BuiltInParameter, Element, UnitUtils, UnitTypeId
 )
 from System.Collections.Generic import List
+import io
 import traceback
 import os
 import json
 import System
+import clr
+clr.AddReference('System.Windows.Forms')
+clr.AddReference('PresentationFramework')
+clr.AddReference('PresentationCore')
+clr.AddReference('System.Xml')
 from System.Windows.Forms import Application as WinFormsApp
 import re
 import datetime
@@ -105,7 +111,7 @@ class _SelectFromListHelper:
             return [str(lst.Items[i]) for i in range(lst.Items.Count) if lst.GetSelected(i)]
         return str(lst.SelectedItem) if lst.SelectedItem is not None else None
 
-class _WPFWindowCPy:
+class _WPFWindowCPy(object):
     """CPython drop-in for pyrevit.forms.WPFWindow."""
     _XAML_EVENTS = re.compile(
         r'\s+(?:x:Class|'
@@ -136,17 +142,28 @@ class _WPFWindowCPy:
         is_inline = (literal_string is True or
                      (literal_string is None and stripped.startswith('<')))
         if not is_inline:
-            with open(str(xaml_source), 'r', encoding='utf-8') as _f:
+            with io.open(str(xaml_source), 'r', encoding='utf-8') as _f:
                 stripped = _f.read().strip()
         xaml_clean = self._XAML_EVENTS.sub('', stripped)
         rdr = System.Xml.XmlReader.Create(StringReader(xaml_clean))
         self._window = XamlReader.Load(rdr)
+        # Vincula ao Revit para herdar ícone e ficar na taskbar
+        try:
+            from System.Windows.Interop import WindowInteropHelper
+            from System.Diagnostics import Process
+            WindowInteropHelper(self._window).Owner = Process.GetCurrentProcess().MainWindowHandle
+        except Exception:
+            pass
 
     def __getattr__(self, name):
         if name.startswith('_'):
             raise AttributeError(name)
         win = object.__getattribute__(self, '_window')
         el = win.FindName(name)
+        if el is not None:
+            return el
+        import System.Windows
+        el = System.Windows.LogicalTreeHelper.FindLogicalNode(win, name)
         if el is not None:
             return el
         return getattr(win, name)
@@ -182,7 +199,7 @@ class SelectionHistory:
     def load_history(self):
         if os.path.exists(self.history_file):
             try:
-                with open(self.history_file, 'r', encoding='utf-8') as f:
+                with io.open(self.history_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
             except:
                 pass
@@ -190,7 +207,7 @@ class SelectionHistory:
 
     def save_history(self):
         try:
-            with open(self.history_file, 'w', encoding='utf-8') as f:
+            with io.open(self.history_file, 'w', encoding='utf-8') as f:
                 json.dump(self.history, f, indent=4, ensure_ascii=False)
         except:
             pass
@@ -237,7 +254,7 @@ def load_presets():
     default_data = {"LastUsed": "", "Presets": {}}
     try:
         if os.path.exists(PRESETS_FILE):
-            with open(PRESETS_FILE, 'r', encoding='utf-8') as f:
+            with io.open(PRESETS_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
     except Exception as e:
         logger.error("Erro ao carregar presets: " + str(e))
@@ -247,7 +264,7 @@ def save_presets(data):
     try:
         if not os.path.exists(CONFIG_DIR):
             os.makedirs(CONFIG_DIR)
-        with open(PRESETS_FILE, 'w', encoding='utf-8') as f:
+        with io.open(PRESETS_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
         return True
     except Exception as e:

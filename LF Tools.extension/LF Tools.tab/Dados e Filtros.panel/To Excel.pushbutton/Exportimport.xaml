@@ -447,9 +447,10 @@
                             Background="{StaticResource PanelColor}"
                             CornerRadius="18" Padding="24"
                             Margin="0,0,10,0">
-                        <Grid>
+                        <!-- O Grid usa um ClipToBounds=False implícito para o dropdown
+                             flutuar sobre as linhas abaixo sem deslocar o layout. -->
+                        <Grid ClipToBounds="False">
                             <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
@@ -479,7 +480,7 @@
                                     Background="{StaticResource InputColor}"
                                     BorderBrush="{StaticResource BorderColor}"
                                     BorderThickness="1" CornerRadius="17"
-                                    Height="34" Cursor="Hand" Margin="0,0,0,4">
+                                    Height="34" Cursor="Hand" Margin="0,0,0,0">
                                 <Grid Margin="12,0,10,0">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
@@ -497,16 +498,22 @@
                                 </Grid>
                             </Border>
 
-                            <!-- Checklist expansível -->
-                            <Border Grid.Row="5" x:Name="pnl_ChecklistDropdown"
-                                    Background="{StaticResource InputColor}"
-                                    BorderBrush="{StaticResource AccentBlue}"
-                                    BorderThickness="1" CornerRadius="12"
-                                    Visibility="Collapsed" Margin="0,0,0,8">
-                                <Grid>
+                            <!-- Checklist flutuante — mesma Row do botão, flutua sobre o conteúdo abaixo.
+                                 Panel.ZIndex garante que fica na frente; Margin posiciona abaixo do botão.
+                                 MaxHeight limita a altura total do painel para não cobrir área demais. -->
+                            <Canvas Grid.Row="4" Panel.ZIndex="20">
+                                <Border x:Name="pnl_ChecklistDropdown"
+                                        Width="{Binding ActualWidth, ElementName=btn_DropdownToggle}"
+                                        Canvas.Top="38" Canvas.Left="0"
+                                        MaxHeight="240"
+                                        Background="{StaticResource InputColor}"
+                                        BorderBrush="{StaticResource AccentBlue}"
+                                        BorderThickness="1" CornerRadius="12"
+                                        Visibility="Collapsed">
+                                    <Grid>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto"/>
-                                        <RowDefinition MaxHeight="160"/>
+                                        <RowDefinition Height="*"/>
                                     </Grid.RowDefinitions>
                                     <!-- Selecionar todas -->
                                     <Border Grid.Row="0" Padding="12,8"
@@ -517,18 +524,22 @@
                                                   Style="{StaticResource ModernCheckBox}"
                                                   Margin="0"/>
                                     </Border>
-                                    <!-- Itens -->
-                                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                                    <!-- Itens com scroll -->
+                                    <ScrollViewer Grid.Row="1"
+                                                  x:Name="sv_ScheduleChecklist"
+                                                  VerticalScrollBarVisibility="Auto"
+                                                  MaxHeight="190">
                                         <StackPanel x:Name="stack_ScheduleChecklist" Margin="10,6"/>
                                     </ScrollViewer>
                                 </Grid>
                             </Border>
+                            </Canvas>
 
-                            <Separator Grid.Row="6" Background="{StaticResource BorderColor}" Margin="0,6,0,14"/>
+                            <Separator Grid.Row="5" Background="{StaticResource BorderColor}" Margin="0,10,0,14"/>
 
                             <!-- Destino -->
-                            <TextBlock Grid.Row="7" Text="Destino" Style="{StaticResource FieldLabel}"/>
-                            <Grid Grid.Row="8" Margin="0,0,0,12">
+                            <TextBlock Grid.Row="6" Text="Destino" Style="{StaticResource FieldLabel}"/>
+                            <Grid Grid.Row="7" Margin="0,0,0,12">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
@@ -538,10 +549,31 @@
                                         Grid.Column="1" Style="{StaticResource BrowseButton}" Margin="8,0,0,0"/>
                             </Grid>
 
-                            <CheckBox Grid.Row="9" x:Name="CheckBox_OpenFolder"
-                                      Content="Abrir pasta após concluir"
-                                      Style="{StaticResource ModernCheckBox}"
-                                      IsChecked="True" Margin="0,0,0,0"/>
+                            <StackPanel Grid.Row="8" Margin="0,0,0,0">
+                                <CheckBox x:Name="CheckBox_OpenFolder"
+                                          Content="Abrir pasta após concluir"
+                                          Style="{StaticResource ModernCheckBox}"
+                                          IsChecked="True"/>
+
+                                <CheckBox x:Name="CheckBox_KeepFormat"
+                                          Content="Manter formatação do Revit"
+                                          Style="{StaticResource ModernCheckBox}"
+                                          Margin="0,6,0,0"/>
+
+                                <!-- Aviso exibido só quando KeepFormat está marcado -->
+                                <StackPanel x:Name="pnl_FormatWarning"
+                                            Orientation="Horizontal"
+                                            Margin="22,3,0,0"
+                                            Visibility="Collapsed">
+                                    <TextBlock Text="⚠" FontSize="10"
+                                               Foreground="{StaticResource AccentOrange}"
+                                               VerticalAlignment="Top" Margin="0,0,4,0"/>
+                                    <TextBlock Text="Exportação visual — não pode ser reimportada ao Revit."
+                                               FontSize="10"
+                                               Foreground="{StaticResource AccentOrange}"
+                                               TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </StackPanel>
                         </Grid>
                     </Border>
 

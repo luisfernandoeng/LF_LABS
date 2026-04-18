@@ -1,0 +1,226 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Configurações — Conectar Eletroduto"
+        Width="500" Height="580"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        Background="#F2F2F2"
+        FontFamily="Segoe UI" FontSize="13">
+
+    <Window.Resources>
+
+        <!-- GroupBox clean -->
+        <Style TargetType="GroupBox">
+            <Setter Property="Margin"       Value="0,10,0,0"/>
+            <Setter Property="Padding"      Value="10,6,10,10"/>
+            <Setter Property="BorderBrush"  Value="#C8C8C8"/>
+            <Setter Property="Background"   Value="White"/>
+        </Style>
+
+        <!-- Header do GroupBox em negrito -->
+        <Style TargetType="GroupBox" x:Key="Gb">
+            <Setter Property="Margin"       Value="0,10,0,0"/>
+            <Setter Property="Padding"      Value="10,6,10,10"/>
+            <Setter Property="BorderBrush"  Value="#C8C8C8"/>
+            <Setter Property="Background"   Value="White"/>
+        </Style>
+
+        <!-- RadioButton com espaçamento -->
+        <Style TargetType="RadioButton">
+            <Setter Property="Margin"   Value="0,6,18,0"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+
+        <!-- CheckBox -->
+        <Style TargetType="CheckBox">
+            <Setter Property="Margin"   Value="0,6,18,0"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+
+        <!-- ComboBox -->
+        <Style TargetType="ComboBox">
+            <Setter Property="Margin"   Value="0,5,0,0"/>
+            <Setter Property="Height"   Value="30"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+
+        <!-- TextBox -->
+        <Style TargetType="TextBox">
+            <Setter Property="Margin"       Value="0,5,0,0"/>
+            <Setter Property="Height"       Value="30"/>
+            <Setter Property="FontSize"     Value="13"/>
+            <Setter Property="Padding"      Value="6,4"/>
+            <Setter Property="BorderBrush"  Value="#AAAAAA"/>
+        </Style>
+
+        <!-- Hint text -->
+        <Style x:Key="Hint" TargetType="TextBlock">
+            <Setter Property="Foreground"   Value="#777"/>
+            <Setter Property="FontSize"     Value="11"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="Margin"       Value="0,2,0,4"/>
+        </Style>
+
+        <!-- Botão primário (Salvar) -->
+        <Style x:Key="BtnPrimary" TargetType="Button">
+            <Setter Property="Background"       Value="#0078D7"/>
+            <Setter Property="Foreground"       Value="White"/>
+            <Setter Property="FontSize"         Value="13"/>
+            <Setter Property="FontWeight"       Value="SemiBold"/>
+            <Setter Property="Padding"          Value="28,7"/>
+            <Setter Property="BorderThickness"  Value="0"/>
+            <Setter Property="Cursor"           Value="Hand"/>
+        </Style>
+
+        <!-- Botão secundário (Cancelar) -->
+        <Style x:Key="BtnCancel" TargetType="Button">
+            <Setter Property="Background"       Value="#E0E0E0"/>
+            <Setter Property="Foreground"       Value="#333"/>
+            <Setter Property="FontSize"         Value="13"/>
+            <Setter Property="Padding"          Value="28,7"/>
+            <Setter Property="BorderThickness"  Value="0"/>
+            <Setter Property="Cursor"           Value="Hand"/>
+        </Style>
+
+    </Window.Resources>
+
+    <Grid Margin="16,14,16,12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- ════════════════ ABAS ════════════════ -->
+        <TabControl Grid.Row="0" Background="Transparent" BorderBrush="#C8C8C8">
+
+            <!-- ── ABA: PLANO / PISO ── -->
+            <TabItem Padding="14,7">
+                <TabItem.Header>
+                    <TextBlock Text="Plano / Piso" FontSize="13" FontWeight="SemiBold"/>
+                </TabItem.Header>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Background="#F2F2F2">
+                    <StackPanel Margin="4,6,4,10">
+
+                        <GroupBox Header="Ângulo de Roteamento em Planta" Style="{StaticResource Gb}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource Hint}"
+                                    Text="Define como traçar quando não há desnível — piso ou teto plano."/>
+                                <WrapPanel>
+                                    <RadioButton x:Name="rb_plan_90"    Content="90° — ortogonal"/>
+                                    <RadioButton x:Name="rb_plan_45"    Content="45° — diagonal"/>
+                                    <RadioButton x:Name="rb_plan_livre" Content="Livre — direto"/>
+                                </WrapPanel>
+                            </StackPanel>
+                        </GroupBox>
+
+                        <GroupBox Header="Tipo de Eletroduto (Plano)" Style="{StaticResource Gb}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource Hint}"
+                                    Text="Tipo de eletroduto para trechos horizontais em planta (ex: corrugado, flexível)."/>
+                                <ComboBox x:Name="cb_type_plan"/>
+                            </StackPanel>
+                        </GroupBox>
+
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ── ABA: VERTICAL ── -->
+            <TabItem Padding="14,7">
+                <TabItem.Header>
+                    <TextBlock Text="Vertical" FontSize="13" FontWeight="SemiBold"/>
+                </TabItem.Header>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Background="#F2F2F2">
+                    <StackPanel Margin="4,6,4,10">
+
+                        <GroupBox Header="Ângulo de Roteamento Vertical" Style="{StaticResource Gb}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource Hint}"
+                                    Text="Define como traçar descidas, subidas e conexões piso ↔ parede."/>
+                                <WrapPanel>
+                                    <RadioButton x:Name="rb_vert_90"    Content="90° — ortogonal"/>
+                                    <RadioButton x:Name="rb_vert_45"    Content="45° — diagonal"/>
+                                    <RadioButton x:Name="rb_vert_livre" Content="Livre — direto"/>
+                                </WrapPanel>
+                            </StackPanel>
+                        </GroupBox>
+
+                        <GroupBox Header="Tipo de Eletroduto (Vertical)" Style="{StaticResource Gb}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource Hint}"
+                                    Text="Tipo de eletroduto para descidas, subidas e conexões com desnível (ex: rígido)."/>
+                                <ComboBox x:Name="cb_type_vert"/>
+                            </StackPanel>
+                        </GroupBox>
+
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ── ABA: GERAL ── -->
+            <TabItem Padding="14,7">
+                <TabItem.Header>
+                    <TextBlock Text="Geral" FontSize="13" FontWeight="SemiBold"/>
+                </TabItem.Header>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Background="#F2F2F2">
+                    <StackPanel Margin="4,6,4,10">
+
+                        <GroupBox Header="Modo de Seleção" Style="{StaticResource Gb}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource Hint}"
+                                    Text="Como identificar os conectores ao clicar nos elementos."/>
+                                <RadioButton x:Name="rb_sel_conector" Content="Conector Específico  (clica perto do conector desejado)"/>
+                                <RadioButton x:Name="rb_sel_caixa"    Content="Caixa Inteira  (seleção automática do melhor conector)"/>
+                            </StackPanel>
+                        </GroupBox>
+
+                        <GroupBox Header="Diâmetro Padrão" Style="{StaticResource Gb}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource Hint}"
+                                    Text="Em mm — ex: 25, 32. Deixe em branco para usar o diâmetro do último eletroduto ou conector."/>
+                                <TextBox x:Name="tb_diameter"/>
+                            </StackPanel>
+                        </GroupBox>
+
+                        <GroupBox Header="Tipo de Serviço" Style="{StaticResource Gb}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource Hint}"
+                                    Text="Preenche o parâmetro 'Tipo de Serviço' nos eletrodutos criados. Deixe em branco para não preencher."/>
+                                <TextBox x:Name="tb_service"/>
+                            </StackPanel>
+                        </GroupBox>
+
+                        <GroupBox Header="Estratégia de Rota" Style="{StaticResource Gb}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource Hint}"
+                                    Text="Como calcular o caminho entre os dois pontos."/>
+                                <RadioButton x:Name="rb_strat_auto" Content="Auto  (tenta 1 tubo direto, senão usa rota calculada)"/>
+                                <RadioButton x:Name="rb_strat_calc" Content="Sempre Calculado  (sempre usa a rota planejada)"/>
+                            </StackPanel>
+                        </GroupBox>
+
+                        <GroupBox Header="Desenvolvedor" Style="{StaticResource Gb}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource Hint}"
+                                    Text="Modo de depuração avançada."/>
+                                <CheckBox x:Name="chk_debug" Content="Ativar modo Debug (Logs detalhados)"/>
+                            </StackPanel>
+                        </GroupBox>
+
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+        </TabControl>
+
+        <!-- ════════════════ BOTÕES ════════════════ -->
+        <StackPanel Grid.Row="1" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button x:Name="btn_cancel" Content="Cancelar"
+                    Style="{StaticResource BtnCancel}" Margin="0,0,10,0"/>
+            <Button x:Name="btn_save"   Content="  Salvar  "
+                    Style="{StaticResource BtnPrimary}"/>
+        </StackPanel>
+
+    </Grid>
+</Window>

@@ -1,4 +1,3 @@
-#! python3
 # -*- coding: utf-8 -*-
 """
 Conectar Eletrocalha - Roteamento sequencial automático entre elementos.
@@ -13,12 +12,7 @@ e o próprio Revit tratará de colocar as curvas/junções automaticamente.
 __title__ = 'Conectar\nEletrocalha'
 __author__ = 'Luis Fernando'
 
-# ╔══════════════════════════════════════════════════════════════╗
-# ║                    MODO DEBUG                                ║
-# ║  True  = imprime tudo no console pyRevit + mostra erros      ║
-# ║  False = silencioso (só mostra alert em caso de erro fatal)  ║
 # ╚══════════════════════════════════════════════════════════════╝
-DEBUG_MODE = False
 
 # =====================================================================
 #  IMPORTS
@@ -37,16 +31,12 @@ from collections import OrderedDict
 import traceback
 
 from pyrevit import forms           # script importado de forma lazy em load/save_config
-from lf_utils import DebugLogger, get_revit_context, patch_forms, make_warning_swallower, get_script_config, save_script_config
-
-patch_forms(forms)
-
+from lf_utils import DebugLogger, get_script_config, save_script_config
 # Instância global — usar `dbg` em todo o script
-dbg = DebugLogger(DEBUG_MODE)
-
+dbg = DebugLogger(False)
 # Referências globais — preenchidas no início de execute_connection()
-uidoc = None
-doc   = None
+uidoc = __revit__.ActiveUIDocument
+doc   = uidoc.Document if uidoc else None
 
 # =====================================================================
 #  HELPERS DE NOME
@@ -71,85 +61,83 @@ def load_config():
         'default_width':  '200',
         'default_height': '100',
         'default_offset': '3.00',  # metros
+        'debug_mode': False,
     })
 
 def save_config(settings):
     save_script_config(__commandpath__, settings)
 
+class SettingsWindow(forms.WPFWindow):
+    def __init__(self, xaml_file, doc, settings):
+        forms.WPFWindow.__init__(self, xaml_file)
+        self._doc = doc
+        self._settings = settings
+        self._saved = False
+        
+        self.tb_width.Text = settings.get('default_width', '200')
+        self.tb_height.Text = settings.get('default_height', '100')
+        self.tb_offset.Text = settings.get('default_offset', '3.00')
+        self.chk_debug.IsChecked = settings.get('debug_mode', False)
+        
+        types = self._get_cabletray_types()
+        self._populate_combo(self.cb_type, types, settings.get('cabletray_type', ''))
+        
+        self.btn_save.Click += self._on_save
+        self.btn_cancel.Click += self._on_cancel
+
+    def __getattr__(self, name):
+        el = self._window.FindName(name)
+        if el is not None:
+            return el
+        raise AttributeError(name)
+
+    def _get_cabletray_types(self):
+        names = []
+        for t in FilteredElementCollector(self._doc).OfClass(clr.GetClrType(CableTrayType)):
+            n = __get_name__(t)
+            if n:
+                names.append(n)
+        return ['(Padrão do Revit)'] + sorted(names, key=lambda x: x.lower())
+
+    def _populate_combo(self, combo, items, selected):
+        combo.Items.Clear()
+        for item in items:
+            combo.Items.Add(item)
+        combo.SelectedItem = selected if selected in items else items[0]
+
+    def _on_save(self, _sender, _args):
+        s = self._settings
+        
+        sel = self.cb_type.SelectedItem
+        s['cabletray_type'] = sel if sel else ''
+        s['default_width'] = self.tb_width.Text.strip()
+        s['default_height'] = self.tb_height.Text.strip()
+        s['default_offset'] = self.tb_offset.Text.strip()
+        try:
+            s['debug_mode'] = bool(self.chk_debug.IsChecked)
+        except:
+            s['debug_mode'] = False
+            
+        self._saved = True
+        self._window.Close()
+
+    def _on_cancel(self, _sender, _args):
+        self._window.Close()
+
+    def show(self):
+        self._window.ShowDialog()
+        return self._settings if self._saved else None
+
+
 def show_settings():
     settings = load_config()
-
-    while True:
-        cur_type   = settings.get('cabletray_type', '') or '(Padrão do Revit)'
-        cur_width  = settings.get('default_width', '200')
-        cur_height = settings.get('default_height', '100')
-        cur_offset = settings.get('default_offset', '3.00')
-
-        opcoes = OrderedDict([
-            ("1. Tipo de Eletrocalha: " + cur_type, "cabletray_type"),
-            ("2. Largura (mm): "         + cur_width,  "width"),
-            ("3. Altura (mm): "          + cur_height, "height"),
-            ("4. Elevação/Deslocamento (m): " + cur_offset, "offset"),
-            ("5. Salvar e Sair", "save"),
-        ])
-
-        escolha = forms.CommandSwitchWindow.show(
-            opcoes.keys(),
-            message="Configurações: Conectar Eletrocalha",
-            title="Shift+Click - Configurações"
-        )
-
-        if not escolha or opcoes.get(escolha) == "save":
-            save_config(settings)
-            forms.toast("Configurações salvas!", title="Conectar Eletrocalha")
-            break
-
-        key = opcoes[escolha]
-
-        if key == 'cabletray_type':
-            collector = FilteredElementCollector(doc).OfClass(clr.GetClrType(CableTrayType))
-            types = {}
-            for t in collector:
-                name = __get_name__(t)
-                if name:
-                    types[name] = name
-            if not types:
-                forms.alert("Nenhum tipo de eletrocalha encontrado.")
-                continue
-            chosen = forms.CommandSwitchWindow.show(
-                ["(Padrão do Revit)"] + sorted(types.keys()),
-                message="Selecione o Tipo de Eletrocalha:",
-                title="Tipo de Eletrocalha"
-            )
-            if chosen:
-                settings['cabletray_type'] = chosen
-
-        elif key == 'width':
-            val = forms.ask_for_string(
-                default=settings.get('default_width', '200'),
-                prompt="Largura da Eletrocalha em mm (ex: 100, 200, 300):",
-                title="Largura"
-            )
-            if val is not None:
-                settings['default_width'] = val.strip()
-
-        elif key == 'height':
-            val = forms.ask_for_string(
-                default=settings.get('default_height', '100'),
-                prompt="Altura da Eletrocalha em mm (ex: 50, 100):",
-                title="Altura"
-            )
-            if val is not None:
-                settings['default_height'] = val.strip()
-
-        elif key == 'offset':
-            val = forms.ask_for_string(
-                default=settings.get('default_offset', '3.00'),
-                prompt="Elevação/Deslocamento base em metros (ex: 2.80, 3.00):",
-                title="Elevação Base"
-            )
-            if val is not None:
-                settings['default_offset'] = val.strip()
+    import os
+    xaml_path = os.path.join(os.path.dirname(__file__), 'settings.xaml')
+    win = SettingsWindow(xaml_path, doc, settings)
+    result = win.show()
+    if result is not None:
+        save_config(result)
+        forms.toast("Configurações salvas!", title="Conectar Eletrocalha")
 
 # =====================================================================
 #  LÓGICA E UTILIDADES
@@ -212,10 +200,8 @@ def get_default_cabletray_type():
 # =====================================================================
 def execute_connection():
     global uidoc, doc
-    try:
-        uidoc, doc = get_revit_context()
-    except RuntimeError as e:
-        forms.alert(str(e), title="Conectar Eletrocalha")
+    if not uidoc or not doc:
+        forms.alert("Nenhum documento ativo encontrado.", title="Conectar Eletrocalha")
         return
 
     try:
@@ -316,9 +302,7 @@ def execute_connection():
     # ── 4. Transação ─────────────────────────────────────────────
     dbg.section("Fase 3: Criação das Eletrocalhas")
     t = Transaction(doc, "Conectar Eletrocalhas Inteligente")
-    ops = t.GetFailureHandlingOptions()
-    ops.SetFailuresPreprocessor(make_warning_swallower())
-    t.SetFailureHandlingOptions(ops)
+
     t.Start()
 
     try:
@@ -529,19 +513,26 @@ def execute_connection():
 
 
 def safe_execution():
+    global dbg
+    settings = load_config()
+    dbg = DebugLogger(settings.get('debug_mode', False))
+    
     dbg.section("Conectar Eletrocalha — BOOT")
-    dbg.info("DEBUG_MODE = {}".format(DEBUG_MODE))
+    dbg.info("DEBUG_MODE = {}".format(settings.get('debug_mode', False)))
     try:
         execute_connection()
         dbg.section("Ferramenta Finalizada")
     except Exception as e:
         err_tb = traceback.format_exc()
         dbg.error("CRASH FATAL:\n{}".format(err_tb))
-        if DEBUG_MODE:
+        if settings.get('debug_mode', False):
             forms.alert("CRASH FATAL (DEBUG):\n\n" + err_tb, title="Conectar Eletrocalha — Erro")
         else:
             forms.alert("Erro ao conectar eletrocalhas:\n" + str(e), title="Aviso")
 
 
 if __name__ == "__main__":
-    safe_execution()
+    if __shiftclick__:
+        show_settings()
+    else:
+        safe_execution()

@@ -1,4 +1,1 @@
 tooltip: Seleciona elementos similares com base em critérios de parâmetros configuráveis.
-engine:
-  type: cpython
-  version: 3

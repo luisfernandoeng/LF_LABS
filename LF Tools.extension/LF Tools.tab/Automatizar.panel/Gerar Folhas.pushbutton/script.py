@@ -1,161 +1,36 @@
-#! python3
-# coding: utf-8
+# -*- coding: utf-8 -*-
 """
 GERAR FOLHAS | LUIS FERNANDO
 """
+from pyrevit import forms, script
 import clr
 import System
-import clr as _clr2
-_clr2.AddReference('RevitAPI')
+clr.AddReference('RevitAPI')
 from Autodesk.Revit import DB
-
-# Stubs para forms/script — substituem pyrevit sem disparar events.py
-class _FormsStub: pass
-forms = _FormsStub()
-
-class _ScriptStub:
-    @staticmethod
-    def get_bundle_file(name):
-        import os as _os
-        try:
-            return _os.path.join(__commandpath__, name)
-        except NameError:
-            return _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), name)
-script = _ScriptStub()
-
-# RevitAPI/RevitAPIUI are already loaded by pyRevit — no AddReference needed.
 clr.AddReference('System.Windows.Forms')
 from System.Collections.ObjectModel import ObservableCollection
 from System.Collections.Generic import List
 from System.Windows.Forms import Application as WinFormsApp
-from System.Windows import Input, Window as _Window
+from System.Windows import Input
 from System.Windows.Data import CollectionViewSource
-from System.Windows.Media import BrushConverter
 import System.Windows.Controls as Controls
 import System.Windows.Media as Media
 import os
 import re
 import time
 import json
+import codecs
 
-# As variáveis 'doc' e 'uidoc' serão inicializadas logo abaixo, antes do uso.
-
-# ==================== CPYTHON COMPAT ====================
+# --- BIBLIOTECA LF TOOLS ---
 try:
-    clr.AddReference('PresentationFramework')
-except Exception:
-    pass
-import System.Windows.Forms as _WF
-from System.Windows import MessageBox as _MB_WPF # Apenas como fallback
-
-def _alert(msg, title="LF Tools", yes=False, no=False, exitscript=False, **kw):
-    try:
-        if yes and no:
-            # Usando WinForms por ser mais estável no CPython/Revit
-            r = _WF.MessageBox.Show(str(msg), str(title), _WF.MessageBoxButtons.YesNo)
-            ans = (r == _WF.DialogResult.Yes)
-            if exitscript and not ans:
-                import sys
-                sys.exit(0)
-            return ans
-        _WF.MessageBox.Show(str(msg), str(title))
-    except Exception as e:
-        try:
-            print("{}: {}".format(title, msg))
-        except:
-            pass # Ignora se o output console estiver corrompido
-    
-    if exitscript:
-        import sys
-        sys.exit(0)
-
-def _ask_for_string(prompt="", title="Input", **kw):
-    form = _WF.Form()
-    form.Text = str(title)
-    form.Width = 420
-    form.Height = 165
-    form.FormBorderStyle = _WF.FormBorderStyle.FixedDialog
-    form.StartPosition = _WF.FormStartPosition.CenterScreen
-    lbl = _WF.Label(); lbl.Text = str(prompt); lbl.SetBounds(12, 10, 380, 25)
-    txt = _WF.TextBox(); txt.SetBounds(12, 40, 380, 25)
-    btn_ok = _WF.Button(); btn_ok.Text = "OK"; btn_ok.SetBounds(230, 80, 80, 28)
-    btn_ok.DialogResult = _WF.DialogResult.OK
-    btn_cancel = _WF.Button(); btn_cancel.Text = "Cancelar"; btn_cancel.SetBounds(320, 80, 80, 28)
-    btn_cancel.DialogResult = _WF.DialogResult.Cancel
-    form.Controls.AddRange([lbl, txt, btn_ok, btn_cancel])
-    form.AcceptButton = btn_ok
-    form.CancelButton = btn_cancel
-    return txt.Text if form.ShowDialog() == _WF.DialogResult.OK else None
-
-def _pick_folder(**kw):
-    dlg = _WF.FolderBrowserDialog()
-    return dlg.SelectedPath if dlg.ShowDialog() == _WF.DialogResult.OK else None
-
-class _WPFWindowCPy:
-    """CPython drop-in for pyrevit.forms.WPFWindow."""
-    # WPF event attribute names that cannot be resolved against a Python
-    # wrapper class — stripped from XAML before loading so XamlReader
-    # doesn't try to bind them.  Events are connected via Python += instead.
-    _XAML_EVENTS = re.compile(
-        r'\s+(?:x:Class|'
-        r'Click|DoubleClick|'
-        r'Mouse(?:Down|Up|Move|Enter|Leave|Wheel)|'
-        r'Preview(?:Mouse(?:Down|Up|Move|LeftButtonDown|LeftButtonUp)|'
-        r'Key(?:Down|Up)|TextInput)|'
-        r'Key(?:Down|Up)|TextInput|TextChanged|SelectionChanged|'
-        r'SelectedItemChanged|ValueChanged|ScrollChanged|'
-        r'Got(?:Focus|KeyboardFocus)|Lost(?:Focus|KeyboardFocus)|'
-        r'Checked|Unchecked|Indeterminate|'
-        r'Loaded|Unloaded|Initialized|'
-        r'Clos(?:ing|ed)|Activated|Deactivated|'
-        r'SizeChanged|LayoutUpdated|ContentRendered|'
-        r'Drag(?:Enter|Leave|Over)|Drop|'
-        r'ContextMenu(?:Opening|Closing)|'
-        r'ToolTip(?:Opening|Closing)|'
-        r'DataContextChanged|IsVisibleChanged|IsEnabledChanged|'
-        r'RequestBringIntoView|SourceUpdated|TargetUpdated)'
-        r'\s*=\s*(?:"[^"]*"|\'[^\']*\')'
-    )
-
-    def __init__(self, xaml_source, literal_string=None):
-        from System.IO import StringReader
-        from System.Windows.Markup import XamlReader
-        import System.Xml
-        stripped = str(xaml_source).strip()
-        is_inline = (literal_string is True or
-                     (literal_string is None and stripped.startswith('<')))
-        if not is_inline:
-            with open(str(xaml_source), 'r', encoding='utf-8') as _f:
-                stripped = _f.read().strip()
-        xaml_clean = self._XAML_EVENTS.sub('', stripped)
-        rdr = System.Xml.XmlReader.Create(StringReader(xaml_clean))
-        self._window = XamlReader.Load(rdr)
-        
-        # Owner não pode ser definido via pyrevit no CPython — janela flutua normalmente
-
-    def __getattr__(self, name):
-        if name.startswith('_'):
-            raise AttributeError(name)
-        win = object.__getattribute__(self, '_window')
-        el = win.FindName(name)
-        if el is not None:
-            return el
-        return getattr(win, name)
-
-    def ShowDialog(self):
-        return self._window.ShowDialog()
-
-    def Show(self):
-        return self._window.Show()
-
-    def Close(self):
-        self._window.Close()
-
-forms.WPFWindow      = _WPFWindowCPy
-forms.alert          = _alert
-forms.ask_for_string = _ask_for_string
-forms.pick_folder    = _pick_folder
-# ==================== FIM CPYTHON COMPAT ====================
+    from lf_utils import DebugLogger
+except:
+    class DebugLogger(object):
+        def __init__(self, *args, **kwargs): pass
+        def info(self, *args): pass
+        def section(self, *args): pass
+        def warn(self, *args): pass
+        def error(self, *args): pass
 
 # --- DETECAO DE VERSAO ---
 try:
@@ -168,7 +43,7 @@ uidoc = __revit__.ActiveUIDocument
 doc = uidoc.Document if uidoc else None
 
 if not doc:
-    forms.alert("Erro Crítico de Inicialização:\nO CPython não conseguiu localizar nenhum projeto aberto no Revit.\n\nPor favor, feche e abra o Revit ou verifique se há um arquivo (.rvt) ativo.", exitscript=True)
+    forms.alert("Erro Crítico de Inicialização:\nNão foi possível localizar nenhum projeto aberto no Revit.\n\nPor favor, feche e abra o Revit ou verifique se há um arquivo (.rvt) ativo.", exitscript=True)
 
 HAS_PDF_SUPPORT = REVIT_YEAR >= 2022
 
@@ -332,11 +207,12 @@ def load_config():
         "last_folder": "",
         "open_folder_after": True,
         "profiles": {},
-        "last_profile": ""
+        "last_profile": "",
+        "debug_mode": False
     }
     try:
         if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            with codecs.open(CONFIG_FILE, 'r', 'utf-8') as f:
                 data = json.load(f)
                 # Garante que as chaves de profiles existam caso o arquivo seja antigo
                 if "profiles" not in data:
@@ -351,7 +227,7 @@ def save_config(config):
     try:
         if not os.path.exists(CONFIG_DIR):
             os.makedirs(CONFIG_DIR)
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        with codecs.open(CONFIG_FILE, 'w', 'utf-8') as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
     except Exception as ex:
         forms.alert("Erro ao salvar config: " + str(ex))
@@ -363,15 +239,11 @@ class LuisExporterWindow(forms.WPFWindow):
         xaml_file = script.get_bundle_file('folhas_window.xaml')
         forms.WPFWindow.__init__(self, xaml_file)
         
-        # ObservableCollection[System.Object] é mais estável no CPython/pythonnet 3.
-        # Estamos usando System.Object em vez de object para evitar o erro 'types expected'.
-        self.sheet_items = ObservableCollection[System.Object]()
+        self.sheet_items = ObservableCollection[object]()
 
         # Configurar CollectionView para filtragem
         self.view_source = CollectionViewSource.GetDefaultView(self.sheet_items)
-        # No CPython 3/PythonNet 3, às vezes é necessário definir o Predicate explicitamente
-        from System import Predicate
-        self.view_source.Filter = Predicate[System.Object](self.filter_sheets)
+        self.view_source.Filter = self.filter_sheets
         
         self.lst_Sheets.ItemsSource = self.view_source
         
@@ -390,19 +262,26 @@ class LuisExporterWindow(forms.WPFWindow):
         self.txt_Search.TextChanged += self.on_search_text_changed
 
         # NOVO: Perfis de Exportação (Presets)
-        if hasattr(self, 'cb_Profiles'):
+        try:
             self.cb_Profiles.SelectionChanged += self.apply_profile
             self.btn_AddProfile.Click += self.add_profile
             self.btn_SaveProfile.Click += self.save_profile
             self.btn_DeleteProfile.Click += self.delete_profile
+        except Exception:
+            pass
+
+        # NOVO: Persistencia imediata do Debug
+        self.chk_DebugMode.Click += self.toggle_debug_persistence
 
         # Configurações Iniciais
         self.config = load_config()
         self.txt_OutputFolder.Text = self.config.get("last_folder", "")
         self.chk_OpenFolderAfter.IsChecked = self.config.get("open_folder_after", True)
+        self.chk_DebugMode.IsChecked = self.config.get("debug_mode", False)
         
-        # Deixamos o controle de clique inteiramente para o WPF (CheckBox) 
-        # para evitar conflitos e travamentos de Refresh no CPython.
+        # Inicializa o Logger de Debug (integrado com o log da UI)
+        self.dbg = DebugLogger(self.chk_DebugMode.IsChecked, log_func=None)
+        
         self.is_handling_click = False 
         
 
@@ -430,8 +309,20 @@ class LuisExporterWindow(forms.WPFWindow):
             self.chk_ExportPDF.Content = "PDF Requer Revit 2022+"
             self.pnl_PDFSettings.IsEnabled = False
 
+        self.dbg.info("Interface inicializada com sucesso.")
+
+    def toggle_debug_persistence(self, sender, args):
+        """Salva a escolha do modo debug imediatamente no config global"""
+        is_on = bool(self.chk_DebugMode.IsChecked)
+        self.dbg.enabled = is_on
+        self.config["debug_mode"] = is_on
+        save_config(self.config)
+        if is_on:
+            self.dbg.section("MODO DEBUG ATIVADO")
+            self.dbg.info("As configurações de debug agora serão persistentes.")
+
     def force_refresh_sheets(self):
-        """Atualiza a lista de forma mais leve no CPython"""
+        """Atualiza a lista visualmente"""
         try:
             self.lst_Sheets.Items.Refresh()
         except:
@@ -516,8 +407,10 @@ class LuisExporterWindow(forms.WPFWindow):
                 self.cb_Profiles.SelectedItem = last_profile
             elif self.cb_Profiles.Items.Count > 0:
                 self.cb_Profiles.SelectedIndex = 0
+            
+            self.dbg.info("Perfis carregados: {}".format(len(profiles)))
         except Exception as ex:
-            print("Erro ao carregar perfis: " + str(ex))
+            self.dbg.error("Erro ao carregar perfis: " + str(ex))
 
     def apply_profile(self, sender, args):
         """Aplica as conf do perfil selecionado re-preenchendo a interface."""
@@ -535,37 +428,38 @@ class LuisExporterWindow(forms.WPFWindow):
         
         try:
             # Aplica Checkboxes Principais
-            if "export_dwg" in data and hasattr(self, 'chk_ExportDWG'):
+            if "export_dwg" in data:
                 self.chk_ExportDWG.IsChecked = data["export_dwg"]
-            if "export_pdf" in data and hasattr(self, 'chk_ExportPDF'):
+            if "export_pdf" in data:
                 self.chk_ExportPDF.IsChecked = data["export_pdf"]
                 
             # DWG Setup
-            if "dwg_setup" in data and hasattr(self, 'cb_DWGSetups'):
+            if "dwg_setup" in data:
                 dwg_setup = data["dwg_setup"]
-                # No CPython 3, use .Contains() em vez de 'in' para Items
                 if self.cb_DWGSetups.Items.Contains(dwg_setup):
                     self.cb_DWGSetups.SelectedItem = dwg_setup
 
             # PDF
-            if "pdf_hide_crop" in data and hasattr(self, 'chk_HideCrop'):
+            if "pdf_hide_crop" in data:
                 self.chk_HideCrop.IsChecked = data["pdf_hide_crop"]
-            if "pdf_combine" in data and hasattr(self, 'chk_CombinePDF'):
+            if "pdf_combine" in data:
                 self.chk_CombinePDF.IsChecked = data["pdf_combine"]
             if "pdf_zoom_type" in data:
                 z_type = data["pdf_zoom_type"]
-                if z_type == "fit" and hasattr(self, 'rb_ZoomFit'):
+                if z_type == "fit":
                     self.rb_ZoomFit.IsChecked = True
-                elif z_type == "zoom" and hasattr(self, 'rb_Zoom100'):
+                elif z_type == "zoom":
                     self.rb_Zoom100.IsChecked = True
 
             # Nome e Output
-            if "name_pattern" in data and hasattr(self, 'txt_NamePattern'):
+            if "name_pattern" in data:
                 self.txt_NamePattern.Text = data["name_pattern"]
-            if "output_folder" in data and hasattr(self, 'txt_OutputFolder'):
+            if "output_folder" in data:
                 self.txt_OutputFolder.Text = data["output_folder"]
-            if "open_folder" in data and hasattr(self, 'chk_OpenFolderAfter'):
+            if "open_folder" in data:
                 self.chk_OpenFolderAfter.IsChecked = data["open_folder"]
+            if "debug_mode" in data:
+                self.chk_DebugMode.IsChecked = data["debug_mode"]
 
             # Folhas selecionadas
             selected_numbers = data.get("selected_sheets", None)
@@ -587,21 +481,22 @@ class LuisExporterWindow(forms.WPFWindow):
         """Coleta o estado atual da UI em um dicionario."""
         selected_sheet_numbers = [item.Number for item in self.sheet_items if item.IsSelected]
         return {
-            "export_dwg": bool(self.chk_ExportDWG.IsChecked) if hasattr(self, 'chk_ExportDWG') else False,
-            "export_pdf": bool(self.chk_ExportPDF.IsChecked) if hasattr(self, 'chk_ExportPDF') else False,
-            "dwg_setup": self.cb_DWGSetups.Text if hasattr(self, 'cb_DWGSetups') else "",
-            "pdf_hide_crop": bool(self.chk_HideCrop.IsChecked) if hasattr(self, 'chk_HideCrop') else True,
-            "pdf_combine": bool(self.chk_CombinePDF.IsChecked) if hasattr(self, 'chk_CombinePDF') else False,
-            "pdf_zoom_type": "fit" if (hasattr(self, 'rb_ZoomFit') and self.rb_ZoomFit.IsChecked) else "zoom",
-            "name_pattern": self.txt_NamePattern.Text if hasattr(self, 'txt_NamePattern') else "{Nome da folha}",
-            "output_folder": self.txt_OutputFolder.Text if hasattr(self, 'txt_OutputFolder') else "",
-            "open_folder": bool(self.chk_OpenFolderAfter.IsChecked) if hasattr(self, 'chk_OpenFolderAfter') else True,
+            "export_dwg": bool(self.chk_ExportDWG.IsChecked),
+            "export_pdf": bool(self.chk_ExportPDF.IsChecked),
+            "debug_mode": bool(self.chk_DebugMode.IsChecked),
+            "dwg_setup": self.cb_DWGSetups.Text,
+            "pdf_hide_crop": bool(self.chk_HideCrop.IsChecked),
+            "pdf_combine": bool(self.chk_CombinePDF.IsChecked),
+            "pdf_zoom_type": "fit" if self.rb_ZoomFit.IsChecked else "zoom",
+            "name_pattern": self.txt_NamePattern.Text,
+            "output_folder": self.txt_OutputFolder.Text,
+            "open_folder": bool(self.chk_OpenFolderAfter.IsChecked),
             "selected_sheets": selected_sheet_numbers
         }
 
     def add_profile(self, sender, args):
         """Cria um perfil NOVO pedindo o nome ao usuario."""
-        if not hasattr(self, 'cb_Profiles'): return
+        if not self.cb_Profiles: return
         
         p_name = forms.ask_for_string(prompt="Nome do novo perfil:", title="Criar Perfil")
         if not p_name: return
@@ -622,7 +517,7 @@ class LuisExporterWindow(forms.WPFWindow):
 
     def save_profile(self, sender, args):
         """Salva o estado atual NO PERFIL SELECIONADO (atualiza)."""
-        if not hasattr(self, 'cb_Profiles'): return
+        if not self.cb_Profiles: return
         
         p_name = self.cb_Profiles.SelectedItem
         if not p_name:
@@ -637,7 +532,7 @@ class LuisExporterWindow(forms.WPFWindow):
 
     def delete_profile(self, sender, args):
         """Exclui perfil selecionado"""
-        if not hasattr(self, 'cb_Profiles'): return
+        if not self.cb_Profiles: return
         p_name = self.cb_Profiles.SelectedItem
         if not p_name: return
         
@@ -658,14 +553,12 @@ class LuisExporterWindow(forms.WPFWindow):
     def _hard_refresh(self):
         """Força a UI a descartar o cache redesenhando a DataGrid inteira via novo CollectionView."""
         try:
-            from System import Predicate
-            
             # Desacopla da interface completamente
             self.lst_Sheets.ItemsSource = None
             
             # Recria o controlador de visualizacao
             self.view_source = CollectionViewSource.GetDefaultView(self.sheet_items)
-            self.view_source.Filter = Predicate[System.Object](self.filter_sheets)
+            self.view_source.Filter = self.filter_sheets
             
             # Devolve pra DataGrid e forca atualizacao visual na marra
             self.lst_Sheets.ItemsSource = self.view_source
@@ -721,8 +614,9 @@ class LuisExporterWindow(forms.WPFWindow):
             else:
                 full_msg = "[{}] {}\n".format(timestamp, message)
             
-            self.txt_Log.AppendText(full_msg)
-            self.txt_Log.ScrollToEnd()
+            # Envia também para o debug console se ativo
+            self.dbg.info(message)
+            
             WinFormsApp.DoEvents()
         except:
             pass
@@ -739,7 +633,6 @@ class LuisExporterWindow(forms.WPFWindow):
             self.lbl_TimeLabel.Text = "Restante"
             self.progressBar.Width = 0
             self.pnl_ExportItems.Children.Clear()
-            self.txt_Log.Text = ""  # Limpa log detalhado
             WinFormsApp.DoEvents()
         except:
             pass
@@ -787,15 +680,15 @@ class LuisExporterWindow(forms.WPFWindow):
             if status == "success":
                 border.Background = Media.SolidColorBrush(Media.Color.FromArgb(26, 78, 201, 155))  # Verde translucido
                 icon = "✓"
-                icon_color = Media.Color.FromArgb(255, 78, 201, 155)
+                icon_color = Media.Color.FromRgb(78, 201, 155)
             elif status == "error":
                 border.Background = Media.SolidColorBrush(Media.Color.FromArgb(26, 210, 85, 85))  # Vermelho translucido
                 icon = "✕"
-                icon_color = Media.Color.FromArgb(255, 210, 85, 85)
+                icon_color = Media.Color.FromRgb(210, 85, 85)
             else:  # processing
                 border.Background = Media.SolidColorBrush(Media.Color.FromArgb(26, 86, 156, 214))  # Azul translucido
                 icon = "◐"
-                icon_color = Media.Color.FromArgb(255, 86, 156, 214)
+                icon_color = Media.Color.FromRgb(86, 156, 214)
             
             # Grid interno
             grid = Controls.Grid()
@@ -892,18 +785,7 @@ class LuisExporterWindow(forms.WPFWindow):
         new_pattern = self.txt_NamePattern.Text
         if not new_pattern: return
         for item in self.sheet_items: item.update_filename(new_pattern)
-        
-        # No CPython, usamos BeginInvoke para rodar o Refresh fora do evento de texto
-        # Isso evita o "Fatall Error" por reentrancia no Revit.
-        try:
-            from System.Windows.Threading import DispatcherPriority
-            import System
-            self.lst_Sheets.Dispatcher.BeginInvoke(
-                DispatcherPriority.Background,
-                System.Action(self.force_refresh_sheets)
-            )
-        except:
-            pass
+        self.force_refresh_sheets()
 
     def load_sheets(self):
         try:
@@ -926,7 +808,9 @@ class LuisExporterWindow(forms.WPFWindow):
                     except: pass
                     self.sheet_items.Add(item)
             self.lbl_Count.Text = str(len(self.sheet_items))
+            self.dbg.info("Folhas carregadas do projeto: {}".format(len(self.sheet_items)))
         except Exception as e:
+            self.dbg.error("Erro ao carregar folhas: " + str(e))
             forms.alert("Erro ao carregar folhas: " + str(e))
 
     def load_dwg_setups(self):
@@ -1011,6 +895,11 @@ class LuisExporterWindow(forms.WPFWindow):
         else: return "{:.1f}h".format(seconds/3600)
 
     def run_export(self, sender, args):
+        # Sincroniza o modo debug com a UI
+        self.dbg.enabled = bool(self.chk_DebugMode.IsChecked)
+        self.dbg.section("Iniciando Exportação de Folhas")
+        self.dbg.info("Versão do Revit detectada: {}".format(REVIT_YEAR))
+        
         folder = self.txt_OutputFolder.Text
         if not folder or not os.path.exists(folder):
             folder = forms.pick_folder()
@@ -1048,7 +937,7 @@ class LuisExporterWindow(forms.WPFWindow):
                 return
         
         # UI Setup
-        self._window.IsEnabled = False # Desativa a janela toda p/ evitar cliques que derrubam o Revit
+        self.IsEnabled = False  # Desativa a janela toda p/ evitar cliques
         self.btn_Start.IsEnabled = False
         self.btn_Cancel.Visibility = System.Windows.Visibility.Visible
         self.tab_Main.SelectedIndex = 1 
@@ -1092,7 +981,11 @@ class LuisExporterWindow(forms.WPFWindow):
 
         for idx, item in enumerate(selected_items):
             loop_start = time.time()
+            self.dbg.sub("Processando Folha: {}".format(item.Number))
+            self.dbg.debug("ElementId: {}".format(item.Element.Id))
+            
             if self.is_cancelled: 
+                self.dbg.warn("Exportação cancelada pelo usuário.")
                 break
             
             current_num = idx + 1
@@ -1109,7 +1002,7 @@ class LuisExporterWindow(forms.WPFWindow):
             self.update_progress(current_num, total_items, "Exportando: {} - {}{}".format(item.Number, item.Name, remaining_txt))
             self.update_counters(success_count, error_count, est_remaining)
             
-            # Pequeno respiro para evitar que o Revit trave no CPython durante o loop
+            # Pequeno respiro para manter a interface responsiva durante o loop
             if (idx + 1) % 5 == 0:
                 WinFormsApp.DoEvents()
                 time.sleep(0.01)
@@ -1242,7 +1135,7 @@ class LuisExporterWindow(forms.WPFWindow):
 
         # --- FINALIZACAO ---
         total_time = time.time() - start_time
-        self._window.IsEnabled = True # Reativa a janela
+        self.IsEnabled = True  # Reativa a janela
         self.btn_Start.IsEnabled = True
         self.btn_Cancel.Visibility = System.Windows.Visibility.Collapsed
         self.lbl_TimeLabel.Text = "Tempo Total"

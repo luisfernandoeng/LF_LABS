@@ -1,4 +1,1 @@
 tooltip: Exporte parâmetros para Excel, manipule livremente e importe as atualizações de volta.
-engine:
-  type: cpython
-  version: 3

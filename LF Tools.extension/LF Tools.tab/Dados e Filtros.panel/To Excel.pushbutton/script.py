@@ -169,6 +169,7 @@ class _XlsxReader:
             self._zf.close()
         except:
             pass
+import io
 import re
 import traceback
 import gc
@@ -176,7 +177,9 @@ import gc
 from collections import namedtuple
 import clr
 clr.AddReference("PresentationFramework")
+clr.AddReference("PresentationCore")
 clr.AddReference("System.Data")
+clr.AddReference("System.Xml")
 clr.AddReference('RevitAPI')
 from Autodesk.Revit import DB
 import System
@@ -218,7 +221,7 @@ def _save_file(file_ext="xlsx", default_name="export", **kw):
     dlg.FileName = str(default_name)
     return dlg.FileName if dlg.ShowDialog() == _WF.DialogResult.OK else None
 
-class _WPFWindowCPy:
+class _WPFWindowCPy(object):
     """CPython drop-in para pyrevit.forms.WPFWindow."""
     _XAML_EVENTS = _re.compile(
         r'\s+(?:x:Class|'
@@ -242,21 +245,35 @@ class _WPFWindowCPy:
     )
 
     def __init__(self, xaml_source, literal_string=None):
+        from System.IO import StringReader
+        from System.Windows.Markup import XamlReader
+        import System.Xml
         stripped = str(xaml_source).strip()
         is_inline = (literal_string is True or
                      (literal_string is None and stripped.startswith('<')))
         if not is_inline:
-            with open(str(xaml_source), 'r', encoding='utf-8') as _f:
+            with io.open(str(xaml_source), 'r', encoding='utf-8') as _f:
                 stripped = _f.read().strip()
         xaml_clean = self._XAML_EVENTS.sub('', stripped)
         rdr = System.Xml.XmlReader.Create(StringReader(xaml_clean))
         self._window = XamlReader.Load(rdr)
+        # Vincula ao Revit para herdar ícone e ficar na taskbar
+        try:
+            from System.Windows.Interop import WindowInteropHelper
+            from System.Diagnostics import Process
+            WindowInteropHelper(self._window).Owner = Process.GetCurrentProcess().MainWindowHandle
+        except Exception:
+            pass
 
     def __getattr__(self, name):
         if name.startswith('_'):
             raise AttributeError(name)
         win = object.__getattribute__(self, '_window')
         el = win.FindName(name)
+        if el is not None:
+            return el
+        import System.Windows
+        el = System.Windows.LogicalTreeHelper.FindLogicalNode(win, name)
         if el is not None:
             return el
         return getattr(win, name)
@@ -739,8 +756,38 @@ def get_parameter_value(param, param_def=None):
     
     return ""
 
+def get_param_display_string(el, param_def):
+    """Retorna o valor de um parâmetro como string de exibição (igual ao Revit)."""
+    try:
+        param = None
+        if param_def.definition and hasattr(el, 'get_Parameter'):
+            try:
+                param = el.get_Parameter(param_def.definition)
+            except Exception:
+                pass
+        if not param and hasattr(el, 'LookupParameter'):
+            try:
+                param = el.LookupParameter(param_def.name)
+            except Exception:
+                pass
+        if param and param.HasValue:
+            try:
+                vs = param.AsValueString()
+                if vs is not None:
+                    return vs
+            except Exception:
+                pass
+            try:
+                return param.AsString() or ""
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return ""
+
+
 # ==================== EXPORTAÇÃO OTIMIZADA ====================
-def export_xls(targets, file_path):
+def export_xls(targets, file_path, formatted=False):
     """Exporta dados para Excel com múltiplas abas se necessário."""
     workbook = None
     try:
@@ -785,97 +832,142 @@ def export_xls(targets, file_path):
             "font_color": "#9C0006"
         })
 
+        # Formatos extras para modo formatado (visual)
+        if formatted:
+            fmt_head_vis = get_excel_format(workbook, {
+                "bold": True, "bg_color": "#1F4E78", "font_color": "white",
+                "border": 1, "align": "center", "valign": "vcenter",
+            })
+            fmt_data_vis = get_excel_format(workbook, {
+                "border": 1, "align": "left", "valign": "vcenter",
+            })
+            fmt_data_alt = get_excel_format(workbook, {
+                "border": 1, "align": "left", "valign": "vcenter",
+                "bg_color": "#EBF3FB",
+            })
+
         for target in targets:
             sheet_name = sanitize_filename(target['name'])[:31] # Excel limita a 31 chars
             src_elements = target['src']
             selected_params = target['params']
             is_panel_schedule = target.get('is_panel', False)
-            
+
             ws = workbook.add_worksheet(sheet_name)
-            
+
             if is_panel_schedule:
                 # Escrever headers
                 for i, p in enumerate(selected_params):
                     ws.write(0, i, p.name, fmt_head_panel)
                     ws.set_column(i, i, 20)
-                
+
                 # Escrever dados
                 for r, el in enumerate(src_elements, 1):
                     if hasattr(el, 'row_data'):
                         for c, p in enumerate(selected_params):
                             ws.write(r, c, str(el.row_data.get(p.name, "")), fmt_data_panel)
-                
+
                 if src_elements:
                     ws.autofilter(0, 0, len(src_elements), len(selected_params)-1)
-                
+
+            elif formatted:
+                # ── Modo formatado: visual idêntico ao Revit, sem ElementId ─────
+                ws.set_tab_color("#1F4E78")
+                ws.freeze_panes(1, 0)
+                ws.set_row(0, 18)
+
+                header_names = [p.name for p in selected_params]
+                widths = [len(n) for n in header_names]
+
+                for i, name in enumerate(header_names):
+                    ws.write(0, i, name, fmt_head_vis)
+
+                for r, el in enumerate(src_elements, 1):
+                    fmt_row = fmt_data_alt if r % 2 == 0 else fmt_data_vis
+                    try:
+                        for c, p in enumerate(selected_params):
+                            if hasattr(el, 'row_data'):
+                                value = str(el.row_data.get(p.name, ""))
+                            else:
+                                value = get_param_display_string(el, p)
+                            ws.write(r, c, value, fmt_row)
+                            slen = len(value) if value else 0
+                            if slen > widths[c]:
+                                widths[c] = min(slen, 60)
+                    except Exception:
+                        pass
+
+                for i, w in enumerate(widths):
+                    ws.set_column(i, i, w + 3)
+
+                if src_elements:
+                    ws.autofilter(0, 0, len(src_elements), len(selected_params) - 1)
+
             else:
+                # ── Modo padrão: com ElementId, editável/importável ───────────
                 ws.freeze_panes(1, 1)
                 ws.write(0, 0, "ElementId", fmt_head_id)
 
                 # Processar cabeçalhos
                 param_units = []
                 header_names = []
-                
+
                 for p in selected_params:
                     post = ""
                     header_name = p.name
-                    
+
                     if not unit_postfix_pattern.search(header_name):
                         dt = get_parameter_data_type(p.definition) if p.definition else None
                         if dt and DB.UnitUtils.IsMeasurableSpec(dt):
                             try:
                                 sym = project_units.GetFormatOptions(dt).GetSymbolTypeId()
-                                if not sym.Empty(): 
+                                if not sym.Empty():
                                     post = " [" + DB.LabelUtils.GetLabelForSymbol(sym) + "]"
-                            except: 
+                            except:
                                 pass
-                    
+
                     param_units.append(post)
                     header_names.append(header_name)
-                
+
                 # Escrever headers
                 for i, p in enumerate(selected_params):
                     fmt = fmt_head_ro if p.isreadonly else fmt_bold
                     ws.write(0, i+1, header_names[i] + param_units[i], fmt)
-                
+
                 # Calcular larguras
                 widths = [len("ElementId")] + [len(header_names[i]) + len(param_units[i]) for i in range(len(selected_params))]
-                
+
                 # Processamento em lotes adaptativo
                 total_elements = len(src_elements)
-                batch_size = 1000 # Simplificando para evitar lógica excessiva no loop de abas
-                
+                batch_size = 1000
+
                 param_cache = {}
-                processed_count = 0
-                
+
                 for batch_start in range(0, total_elements, batch_size):
                     batch_end = min(batch_start + batch_size, total_elements)
-                    
+
                     r_offset = 0
                     for el in src_elements[batch_start:batch_end]:
                         r = batch_start + r_offset + 1
                         try:
                             eid = el.Id.IntegerValue
                             ws.write(r, 0, str(eid), fmt_lock_id)
-                            
+
                             for c, p in enumerate(selected_params):
                                 value = get_element_parameter_value(el, p, param_cache)
                                 fmt = fmt_lock_ro if p.isreadonly else fmt_unlock
                                 ws.write(r, c+1, value, fmt)
-                                
+
                                 slen = len(str(value)) if value else 0
-                                if slen > widths[c+1]: 
+                                if slen > widths[c+1]:
                                     widths[c+1] = min(slen, 50)
                         except:
                             pass
                         r_offset += 1
-                    
-                    processed_count += (batch_end - batch_start)
+
                     if len(param_cache) > 5000:
                         param_cache.clear()
-                
-                # Aplicar larguras — coluna 0 (ElementId) fica oculta mas os dados
-                # permanecem para que a importação continue funcionando
+
+                # Coluna ElementId oculta — dados preservados para importação
                 ws.set_column(0, 0, None, None, {'hidden': True})
                 for i, w in enumerate(widths):
                     if i == 0:
@@ -1061,7 +1153,7 @@ def import_xls(file_path):
             import_element_cache.clear()
             _t.Commit()
         except Exception:
-            if _t.HasStarted() and not _t.IsCompleted():
+            if _t.HasStarted() and not _t.HasEnded():
                 _t.RollBack()
             raise
 
@@ -1114,6 +1206,7 @@ class ExportImportWindow(forms.WPFWindow):
         self.ComboBox_ExportMode.SelectionChanged += self.mode_changed
         self.btn_DropdownToggle.MouseLeftButtonDown += self._toggle_dropdown
         self.chk_SelectAllSchedules.Click   += self._on_select_all_changed
+        self.CheckBox_KeepFormat.Click      += self._on_keep_format_changed
 
         self.load_schedules()
         self.mode_changed(None, None)
@@ -1268,6 +1361,13 @@ class ExportImportWindow(forms.WPFWindow):
         self._update_display_text()
         self._update_export_path()
         self._update_export_preview()
+
+    def _on_keep_format_changed(self, _sender, _args):
+        """Mostra/oculta o aviso de 'não reimportável' conforme o checkbox."""
+        checked = bool(self.CheckBox_KeepFormat.IsChecked)
+        self.pnl_FormatWarning.Visibility = (
+            Visibility.Visible if checked else Visibility.Collapsed
+        )
 
     def _on_checklist_changed(self, sender, args):
         """Chamado quando qualquer checkbox da lista muda."""
@@ -1520,20 +1620,25 @@ class ExportImportWindow(forms.WPFWindow):
                     msg += "\n\nTabelas vazias ignoradas:\n- " + "\n- ".join(skipped_names)
                 return forms.alert(msg)
 
+            formatted = bool(self.CheckBox_KeepFormat.IsChecked)
+
             self.update_status("Gerando Excel ({} abas)...".format(len(targets)))
-            export_xls(targets, self.export_path)
+            export_xls(targets, self.export_path, formatted=formatted)
             self.update_status("Concluído!")
 
             report = "Exportação finalizada!\n{} abas criadas.".format(len(targets))
             if skipped_names:
                 report += "\n\nTabelas vazias ignoradas:\n- " + "\n- ".join(skipped_names)
+            if formatted:
+                report += "\n\n⚠ Arquivo exportado no modo formatado.\nEste arquivo não pode ser reimportado ao Revit."
             forms.alert(report, title="Sucesso")
 
-            # Auto-preencher importação e atualizar preview
-            self.import_path = self.export_path
-            self.TextBox_ImportPath.Text = self.export_path
-            self.tab_Main.SelectedIndex = 1
-            self._update_import_preview()
+            if not formatted:
+                # Modo padrão: auto-preencher importação
+                self.import_path = self.export_path
+                self.TextBox_ImportPath.Text = self.export_path
+                self.tab_Main.SelectedIndex = 1
+                self._update_import_preview()
 
             if self.CheckBox_OpenFolder.IsChecked:
                 import subprocess

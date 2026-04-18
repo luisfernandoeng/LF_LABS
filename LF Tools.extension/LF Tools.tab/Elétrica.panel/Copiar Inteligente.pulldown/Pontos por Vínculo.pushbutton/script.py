@@ -1,4 +1,3 @@
-#! python3
 # -*- coding: utf-8 -*-
 """Pontos por Vínculo v6"""
 __title__ = "Pontos por\nVínculo"
@@ -24,7 +23,6 @@ from System.Windows import (
     Thickness, GridLength, GridUnitType,
     VerticalAlignment, HorizontalAlignment, TextWrapping, Visibility, CornerRadius
 )
-from System.Windows import MessageBox
 from System.Windows.Controls import (
     CheckBox, Grid, ColumnDefinition, RowDefinition, TextBlock, ComboBox, TextBox, Border, ScrollViewer, StackPanel
 )
@@ -38,7 +36,8 @@ from Autodesk.Revit.DB import (
 )
 from Autodesk.Revit.DB.Structure import StructuralType
 
-from lf_utils import DebugLogger, WPFWindowCPy, get_revit_context
+from pyrevit import forms, script
+from lf_utils import DebugLogger
 
 dbg = DebugLogger(DEBUG_MODE)
 
@@ -230,12 +229,10 @@ def _set_power(element, pow_str):
 
 # ==================== UI ====================
 
-class PontosVinculoWindow(WPFWindowCPy):
+class PontosVinculoWindow(forms.WPFWindow):
     def __init__(self, xaml_file):
-        WPFWindowCPy.__init__(self, xaml_file)
-        # doc fresco a cada abertura — o módulo é cacheado pelo pyRevit,
-        # então o doc module-level pode ficar stale após múltiplas execuções.
-        _, self._doc = get_revit_context()
+        forms.WPFWindow.__init__(self, xaml_file)
+        self._doc = __revit__.ActiveUIDocument.Document
         self._links = get_link_instances()
         self._host_levels = sorted(
             FilteredElementCollector(self._doc).OfClass(Level),
@@ -282,7 +279,7 @@ class PontosVinculoWindow(WPFWindowCPy):
     def _init_ui(self):
         if not self._links:
             self.lbl_Status.Text = "Nenhum vínculo carregado no projeto."
-            MessageBox.Show("Nenhum vínculo RVT carregado no projeto.", "Pontos por Vínculo")
+            forms.alert("Nenhum vínculo RVT carregado no projeto.", title="Pontos por Vínculo")
             return
 
         net_links = List[System.Object]()
@@ -529,7 +526,7 @@ class PontosVinculoWindow(WPFWindowCPy):
             })
 
         if not to_place:
-            MessageBox.Show("Nenhuma linha com ponto elétrico ou de dados selecionada.", "Pontos por Vínculo")
+            forms.alert("Nenhuma linha com ponto elétrico ou de dados selecionada.", title="Pontos por Vínculo")
             return
 
         dbg.section("Pontos por Vínculo — Colocação")
@@ -542,7 +539,7 @@ class PontosVinculoWindow(WPFWindowCPy):
         try:
             status = t.Start()
             if status != TransactionStatus.Started:
-                MessageBox.Show("Não foi possível iniciar a transação (status: {}).".format(status), "Pontos por Vínculo")
+                forms.alert("Não foi possível iniciar a transação (status: {}).".format(status), title="Pontos por Vínculo")
                 return
 
             levels = list(FilteredElementCollector(_doc).OfClass(Level))
@@ -640,7 +637,7 @@ class PontosVinculoWindow(WPFWindowCPy):
                 dbg.warn("Potência falhou: {}".format(power_fail))
             if skip_count:
                 dbg.warn("Instâncias puladas (sem localização): {}".format(skip_count))
-            MessageBox.Show("Pontos colocados com sucesso!", "Pontos por Vínculo")
+            forms.alert("Pontos colocados com sucesso!", title="Pontos por Vínculo")
 
         except Exception as e:
             try:
@@ -649,9 +646,9 @@ class PontosVinculoWindow(WPFWindowCPy):
             except:
                 pass
             dbg.error("Exceção em _on_place: {}".format(e))
-            MessageBox.Show("Erro ao colocar pontos:\n" + str(e), "Pontos por Vínculo")
+            forms.alert("Erro ao colocar pontos:\n" + str(e), title="Pontos por Vínculo")
 
 
 if __name__ == "__main__":
-    win = PontosVinculoWindow(os.path.join(os.path.dirname(__file__), 'ui.xaml'))
+    win = PontosVinculoWindow(script.get_bundle_file('ui.xaml'))
     win.ShowDialog()

@@ -1,5 +1,5 @@
-#! python3
 # -*- coding: utf-8 -*-
+import io
 import os
 import re
 import json
@@ -39,6 +39,9 @@ active_view = uidoc.ActiveView
 import System
 import clr
 clr.AddReference('System.Windows.Forms')
+clr.AddReference('PresentationCore')
+clr.AddReference('PresentationFramework')
+clr.AddReference('System.Xml')
 from System.Windows import Window, Thickness, FontWeight, FontWeights, Media, Visibility
 from System.Windows.Controls import TextBlock, CheckBox, TextBox
 from System.Collections.Generic import List
@@ -66,7 +69,7 @@ def _alert(msg, title="LF Tools", yes=False, no=False, exitscript=False, **kw):
 def _toast(msg, **kw):
     pass  # No-op: pyrevit script logger not available in CPython standalone
 
-class _WPFWindowCPy:
+class _WPFWindowCPy(object):
     """CPython drop-in for pyrevit.forms.WPFWindow."""
     _XAML_EVENTS = re.compile(
         r'\s+(?:x:Class|'
@@ -97,17 +100,28 @@ class _WPFWindowCPy:
         is_inline = (literal_string is True or
                      (literal_string is None and stripped.startswith('<')))
         if not is_inline:
-            with open(str(xaml_source), 'r', encoding='utf-8') as _f:
+            with io.open(str(xaml_source), 'r', encoding='utf-8') as _f:
                 stripped = _f.read().strip()
         xaml_clean = self._XAML_EVENTS.sub('', stripped)
         rdr = System.Xml.XmlReader.Create(StringReader(xaml_clean))
         self._window = XamlReader.Load(rdr)
+        # Vincula ao Revit para herdar ícone e ficar na taskbar
+        try:
+            from System.Windows.Interop import WindowInteropHelper
+            from System.Diagnostics import Process
+            WindowInteropHelper(self._window).Owner = Process.GetCurrentProcess().MainWindowHandle
+        except Exception:
+            pass
 
     def __getattr__(self, name):
         if name.startswith('_'):
             raise AttributeError(name)
         win = object.__getattribute__(self, '_window')
         el = win.FindName(name)
+        if el is not None:
+            return el
+        import System.Windows
+        el = System.Windows.LogicalTreeHelper.FindLogicalNode(win, name)
         if el is not None:
             return el
         return getattr(win, name)

@@ -1,56 +1,57 @@
-#! python3
 # -*- coding: utf-8 -*-
 """
 Conectar Eletroduto - Conexão inteligente entre elementos MEP.
 
 Shift-Click: Abre menu de configuração (Conector específico vs Caixa inteira)
 Normal: Seleção automática (conector mais próximo)
-
-Lógica de traçado:
-- Mesma caixa → 45° (3 segmentos, mais suave para puxar fio)
-- Caixas diferentes → 90° ortogonal (instalação embutida)
-- Distâncias curtas → trecho direto
 """
 
 __title__ = 'Conectar\nEletroduto'
 __author__ = 'Luis Fernando'
 
-# ╔══════════════════════════════════════════════════════════════╗
-# ║                    MODO DEBUG                                ║
-# ║  True  = imprime tudo no console pyRevit + mostra erros      ║
-# ║  False = silencioso (só mostra alert em caso de erro fatal)  ║
-# ╚══════════════════════════════════════════════════════════════╝
-DEBUG_MODE = False
-
-# =====================================================================
+# =============================================================================
 #  IMPORTS
-# =====================================================================
+# =============================================================================
 import clr
+import os
+import re
+import sys
+import System
+import json
+import traceback
+import math
+from collections import OrderedDict
+
+clr.AddReference('PresentationCore')
+clr.AddReference('PresentationFramework')
+clr.AddReference('System.Windows.Forms')
+clr.AddReference('WindowsBase')
 clr.AddReference('RevitAPI')
 clr.AddReference('RevitAPIUI')
+
+from System.IO import StreamReader
+from System.Windows.Markup import XamlReader
+from System.Windows import Window, Thickness
+from System.Windows.Interop import WindowInteropHelper
+from System.Collections.Generic import List
+
+import Autodesk.Revit.DB as DB
 from Autodesk.Revit.DB import *
 from Autodesk.Revit.DB.Electrical import *
-from Autodesk.Revit.DB import BuiltInParameter, ElementId, StorageType, BuiltInCategory, XYZ
 from Autodesk.Revit.UI import *
-from Autodesk.Revit.UI.Selection import *
+from Autodesk.Revit.UI.Selection import ObjectType, ISelectionFilter
 from Autodesk.Revit.Exceptions import OperationCanceledException
-import System
-from System.Collections.Generic import List
-from collections import OrderedDict
-import math
-import traceback
 
-from pyrevit import forms           # script importado de forma lazy em load/save_config
-from lf_utils import DebugLogger, get_revit_context, patch_forms, make_warning_swallower, get_script_config, save_script_config
+from pyrevit import forms
+from lf_utils import DebugLogger, get_script_config, save_script_config, make_warning_swallower
 
-patch_forms(forms)
+# Instância global
+dbg = DebugLogger(False)
 
-# Instância global — usar `dbg` em todo o script
-dbg = DebugLogger(DEBUG_MODE)
+# Referências globais nativas
+uidoc = __revit__.ActiveUIDocument
+doc   = uidoc.Document if uidoc else None
 
-# Referências globais — preenchidas na primeira execução
-uidoc = None
-doc   = None
 
 # =====================================================================
 #  HELPERS DE NOME
@@ -82,110 +83,155 @@ def __get_family_name__(obj):
 # =====================================================================
 def load_config():
     return get_script_config(__commandpath__, defaults={
-        'selection_mode':   'conector',
-        'conduit_type':     '',
-        'default_diameter': '',
-        'service_type':     '',
-        'routing_strategy': 'auto',
+        'selection_mode':        'conector',
+        'angle_mode_plan':       '90',
+        'angle_mode_vertical':   '90',
+        'conduit_type_plan':     '',
+        'conduit_type_vertical': '',
+        'default_diameter':      '',
+        'service_type':          '',
+        'routing_strategy':      'auto',
+        'debug_mode':            False,
     })
 
 def save_config(settings):
     save_script_config(__commandpath__, settings)
 
+class SettingsWindow(object):
+    def __init__(self, settings):
+        self.settings = settings
+        self._setup_window()
+        self._load_conduit_types()
+        self._load_current_values()
+
+    def _setup_window(self):
+        xaml_path = os.path.join(__commandpath__, 'settings.xaml')
+        stream = StreamReader(xaml_path)
+        self.win = XamlReader.Load(stream.BaseStream)
+        stream.Close()
+
+        WindowInteropHelper(self.win).Owner = __revit__.MainWindowHandle
+
+        # Aba Plano / Piso
+        self.rb_plan_90    = self.win.FindName("rb_plan_90")
+        self.rb_plan_45    = self.win.FindName("rb_plan_45")
+        self.rb_plan_livre = self.win.FindName("rb_plan_livre")
+        self.cb_type_plan  = self.win.FindName("cb_type_plan")
+
+        # Aba Vertical
+        self.rb_vert_90    = self.win.FindName("rb_vert_90")
+        self.rb_vert_45    = self.win.FindName("rb_vert_45")
+        self.rb_vert_livre = self.win.FindName("rb_vert_livre")
+        self.cb_type_vert  = self.win.FindName("cb_type_vert")
+
+        # Aba Geral
+        self.rb_sel_conector = self.win.FindName("rb_sel_conector")
+        self.rb_sel_caixa    = self.win.FindName("rb_sel_caixa")
+        self.tb_diameter     = self.win.FindName("tb_diameter")
+        self.tb_service      = self.win.FindName("tb_service")
+        self.rb_strat_auto   = self.win.FindName("rb_strat_auto")
+        self.rb_strat_calc   = self.win.FindName("rb_strat_calc")
+        self.chk_debug       = self.win.FindName("chk_debug")
+
+        # Botões
+        self.win.FindName("btn_save").Click   += self.save_click
+        self.win.FindName("btn_cancel").Click += self.cancel_click
+
+    def _load_conduit_types(self):
+        collector = FilteredElementCollector(doc).OfClass(clr.GetClrType(ConduitType))
+        type_names = sorted([__get_name__(t) for t in collector if __get_name__(t)])
+        self._conduit_options = ["(Usar Último Desenhado)", "(Padrão do Revit)"] + type_names
+        self.cb_type_plan.ItemsSource = self._conduit_options
+        self.cb_type_vert.ItemsSource = self._conduit_options
+
+    def _load_current_values(self):
+        # Ângulo plano
+        angle_plan = self.settings.get('angle_mode_plan', '90')
+        self.rb_plan_90.IsChecked    = (angle_plan == '90')
+        self.rb_plan_45.IsChecked    = (angle_plan == '45')
+        self.rb_plan_livre.IsChecked = (angle_plan == 'livre')
+
+        # Tipo eletroduto plano
+        pref_plan = self.settings.get('conduit_type_plan', '')
+        if pref_plan in self._conduit_options:
+            self.cb_type_plan.SelectedItem = pref_plan
+        else:
+            self.cb_type_plan.SelectedIndex = 0
+
+        # Ângulo vertical
+        angle_vert = self.settings.get('angle_mode_vertical', '90')
+        self.rb_vert_90.IsChecked    = (angle_vert == '90')
+        self.rb_vert_45.IsChecked    = (angle_vert == '45')
+        self.rb_vert_livre.IsChecked = (angle_vert == 'livre')
+
+        # Tipo eletroduto vertical
+        pref_vert = self.settings.get('conduit_type_vertical', '')
+        if pref_vert in self._conduit_options:
+            self.cb_type_vert.SelectedItem = pref_vert
+        else:
+            self.cb_type_vert.SelectedIndex = 0
+
+        # Modo seleção
+        mode = self.settings.get('selection_mode', 'conector')
+        self.rb_sel_conector.IsChecked = (mode == 'conector')
+        self.rb_sel_caixa.IsChecked    = (mode == 'caixa')
+
+        # Diâmetro e serviço
+        self.tb_diameter.Text = self.settings.get('default_diameter', '')
+        self.tb_service.Text  = self.settings.get('service_type', '')
+
+        # Estratégia
+        strat = self.settings.get('routing_strategy', 'auto')
+        self.rb_strat_auto.IsChecked = (strat == 'auto')
+        self.rb_strat_calc.IsChecked = (strat != 'auto')
+
+        # Debug
+        self.chk_debug.IsChecked = bool(self.settings.get('debug_mode', False))
+
+    def save_click(self, sender, e):
+        if self.rb_plan_45.IsChecked:
+            self.settings['angle_mode_plan'] = '45'
+        elif self.rb_plan_livre.IsChecked:
+            self.settings['angle_mode_plan'] = 'livre'
+        else:
+            self.settings['angle_mode_plan'] = '90'
+
+        if self.rb_vert_45.IsChecked:
+            self.settings['angle_mode_vertical'] = '45'
+        elif self.rb_vert_livre.IsChecked:
+            self.settings['angle_mode_vertical'] = 'livre'
+        else:
+            self.settings['angle_mode_vertical'] = '90'
+
+        sel_plan = self.cb_type_plan.SelectedItem
+        self.settings['conduit_type_plan']     = sel_plan if sel_plan else ''
+        sel_vert = self.cb_type_vert.SelectedItem
+        self.settings['conduit_type_vertical'] = sel_vert if sel_vert else ''
+
+        self.settings['selection_mode']   = 'caixa' if self.rb_sel_caixa.IsChecked else 'conector'
+        self.settings['default_diameter'] = self.tb_diameter.Text or ''
+        self.settings['service_type']     = self.tb_service.Text or ''
+        self.settings['routing_strategy'] = 'calculado' if self.rb_strat_calc.IsChecked else 'auto'
+        self.settings['debug_mode']       = bool(self.chk_debug.IsChecked)
+
+        save_config(self.settings)
+        self.win.DialogResult = True
+        self.win.Close()
+
+    def cancel_click(self, sender, e):
+        self.win.Close()
+
+    def show(self):
+        return self.win.ShowDialog()
+
 def show_settings():
     settings = load_config()
-
-    while True:
-        mode_str  = "Conector Específico" if settings.get('selection_mode', 'conector') == 'conector' else "Caixa Inteira"
-        cur_type  = settings.get('conduit_type', '')     or '(Usar Último Desenhado)'
-        cur_diam  = settings.get('default_diameter', '') or '(Automático - Puxa do Último/Conector)'
-        cur_serv  = settings.get('service_type', '')     or '(Nenhum)'
-        strat     = settings.get('routing_strategy', 'auto')
-        strat_str = "Auto (direto → calculado)" if strat == 'auto' else "Sempre Calculado"
-
-        opcoes = OrderedDict([
-            ("1. Modo de Seleção: "             + mode_str,  "selection_mode"),
-            ("2. Tipo de Eletroduto Padrão: "   + cur_type,  "conduit_type"),
-            ("3. Diâmetro Padrão (mm): "        + cur_diam,  "default_diameter"),
-            ("4. Texto para Tipo de Serviço: "  + cur_serv,  "service_type"),
-            ("5. Estratégia de Rota: "          + strat_str, "routing_strategy"),
-            ("6. Salvar e Sair", "save"),
-        ])
-
-        escolha = forms.CommandSwitchWindow.show(
-            opcoes.keys(),
-            message="Configurações: Conectar Eletroduto",
-            title="Shift+Click - Configurações"
-        )
-
-        if not escolha or opcoes.get(escolha) == "save":
-            save_config(settings)
-            forms.toast("Configurações salvas!", title="Conectar Eletroduto")
-            break
-
-        key = opcoes[escolha]
-
-        if key == 'selection_mode':
-            chosen = forms.CommandSwitchWindow.show(
-                ['Conector Específico', 'Caixa Inteira'],
-                message="Selecione o modo de seleção padrão:",
-                title="Modo de Seleção"
-            )
-            if chosen:
-                settings['selection_mode'] = 'conector' if 'Conector' in chosen else 'caixa'
-
-        elif key == 'conduit_type':
-            collector = FilteredElementCollector(doc).OfClass(clr.GetClrType(ConduitType))
-            types = {}
-            for t in collector:
-                try:
-                    name = t.Name
-                except Exception:
-                    p = t.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
-                    name = p.AsString() if (p and p.HasValue) else str(t.Id.IntegerValue)
-                if name:
-                    types[name] = name
-            if not types:
-                forms.alert("Nenhum tipo de eletroduto encontrado.")
-                continue
-            chosen = forms.CommandSwitchWindow.show(
-                ["(Usar Último Desenhado)", "(Padrão do Revit)"] + sorted(types.keys()),
-                message="Selecione o Tipo de Eletroduto:",
-                title="Tipo de Eletroduto"
-            )
-            if chosen:
-                settings['conduit_type'] = chosen
-
-        elif key == 'default_diameter':
-            val = forms.ask_for_string(
-                default=settings.get('default_diameter', ''),
-                prompt="Diâmetro padrão em mm (ex: 25, 32). Deixe EM BRANCO para (Automático):",
-                title="Diâmetro"
-            )
-            if val is not None:
-                settings['default_diameter'] = val.strip()
-
-        elif key == 'service_type':
-            val = forms.ask_for_string(
-                default=settings.get('service_type', ''),
-                prompt="Texto fixo para Tipo de Serviço (Deixe EM BRANCO para limpar):",
-                title="Tipo de Serviço"
-            )
-            if val is not None:
-                settings['service_type'] = val.strip()
-
-        elif key == 'routing_strategy':
-            chosen = forms.CommandSwitchWindow.show(
-                ['Auto (direto → calculado)', 'Sempre Calculado'],
-                message=(
-                    "Auto: tenta 1 tubo direto com curva automática do Revit.\n"
-                    "Se não encaixar, cai no caminho calculado (multi-segmento).\n\n"
-                    "Sempre Calculado: sempre usa o caminho ortogonal planejado."
-                ),
-                title="Estratégia de Rota"
-            )
-            if chosen:
-                settings['routing_strategy'] = 'auto' if 'Auto' in chosen else 'calculado'
+    xaml_path = os.path.join(__commandpath__, "settings.xaml")
+    if not os.path.exists(xaml_path):
+        forms.alert("Arquivo settings.xaml não encontrado!", title="Erro")
+        return
+    win = SettingsWindow(settings)
+    win.show()
 
 # =====================================================================
 #  FUNÇÕES AUXILIARES
@@ -708,17 +754,18 @@ def merge_collinear_segments(segments):
 #  EXECUÇÃO PRINCIPAL
 # =====================================================================
 def execute_connection():
-    global uidoc, doc
+    global uidoc, doc, dbg
+    
+    # ── Configurações e Debug ──────────────────────────────────────
+    settings = load_config()
+    debug_active = settings.get('debug_mode', False)
+    
+    # Reinicia o logger com a configuração atual
+    dbg = DebugLogger(debug_active)
+    
     dbg.section("Conectar Eletroduto — Início")
     dbg.timer_start("total")
-
-    # Inicializa contexto Revit aqui (não no módulo) para compatibilidade com
-    # todas as versões de pythonnet/pyRevit
-    try:
-        uidoc, doc = get_revit_context()
-    except RuntimeError as e:
-        forms.alert(str(e), title="Conectar Eletroduto")
-        return
+    dbg.dump("settings", settings)
 
     try:
         is_shift = __shiftclick__
@@ -728,9 +775,6 @@ def execute_connection():
     if is_shift:
         show_settings()
         return
-
-    settings = load_config()
-    dbg.dump("settings", settings)
 
     use_connector_mode = (settings.get('selection_mode', 'conector') == 'conector')
     dbg.info("Modo de seleção: {}".format("conector" if use_connector_mode else "caixa"))
@@ -812,22 +856,24 @@ def execute_connection():
     last_ref_conduit = get_last_conduit(doc)
     dbg.debug("last_ref_conduit: {}".format(last_ref_conduit.Id if last_ref_conduit else "None"))
 
-    pref_conduit_type_name = settings.get('conduit_type', '')
-    conduit_type_id = None
-    if pref_conduit_type_name:
-        for t in FilteredElementCollector(doc).OfClass(clr.GetClrType(ConduitType)):
-            if __get_name__(t) == pref_conduit_type_name:
-                conduit_type_id = t.Id
-                break
-    if not conduit_type_id:
-        if pref_conduit_type_name == "(Padrão do Revit)":
-            conduit_type_id  = get_default_conduit_type(doc)
-            last_ref_conduit = None
-        elif last_ref_conduit:
-            conduit_type_id = last_ref_conduit.GetTypeId()
-        else:
-            conduit_type_id = get_default_conduit_type(doc)
-    dbg.debug("conduit_type_id: {}".format(conduit_type_id))
+    pref_plan = settings.get('conduit_type_plan', '')
+    pref_vert = settings.get('conduit_type_vertical', '')
+
+    def _resolve_conduit_id(pref_name):
+        if pref_name and pref_name not in ("(Usar Último Desenhado)", "(Padrão do Revit)"):
+            for t in FilteredElementCollector(doc).OfClass(clr.GetClrType(ConduitType)):
+                if __get_name__(t) == pref_name:
+                    return t.Id, False
+        if pref_name == "(Padrão do Revit)":
+            return get_default_conduit_type(doc), True
+        if last_ref_conduit:
+            return last_ref_conduit.GetTypeId(), False
+        return get_default_conduit_type(doc), False
+
+    conduit_type_id_plan, clear_ref_plan = _resolve_conduit_id(pref_plan)
+    conduit_type_id_vert, clear_ref_vert = _resolve_conduit_id(pref_vert)
+    dbg.debug("conduit_type_id_plan: {}  conduit_type_id_vert: {}".format(
+        conduit_type_id_plan, conduit_type_id_vert))
 
     pref_diameter_str = settings.get('default_diameter', '')
     diameter_mm = 0
@@ -899,8 +945,17 @@ def execute_connection():
     dist_metros = dist_direct * 0.3048
     is_same_family = (fam1_name and fam2_name and fam1_name == fam2_name)
 
+    # Seleciona tipo de eletroduto e modos de ângulo conforme tipo de rota
+    conduit_type_id = conduit_type_id_plan if is_flat else conduit_type_id_vert
+    if (is_flat and clear_ref_plan) or (not is_flat and clear_ref_vert):
+        last_ref_conduit = None
+    angle_plan = settings.get('angle_mode_plan', '90')
+    angle_vert = settings.get('angle_mode_vertical', '90')
+
     dbg.debug("dist={:.4f} ft ({:.3f} m)  dz={:.4f} ft  is_flat={}  is_piso={}  same_box={}  force_vertical={}".format(
         dist_direct, dist_metros, dz, is_flat, is_piso, same_box, force_vertical))
+    dbg.debug("conduit_type_id: {}  angle_plan={}  angle_vert={}".format(
+        conduit_type_id, angle_plan, angle_vert))
 
     vec_to_target = (pt2 - pt1).Normalize() if dist_direct > 0.01 else XYZ.BasisZ
     if dir1.DotProduct(vec_to_target) < -0.1 and not is_same_family:
@@ -943,44 +998,73 @@ def execute_connection():
         dbg.info("Regra 1: mesma caixa, piso, curto")
         segments = [(pt1, p_stub1), (p_stub1, p_stub2), (p_stub2, pt2)]
     elif same_box and not is_piso and is_flat:
-        dbg.info("Regra 2: mesma caixa, parede/teto, mesmo nível")
-        p1_c, p2_c = solve_chicane_2d(pt1, pt2, dir1, dir2, stub_len)
-        if p1_c and p2_c:
-            segments = [(pt1, p1_c), (p1_c, p2_c), (p2_c, pt2)]
+        dbg.info("Regra 2: mesma caixa, parede/teto, mesmo nível (angle_plan={})".format(angle_plan))
+        if angle_plan == 'livre':
+            segments = [(pt1, pt2)]
         else:
-            mid_segs = create_90_degree_path(p_stub1, p_stub2, dir1, dir2, False)
-            segments = [(pt1, p_stub1)] + mid_segs + [(p_stub2, pt2)]
+            p1_c, p2_c = solve_chicane_2d(pt1, pt2, dir1, dir2, stub_len)
+            if p1_c and p2_c:
+                segments = [(pt1, p1_c), (p1_c, p2_c), (p2_c, pt2)]
+            elif angle_plan == '45':
+                mid_segs = create_45_degree_path(p_stub1, p_stub2, dir1, dir2)
+                segments = [(pt1, p_stub1)] + mid_segs + [(p_stub2, pt2)]
+            else:
+                mid_segs = create_90_degree_path(p_stub1, p_stub2, dir1, dir2, False)
+                segments = [(pt1, p_stub1)] + mid_segs + [(p_stub2, pt2)]
     elif same_box and not is_flat:
         if is_piso:
             dbg.info("Regra 3a: mesma caixa, piso, desnível")
             mid_segs = create_terrain_segments(p_stub1, p_stub2, dist_metros)
         else:
-            dbg.info("Regra 3b: mesma caixa, parede, desnível")
-            mid_segs = create_90_degree_path(p_stub1, p_stub2, dir1, dir2, True)
+            dbg.info("Regra 3b: mesma caixa, parede, desnível (angle_vert={})".format(angle_vert))
+            if angle_vert == 'livre':
+                mid_segs = create_terrain_segments(p_stub1, p_stub2, dist_metros)
+            else:
+                mid_segs = create_90_degree_path(p_stub1, p_stub2, dir1, dir2, True)
         segments = [(pt1, p_stub1)] + mid_segs + [(p_stub2, pt2)]
     elif not same_box and is_flat:
         if is_piso:
-            dbg.info("Regra 4a: caixas diferentes, piso, mesmo nível")
-            p1_c, p2_c = solve_chicane_2d(pt1, pt2, dir1, dir2, stub_len)
-            if p1_c and p2_c:
-                segments = [(pt1, p1_c), (p1_c, p2_c), (p2_c, pt2)]
+            dbg.info("Regra 4a: caixas diferentes, piso, mesmo nível (angle_plan={})".format(angle_plan))
+            if angle_plan == 'livre':
+                segments = [(pt1, pt2)]
             else:
+                p1_c, p2_c = solve_chicane_2d(pt1, pt2, dir1, dir2, stub_len)
+                if p1_c and p2_c:
+                    segments = [(pt1, p1_c), (p1_c, p2_c), (p2_c, pt2)]
+                elif angle_plan == '45':
+                    mid_segs = create_45_degree_path(p_stub1, p_stub2, dir1, dir2)
+                    segments = [(pt1, p_stub1)] + mid_segs + [(p_stub2, pt2)]
+                else:
+                    mid_segs = create_90_degree_path(p_stub1, p_stub2, dir1, dir2, False)
+                    segments = [(pt1, p_stub1)] + mid_segs + [(p_stub2, pt2)]
+        else:
+            dbg.info("Regra 4b: caixas diferentes, parede, mesmo nível (angle_plan={})".format(angle_plan))
+            if angle_plan == 'livre':
+                segments = [(pt1, pt2)]
+            elif angle_plan == '45':
                 mid_segs = create_45_degree_path(p_stub1, p_stub2, dir1, dir2)
                 segments = [(pt1, p_stub1)] + mid_segs + [(p_stub2, pt2)]
-        else:
-            dbg.info("Regra 4b: caixas diferentes, parede, mesmo nível")
-            mid_segs = create_90_degree_path(p_stub1, p_stub2, dir1, dir2, False)
-            segments = [(pt1, p_stub1)] + mid_segs + [(p_stub2, pt2)]
+            else:
+                mid_segs = create_90_degree_path(p_stub1, p_stub2, dir1, dir2, False)
+                segments = [(pt1, p_stub1)] + mid_segs + [(p_stub2, pt2)]
     else:
         if force_vertical:
             dbg.info("Regra 5a: caixas diferentes, desnível, luminária")
             mid_segs = create_90_degree_path(p_stub1, p_stub2, dir1, dir2, True)
         elif is_piso:
-            dbg.info("Regra 5b: caixas diferentes, piso, desnível")
-            mid_segs = create_terrain_segments(p_stub1, p_stub2, dist_metros)
+            dbg.info("Regra 5b: caixas diferentes, piso, desnível (angle_vert={})".format(angle_vert))
+            if angle_vert in ('livre', '45'):
+                mid_segs = create_terrain_segments(p_stub1, p_stub2, dist_metros)
+            else:
+                mid_segs = create_90_degree_path(p_stub1, p_stub2, dir1, dir2, True)
         else:
-            dbg.info("Regra 5c: caixas diferentes, parede, desnível")
-            mid_segs = create_90_degree_path(p_stub1, p_stub2, dir1, dir2, True)
+            dbg.info("Regra 5c: caixas diferentes, parede, desnível (angle_vert={})".format(angle_vert))
+            if angle_vert == 'livre':
+                mid_segs = create_terrain_segments(p_stub1, p_stub2, dist_metros)
+            elif angle_vert == '45':
+                mid_segs = create_45_degree_path(p_stub1, p_stub2, dir1, dir2)
+            else:
+                mid_segs = create_90_degree_path(p_stub1, p_stub2, dir1, dir2, True)
         segments = [(pt1, p_stub1)] + mid_segs + [(p_stub2, pt2)]
 
     segments = merge_collinear_segments(segments)
@@ -992,7 +1076,9 @@ def execute_connection():
     dbg.section("Fase 5: Criação dos Eletrodutos")
     t = Transaction(doc, "Conectar Eletrodutos Inteligente")
     ops = t.GetFailureHandlingOptions()
-    ops.SetFailuresPreprocessor(make_warning_swallower())
+    preprocessor = make_warning_swallower()
+    if preprocessor:
+        ops.SetFailuresPreprocessor(preprocessor)
     t.SetFailureHandlingOptions(ops)
     t.Start()
 
@@ -1058,15 +1144,24 @@ def execute_connection():
         raise e
 
 def safe_execution():
-    dbg.section("Conectar Eletroduto — BOOT")
-    dbg.info("DEBUG_MODE = {}".format(DEBUG_MODE))
+    # Carrega config inicial apenas para o BOOT do debug
+    init_settings = load_config()
+    is_debug = init_settings.get('debug_mode', False)
+    
+    # Inicia logger básico
+    boot_dbg = DebugLogger(is_debug)
+    boot_dbg.section("Conectar Eletroduto — BOOT")
+    boot_dbg.info("DEBUG_MODE = {}".format(is_debug))
+    
     try:
         execute_connection()
-        dbg.section("Ferramenta Finalizada")
+        boot_dbg.section("Ferramenta Finalizada")
+    except OperationCanceledException:
+        boot_dbg.info("Operação cancelada pelo usuário.")
     except Exception as e:
         err_tb = traceback.format_exc()
-        dbg.error("CRASH FATAL:\n{}".format(err_tb))
-        if DEBUG_MODE:
+        boot_dbg.error("CRASH FATAL:\n{}".format(err_tb))
+        if is_debug:
             forms.alert("CRASH FATAL (DEBUG):\n\n" + err_tb, title="Conectar Eletroduto — Erro")
         else:
             forms.alert("Erro ao conectar eletrodutos:\n" + str(e), title="Aviso")
