@@ -641,11 +641,19 @@
                                     <RowDefinition Height="*"/>
                                 </Grid.RowDefinitions>
 
-                                <TextBlock Grid.Row="0" Text="Pré-visualização da tabela"
-                                           Style="{StaticResource SectionHeader}"/>
+                                <Grid Grid.Row="0" Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Pré-visualização" Style="{StaticResource SectionHeader}" Margin="0"/>
+                                    <ComboBox Grid.Column="1" x:Name="cmb_ExportPreviewSelect" 
+                                              Width="150" Height="24" FontSize="11"
+                                              Visibility="Collapsed"/>
+                                </Grid>
 
                                 <TextBlock Grid.Row="1" x:Name="lbl_PreviewStatus"
-                                           Text="Selecione uma tabela para ver as colunas que serão exportadas."
+                                           Text="Selecione uma tabela para ver a pré-visualização dos dados."
                                            TextWrapping="Wrap"
                                            Style="{StaticResource HintText}"
                                            Margin="0,0,0,12"/>
@@ -709,8 +717,16 @@
                                 <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
 
-                            <TextBlock Grid.Row="0" Text="Alterações detectadas"
-                                       Style="{StaticResource SectionHeader}"/>
+                            <Grid Grid.Row="0" Margin="0,0,0,10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Alterações detectadas" Style="{StaticResource SectionHeader}" Margin="0"/>
+                                <ComboBox Grid.Column="1" x:Name="cmb_ImportPreviewSelect" 
+                                          Width="150" Height="24" FontSize="11"
+                                          Visibility="Collapsed"/>
+                            </Grid>
 
                             <TextBlock Grid.Row="1" x:Name="lbl_ImportStatus"
                                        Text="Selecione um arquivo Excel para ver o que será alterado no Revit."

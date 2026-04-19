@@ -1207,6 +1207,9 @@ class ExportImportWindow(forms.WPFWindow):
         self.btn_DropdownToggle.MouseLeftButtonDown += self._toggle_dropdown
         self.chk_SelectAllSchedules.Click   += self._on_select_all_changed
         self.CheckBox_KeepFormat.Click      += self._on_keep_format_changed
+        
+        self.cmb_ExportPreviewSelect.SelectionChanged += lambda s, e: self._update_export_preview(from_combo=True)
+        self.cmb_ImportPreviewSelect.SelectionChanged += lambda s, e: self._update_import_preview(from_combo=True)
 
         self.load_schedules()
         self.mode_changed(None, None)
@@ -1414,50 +1417,84 @@ class ExportImportWindow(forms.WPFWindow):
             self.TextBox_ExportPath.Text = file_path
             self.update_status("Pasta: " + self.last_export_folder)
 
-    def _update_export_preview(self):
-        """Popula dg_ExportPreview com as colunas da primeira tabela selecionada."""
+    def _update_export_preview(self, from_combo=False):
+        """Popula dg_ExportPreview com os dados reais da tabela selecionada."""
         try:
             selected = self._get_selected_schedules()
+            
+            if not from_combo:
+                current_items = [self.cmb_ExportPreviewSelect.Items[i] for i in range(self.cmb_ExportPreviewSelect.Items.Count)]
+                target_items = [s['display_name'] for s in selected]
+                
+                if current_items != target_items:
+                    self.cmb_ExportPreviewSelect.Items.Clear()
+                    for name in target_items:
+                        self.cmb_ExportPreviewSelect.Items.Add(name)
+                    if self.cmb_ExportPreviewSelect.Items.Count > 0:
+                        self.cmb_ExportPreviewSelect.SelectedIndex = 0
+            
+            if self.cmb_ExportPreviewSelect.Items.Count > 1:
+                self.cmb_ExportPreviewSelect.Visibility = Visibility.Visible
+            else:
+                self.cmb_ExportPreviewSelect.Visibility = Visibility.Collapsed
+                
             self.dg_ExportPreview.ItemsSource = None
             self.dg_ExportPreview.Columns.Clear()
 
-            if not selected:
+            if not selected or self.cmb_ExportPreviewSelect.SelectedIndex < 0:
                 self.dg_ExportPreview.Visibility = Visibility.Collapsed
-                self.lbl_PreviewStatus.Text = "Selecione uma tabela para ver as colunas que serão exportadas."
+                self.lbl_PreviewStatus.Text = "Selecione uma tabela para ver a pré-visualização dos dados."
                 return
 
-            sch_dict = selected[0]
+            idx = self.cmb_ExportPreviewSelect.SelectedIndex
+            if idx >= len(selected): idx = 0
+            sch_dict = selected[idx]
             schedule = sch_dict['schedule']
             is_panel = sch_dict.get('is_panel', False)
 
             dt = DataTable()
-            dt.Columns.Add("Coluna")
-            dt.Columns.Add("Tipo")
-            dt.Columns.Add("Editável")
+            max_preview_rows = 50
 
             if is_panel:
-                _, headers = get_panel_schedule_data(schedule)
+                rows, headers = get_panel_schedule_data(schedule)
                 for h in headers:
+                    dt.Columns.Add(h)
+                
+                for i, r in enumerate(rows):
+                    if i >= max_preview_rows:
+                        break
                     row = dt.NewRow()
-                    row[0] = h; row[1] = "Texto"; row[2] = "Não"
+                    for j, h in enumerate(headers):
+                        row[j] = str(r.get(h, ""))
                     dt.Rows.Add(row)
             else:
-                _, param_defs = get_schedule_elements_and_params(schedule)
+                elements, param_defs = get_schedule_elements_and_params(schedule)
+                dt.Columns.Add("ElementId")
                 for p in param_defs:
-                    if p.storagetype == DB.StorageType.Double:
-                        tipo = "Número"
-                    elif p.storagetype == DB.StorageType.Integer:
-                        tipo = "Inteiro"
-                    else:
-                        tipo = "Texto"
+                    dt.Columns.Add(p.name)
+                
+                param_cache = {}
+                for i, el in enumerate(elements):
+                    if i >= max_preview_rows:
+                        break
                     row = dt.NewRow()
-                    row[0] = p.name; row[1] = tipo; row[2] = "Não" if p.isreadonly else "Sim"
+                    try:
+                        row[0] = str(el.Id.IntegerValue)
+                    except:
+                        row[0] = ""
+                    for j, p in enumerate(param_defs):
+                        val = get_element_parameter_value(el, p, param_cache)
+                        row[j+1] = str(val) if val is not None else ""
                     dt.Rows.Add(row)
 
             self.dg_ExportPreview.ItemsSource = dt.DefaultView
             self.dg_ExportPreview.Visibility  = Visibility.Visible
-            suffix = " (mostrando 1ª)" if len(selected) > 1 else ""
-            self.lbl_PreviewStatus.Text = "{} colunas{}".format(len(dt.Rows), suffix)
+            
+            suffix = " (mostrando '{}')".format(sch_dict['display_name']) if len(selected) > 1 else ""
+            msg_rows = dt.Rows.Count
+            if msg_rows >= max_preview_rows:
+                msg_rows = "50+"
+            self.lbl_PreviewStatus.Text = "Pré-visualização: {} colunas, {} linhas{}".format(dt.Columns.Count, msg_rows, suffix)
         except Exception as ex:
             try:
                 self.lbl_PreviewStatus.Text = "Preview indisponível: " + str(ex)
@@ -1465,10 +1502,13 @@ class ExportImportWindow(forms.WPFWindow):
             except:
                 pass
 
-    def _update_import_preview(self):
+    def _update_import_preview(self, from_combo=False, first_load=False):
         """Lê o Excel e mostra preview das alterações sem aplicá-las."""
         try:
-            # Limpa o DataGrid antes de qualquer coisa para forçar regeneração de colunas
+            if first_load:
+                self.cmb_ImportPreviewSelect.Items.Clear()
+                self.cmb_ImportPreviewSelect.Visibility = Visibility.Collapsed
+                
             self.dg_ImportPreview.ItemsSource = None
             self.dg_ImportPreview.Columns.Clear()
             self.dg_ImportPreview.Visibility = Visibility.Collapsed
@@ -1491,22 +1531,45 @@ class ExportImportWindow(forms.WPFWindow):
 
             wb = _XlsxReader(self.import_path)
             try:
+                valid_sheets = []
                 for s_name in wb.sheetnames:
-                    if s_name.startswith('_') or row_count >= MAX_ROWS:
-                        break
-                    rows = wb.read_sheet(s_name)
-                    if not rows or str(rows[0][0] if rows[0] else "").strip() != "ElementId":
+                    if s_name.startswith('_'):
                         continue
+                    rows = wb.read_sheet(s_name)
+                    if rows and str(rows[0][0] if rows[0] else "").strip() == "ElementId":
+                        valid_sheets.append((s_name, rows))
+                
+                if not valid_sheets:
+                    self.lbl_ImportStatus.Text = "Nenhuma aba importável encontrada."
+                    return
+                
+                if first_load:
+                    for s_name, _ in valid_sheets:
+                        self.cmb_ImportPreviewSelect.Items.Add(s_name)
+                    if valid_sheets:
+                        self.cmb_ImportPreviewSelect.SelectedIndex = 0
+                        
+                if self.cmb_ImportPreviewSelect.Items.Count > 1:
+                    self.cmb_ImportPreviewSelect.Visibility = Visibility.Visible
+                else:
+                    self.cmb_ImportPreviewSelect.Visibility = Visibility.Collapsed
+                    
+                idx = self.cmb_ImportPreviewSelect.SelectedIndex
+                if idx < 0 or idx >= len(valid_sheets):
+                    self.lbl_ImportStatus.Text = "Nenhuma aba importável selecionada."
+                    return
+                    
+                selected_sheet_name, rows = valid_sheets[idx]
 
-                    headers = [str(h).strip() if h is not None else "" for h in rows[0]]
-                    pnames  = [unit_postfix_pattern.sub("", h).strip() for h in headers[1:]]
-                    elem_cache = {}
+                headers = [str(h).strip() if h is not None else "" for h in rows[0]]
+                pnames  = [unit_postfix_pattern.sub("", h).strip() for h in headers[1:]]
+                elem_cache = {}
 
-                    for row in rows[1:]:
-                        if row_count >= MAX_ROWS:
-                            break
-                        if row[0] is None:
-                            continue
+                for row in rows[1:]:
+                    if row_count >= MAX_ROWS:
+                        break
+                    if row[0] is None:
+                        continue
                         try:
                             eid = int(float(row[0]))
                             el  = elem_cache.get(eid)
@@ -1543,7 +1606,14 @@ class ExportImportWindow(forms.WPFWindow):
                                     else:
                                         status = "Igual"
 
-                                dt.Rows.Add([pname, elem_name, str(current), str(val), status])
+                                row_dt = dt.NewRow()
+                                row_dt[0] = pname
+                                row_dt[1] = elem_name
+                                row_dt[2] = str(current)
+                                row_dt[3] = str(val)
+                                row_dt[4] = status
+                                dt.Rows.Add(row_dt)
+                                
                                 row_count += 1
                                 if row_count >= MAX_ROWS:
                                     break
@@ -1574,7 +1644,7 @@ class ExportImportWindow(forms.WPFWindow):
             self.import_path = path
             self.TextBox_ImportPath.Text = path
             self.update_status("Ler de: " + os.path.basename(path))
-            self._update_import_preview()
+            self._update_import_preview(first_load=True)
 
     def do_export(self, sender, args):
         if not self.export_path:
@@ -1640,7 +1710,7 @@ class ExportImportWindow(forms.WPFWindow):
                 self.import_path = self.export_path
                 self.TextBox_ImportPath.Text = self.export_path
                 self.tab_Main.SelectedIndex = 1
-                self._update_import_preview()
+                self._update_import_preview(first_load=True)
 
             if self.CheckBox_OpenFolder.IsChecked:
                 import subprocess
@@ -1685,7 +1755,7 @@ class ExportImportWindow(forms.WPFWindow):
         try:
             import_xls(self.import_path)
             self.update_status("Importação Finalizada!")
-            self._update_import_preview()  # Atualiza preview após importar
+            self._update_import_preview(first_load=True)  # Atualiza preview após importar
         except Exception as e:
             logger.error(traceback.format_exc())
             forms.alert("Erro na importação: " + str(e))

@@ -38,6 +38,7 @@ from System.Collections.Generic import List
 import Autodesk.Revit.DB as DB
 from Autodesk.Revit.DB import *
 from Autodesk.Revit.DB.Electrical import *
+from Autodesk.Revit.DB.Structure import StructuralType
 from Autodesk.Revit.UI import *
 from Autodesk.Revit.UI.Selection import ObjectType, ISelectionFilter
 from Autodesk.Revit.Exceptions import OperationCanceledException
@@ -651,6 +652,407 @@ def create_terrain_segments(p_stub1, p_stub2, dist_meters):
 
 # WarningSwallower vem de lf_utils.make_warning_swallower() — importado no topo
 
+# =====================================================================
+#  ELETROCALHA / PERFILADO — FAMÍLIA DE UNIÃO
+# =====================================================================
+FAM_ELETROCALHA = "OFEletrico_Eletrocalha_Uniao_SaidaHorizontal"
+FAM_PERFILADO   = "OFEletrico_Perfilado_Uniao_SaidaLateral"
+
+
+def _is_perfilado(cable_tray):
+    """Perfilado = eletrocalha 38x38 mm."""
+    try:
+        w = cable_tray.get_Parameter(BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM)
+        h = cable_tray.get_Parameter(BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
+        if w and h:
+            w_mm = w.AsDouble() * 304.8
+            h_mm = h.AsDouble() * 304.8
+            return (abs(w_mm - 38.0) < 5.0) and (abs(h_mm - 38.0) < 5.0)
+    except Exception:
+        pass
+    return False
+
+
+def _find_symbol(doc, family_name):
+    for fs in FilteredElementCollector(doc).OfClass(FamilySymbol):
+        try:
+            if fs.Family and fs.Family.Name == family_name:
+                return fs
+        except Exception:
+            pass
+    return None
+
+
+def _get_round_connector(inst):
+    try:
+        for c in inst.MEPModel.ConnectorManager.Connectors:
+            if (c.Domain == Domain.DomainCableTrayConduit
+                    and c.Shape == ConnectorProfileType.Round):
+                return c
+    except Exception:
+        pass
+    return None
+
+
+def _get_ct_connectors(inst):
+    """Retorna conectores retangulares (eletrocalha) do fitting."""
+    result = []
+    try:
+        for c in inst.MEPModel.ConnectorManager.Connectors:
+            if (c.Domain == Domain.DomainCableTrayConduit
+                    and c.Shape != ConnectorProfileType.Round):
+                result.append(c)
+    except Exception:
+        pass
+    return result
+
+
+def _split_cabletray(doc, cable_tray, split_pt, fallback_level_id=None):
+    """
+    Divide a eletrocalha em split_pt usando SubTransaction.
+    Se CableTray.Create falhar, o rollback preserva a eletrocalha original.
+    Retorna (conn_near_ct1, conn_near_ct2) para conectar ao fitting,
+    ou (None, None) se o split não foi possível.
+    """
+    from Autodesk.Revit.DB import SubTransaction
+
+    sub = SubTransaction(doc)
+    sub.Start()
+    try:
+        crv = cable_tray.Location.Curve
+        p0  = crv.GetEndPoint(0)
+        p1  = crv.GetEndPoint(1)
+
+        proj = crv.Project(split_pt)
+        s_pt = proj.XYZPoint if proj else XYZ(split_pt.X, split_pt.Y, p0.Z)
+
+        ct_type_id = cable_tray.GetTypeId()
+
+        # MEP curves usam RBS_START_LEVEL_PARAM; FAMILY_LEVEL_PARAM é fallback
+        level_id = fallback_level_id
+        for bip in [BuiltInParameter.RBS_START_LEVEL_PARAM,
+                    BuiltInParameter.FAMILY_LEVEL_PARAM]:
+            try:
+                lp = cable_tray.get_Parameter(bip)
+                if lp and lp.AsElementId() != ElementId.InvalidElementId:
+                    level_id = lp.AsElementId()
+                    break
+            except Exception:
+                continue
+
+        w_p = cable_tray.get_Parameter(BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM)
+        h_p = cable_tray.get_Parameter(BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
+        w   = w_p.AsDouble() if w_p else None
+        h   = h_p.AsDouble() if h_p else None
+
+        doc.Delete(cable_tray.Id)
+        doc.Regenerate()
+
+        def _make_ct(pa, pb):
+            if pa.DistanceTo(pb) < 0.1:
+                return None
+            ct = CableTray.Create(doc, ct_type_id, pa, pb, level_id)
+            if ct and w:
+                p = ct.get_Parameter(BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM)
+                if p and not p.IsReadOnly:
+                    p.Set(w)
+            if ct and h:
+                p = ct.get_Parameter(BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
+                if p and not p.IsReadOnly:
+                    p.Set(h)
+            return ct
+
+        ct1 = _make_ct(p0, s_pt)
+        ct2 = _make_ct(s_pt, p1)
+
+        if ct1 is None and ct2 is None:
+            dbg.warn("_split_cabletray: CableTray.Create retornou None — rollback")
+            sub.RollBack()
+            return None, None
+
+        doc.Regenerate()
+
+        def _conn_near(ct, pt):
+            if ct is None:
+                return None
+            best, bd = None, float('inf')
+            try:
+                for c in ct.ConnectorManager.Connectors:
+                    d = c.Origin.DistanceTo(pt)
+                    if d < bd:
+                        bd, best = d, c
+            except Exception:
+                pass
+            return best
+
+        sub.Commit()
+        dbg.debug("_split_cabletray: ok")
+        return _conn_near(ct1, s_pt), _conn_near(ct2, s_pt)
+
+    except Exception as e:
+        dbg.warn("_split_cabletray falhou ({}), eletrocalha preservada".format(e))
+        try:
+            sub.RollBack()
+        except Exception:
+            pass
+        return None, None
+
+
+def _place_union_on_cabletray(doc, cable_tray, click_pt, conn_dest, level_id):
+    """
+    Insere a família de união na eletrocalha, alinhada com conn_dest.
+
+    1. Projeta conn_dest.Origin na curva da eletrocalha — posição onde o
+       eletroduto sairá reto diretamente para a caixa.
+    2. Rotaciona o conector de conduit para ser anti-paralelo a conn_dest.BasisZ
+       (fitting aponta de volta para a caixa, alinhado com seu conector).
+    3. Divide a eletrocalha e conecta os conectores CT do fitting a cada metade.
+
+    Retorna (instância, conector_round) ou (None, None).
+    """
+    is_perf  = _is_perfilado(cable_tray)
+    fam_name = FAM_PERFILADO if is_perf else FAM_ELETROCALHA
+    dbg.info(u"União: {} ({})".format(fam_name, "perfilado" if is_perf else "eletrocalha"))
+
+    sym = _find_symbol(doc, fam_name)
+    if not sym:
+        dbg.warn(u"Família não encontrada: {}".format(fam_name))
+        return None, None
+
+    if not sym.IsActive:
+        sym.Activate()
+        doc.Regenerate()
+
+    # ── 1. Posição: projetar origem do conector destino na curva da eletrocalha ──
+    place_pt = click_pt
+    try:
+        crv     = cable_tray.Location.Curve
+        tray_z  = (crv.GetEndPoint(0).Z + crv.GetEndPoint(1).Z) / 2.0
+        proj    = crv.Project(conn_dest.Origin)
+        proj_xy = proj.XYZPoint if proj else None
+        if proj_xy:
+            place_pt = XYZ(proj_xy.X, proj_xy.Y, tray_z)
+        else:
+            place_pt = XYZ(click_pt.X, click_pt.Y, tray_z)
+    except Exception as e:
+        dbg.debug("place_union projection: {}".format(e))
+        try:
+            crv    = cable_tray.Location.Curve
+            tray_z = (crv.GetEndPoint(0).Z + crv.GetEndPoint(1).Z) / 2.0
+            place_pt = XYZ(click_pt.X, click_pt.Y, tray_z)
+        except Exception:
+            pass
+
+    level = doc.GetElement(level_id)
+    inst  = doc.Create.NewFamilyInstance(place_pt, sym, level, StructuralType.NonStructural)
+    doc.Regenerate()
+
+    try:
+        # Corrigir Z caso o NewFamilyInstance ignore a coordenada Z
+        curr_z = inst.Location.Point.Z
+        if abs(curr_z - tray_z) > 0.001:
+            ElementTransformUtils.MoveElement(doc, inst.Id, XYZ(0, 0, tray_z - curr_z))
+            
+        # Igualar tamanho da eletrocalha no fitting (isso afeta a posição do conector redondo)
+        w_p = cable_tray.get_Parameter(BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM)
+        h_p = cable_tray.get_Parameter(BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
+        if w_p and h_p:
+            p_comp = inst.LookupParameter("Comprimento")
+            if p_comp and not p_comp.IsReadOnly:
+                p_comp.Set(w_p.AsDouble())
+            p_alt = inst.LookupParameter("Altura")
+            if p_alt and not p_alt.IsReadOnly:
+                p_alt.Set(h_p.AsDouble())
+    except Exception as e:
+        dbg.debug("ajuste de tamanho/altura da união falhou: {}".format(e))
+        
+    doc.Regenerate()
+
+    conduit_conn = _get_round_connector(inst)
+
+    # ── 2. Rotação: conduit connector anti-paralelo a conn_dest.BasisZ ──
+    # conn_dest.BasisZ aponta da caixa para fora.
+    # Queremos que o conector de conduit do fitting aponte DE VOLTA para a caixa
+    # (anti-paralelo), para que o eletroduto saia alinhado com o conector da caixa.
+    try:
+        dir_conn     = conn_dest.CoordinateSystem.BasisZ
+        target_angle = math.atan2(-dir_conn.Y, -dir_conn.X)
+
+        if conduit_conn:
+            bz         = conduit_conn.CoordinateSystem.BasisZ
+            curr_angle = math.atan2(bz.Y, bz.X)
+        else:
+            v          = conn_dest.Origin - place_pt
+            curr_angle = math.atan2(v.Y, v.X) if (abs(v.X) > 0.01 or abs(v.Y) > 0.01) else 0.0
+
+        rot = target_angle - curr_angle
+        while rot >  math.pi: rot -= 2 * math.pi
+        while rot < -math.pi: rot += 2 * math.pi
+
+        if abs(rot) > 0.001:
+            axis = Line.CreateBound(place_pt, XYZ(place_pt.X, place_pt.Y, place_pt.Z + 1.0))
+            ElementTransformUtils.RotateElement(doc, inst.Id, axis, rot)
+            doc.Regenerate()
+            conduit_conn = _get_round_connector(inst)
+    except Exception as e:
+        dbg.debug("_place_union rot: {}".format(e))
+
+    # ── 3. Conectar à eletrocalha: dividir e ligar conectores CT ──
+    try:
+        ct_conns = _get_ct_connectors(inst)
+        if ct_conns:
+            c1_tray, c2_tray = _split_cabletray(doc, cable_tray, place_pt, level_id)
+            remaining = list(ct_conns)
+            for tray_conn in [c1_tray, c2_tray]:
+                if tray_conn is None or not remaining:
+                    continue
+                # Pega o conector CT do fitting mais oposto ao conector da eletrocalha
+                best = max(remaining,
+                           key=lambda fc: fc.CoordinateSystem.BasisZ.DotProduct(
+                               tray_conn.CoordinateSystem.BasisZ.Negate()))
+                try:
+                    best.ConnectTo(tray_conn)
+                    remaining.remove(best)
+                    dbg.debug("CT connector ligado: ok")
+                except Exception as e:
+                    dbg.debug("CT ConnectTo: {}".format(e))
+    except Exception as e:
+        dbg.debug("_place_union split/connect: {}".format(e))
+
+    return inst, conduit_conn
+
+
+def _execute_cabletray_connection(doc, settings, cable_tray_el, cable_tray_click,
+                                   other_el, other_click, use_connector_mode,
+                                   conduit_type_id, diameter, level_id, last_ref_conduit):
+    """Conecta eletrocalha/perfilado → elemento elétrico via família de união."""
+    dbg.section("Eletrocalha — Conexão")
+
+    # Conector do elemento destino — pega o que "olha" para a eletrocalha
+    other_conns = get_connectors(other_el)
+    if not other_conns:
+        forms.alert(u"Conector de eletroduto não encontrado no elemento de destino.",
+                    title="Conectar Eletroduto")
+        return
+
+    def _facing_score(c, target_pt):
+        """Dot product entre direção do conector e vetor para target_pt.
+        Positivo = conector aponta para o alvo."""
+        try:
+            v = target_pt - c.Origin
+            if v.GetLength() < 0.01:
+                return 0.0
+            return c.CoordinateSystem.BasisZ.DotProduct(v.Normalize())
+        except Exception:
+            return -1.0
+
+    ref_pt = cable_tray_click if cable_tray_click else (other_click or XYZ.Zero)
+    conn_other = max(other_conns, key=lambda c: _facing_score(c, ref_pt))
+
+    pt_dest  = conn_other.Origin
+    dir_dest = conn_other.CoordinateSystem.BasisZ
+
+    dbg.xyz("pt_dest", pt_dest)
+
+    t = Transaction(doc, u"Conectar Eletroduto — Eletrocalha")
+    ops = t.GetFailureHandlingOptions()
+    preprocessor = make_warning_swallower()
+    if preprocessor:
+        ops.SetFailuresPreprocessor(preprocessor)
+    t.SetFailureHandlingOptions(ops)
+    t.Start()
+
+    try:
+        # Passa conn_other para que _place_union alinhe o fitting com a direção do conector
+        union_inst, union_conn = _place_union_on_cabletray(
+            doc, cable_tray_el, cable_tray_click, conn_other, level_id
+        )
+        if not union_inst:
+            t.RollBack()
+            fam = FAM_PERFILADO if _is_perfilado(cable_tray_el) else FAM_ELETROCALHA
+            forms.alert(
+                u"Família não encontrada no projeto:\n{}\n\nVerifique se está carregada no template.".format(fam),
+                title="Conectar Eletroduto"
+            )
+            return
+
+        # Ponto e direção de partida = conector redondo da união
+        if union_conn:
+            pt_start  = union_conn.Origin
+            dir_start = union_conn.CoordinateSystem.BasisZ
+            vec = pt_dest - pt_start
+            if vec.GetLength() > 0.01 and dir_start.DotProduct(vec.Normalize()) < -0.1:
+                dir_start = dir_start.Negate()
+        else:
+            pt_start  = XYZ(cable_tray_click.X, cable_tray_click.Y,
+                            union_inst.Location.Point.Z)
+            v = pt_dest - pt_start
+            dir_start = v.Normalize() if v.GetLength() > 0.01 else XYZ.BasisX
+
+        # Corrigir dir_dest com pt_start real (mais preciso que cable_tray_click)
+        vec_to_union = pt_start - pt_dest
+        if vec_to_union.GetLength() > 0.01 and dir_dest.DotProduct(vec_to_union.Normalize()) < -0.1:
+            dir_dest = dir_dest.Negate()
+
+        dbg.xyz("pt_start (union)", pt_start)
+
+        dist = pt_start.DistanceTo(pt_dest)
+        # Stub mínimo de 0.5 ft (~15 cm) para o Revit ter espaço de criar a curva;
+        # a saída do fitting é sempre reta, então este segmento não pode ser curto demais.
+        stub_len = max(0.5, min(1.0, dist * 0.20))
+        p_stub_s = pt_start + dir_start * stub_len
+        p_stub_d = pt_dest  + dir_dest  * stub_len
+        dz       = abs(pt_start.Z - pt_dest.Z)
+        is_flat  = dz < 0.25
+        angle    = settings.get('angle_mode_plan' if is_flat else 'angle_mode_vertical', '90')
+
+        if dist < 0.5:
+            segments = [(pt_start, pt_dest)]
+        elif is_flat and angle == '45':
+            mid_segs = create_45_degree_path(p_stub_s, p_stub_d, dir_start, dir_dest)
+            segments = [(pt_start, p_stub_s)] + mid_segs + [(p_stub_d, pt_dest)]
+        elif is_flat:
+            mid_segs = create_90_degree_path(p_stub_s, p_stub_d, dir_start, dir_dest, False)
+            segments = [(pt_start, p_stub_s)] + mid_segs + [(p_stub_d, pt_dest)]
+        elif angle == '45':
+            mid_segs = create_45_degree_path(p_stub_s, p_stub_d, dir_start, dir_dest)
+            segments = [(pt_start, p_stub_s)] + mid_segs + [(p_stub_d, pt_dest)]
+        else:
+            mid_segs = create_90_degree_path(p_stub_s, p_stub_d, dir_start, dir_dest, True)
+            segments = [(pt_start, p_stub_s)] + mid_segs + [(p_stub_d, pt_dest)]
+
+        segments = merge_collinear_segments(segments)
+        dbg.debug("Segmentos: {}".format(len(segments)))
+
+        created_conds = []
+        last_cond = None
+        for idx, (pa, pb) in enumerate(segments):
+            if pa.DistanceTo(pb) < 0.05:
+                continue
+            c_new = draw_conduit_and_connect(
+                doc, conduit_type_id, pa, pb, level_id, diameter, last_cond, last_ref_conduit
+            )
+            if c_new:
+                created_conds.append(c_new)
+                last_cond = c_new
+
+        if created_conds:
+            if union_conn:
+                _connect_endpoint(doc, created_conds[0], pt_start, union_conn, "ponta-union")
+            _connect_endpoint(doc, created_conds[-1], pt_dest, conn_other, "ponta-destino")
+
+        t.Commit()
+        dbg.info(u"Eletrodutos criados: {}".format(len(created_conds)))
+
+    except Exception as e:
+        try:
+            if t.HasStarted():
+                t.RollBack()
+        except Exception:
+            pass
+        dbg.error(u"_execute_cabletray_connection: {}".format(e))
+        forms.alert(u"Erro ao conectar eletrocalha:\n" + str(e), title="Conectar Eletroduto")
+
 
 def _direct_route_compatible(pt1, pt2, conn1, conn2, tolerance=0.15):
     """
@@ -803,8 +1205,55 @@ def execute_connection():
             pass
         return False
 
-    if _is_cabletray(el1) or _is_cabletray(el2):
-        dbg.warn("Elemento é CableTray — operação ignorada para eletroduto.")
+    ct1 = _is_cabletray(el1)
+    ct2 = _is_cabletray(el2)
+    if ct1 and ct2:
+        forms.alert(u"Selecione uma eletrocalha/perfilado e um ponto elétrico — não dois percursos.",
+                    title="Conectar Eletroduto")
+        return
+    if ct1 or ct2:
+        cable_tray_el    = el1 if ct1 else el2
+        cable_tray_click = (pt_click1 if ct1 else pt_click2)
+        other_el         = el2 if ct1 else el1
+        other_click      = (pt_click2 if ct1 else pt_click1)
+        # Fallback se modo "caixa" (sem ponto de clique preciso): usar meio da eletrocalha
+        if cable_tray_click is None:
+            try:
+                crv = cable_tray_el.Location.Curve
+                cable_tray_click = crv.Evaluate(0.5, True)
+            except Exception:
+                forms.alert(u"Use o modo 'Conector' (Shift+Click → Configurações) para clicar no ponto exato da eletrocalha.",
+                            title="Conectar Eletroduto")
+                return
+        # Parâmetros de eletroduto (versão simplificada de Fase 3)
+        _ct_level_id = cable_tray_el.LevelId
+        if _ct_level_id == ElementId.InvalidElementId:
+            _ct_level_id = other_el.LevelId
+        if _ct_level_id == ElementId.InvalidElementId:
+            view = doc.ActiveView
+            _ct_level_id = (view.GenLevel.Id if hasattr(view, "GenLevel") and view.GenLevel
+                           else FilteredElementCollector(doc).OfClass(Level).FirstElementId())
+        _ct_last_ref   = get_last_conduit(doc)
+        _ct_conduit_id = (_ct_last_ref.GetTypeId() if _ct_last_ref
+                         else get_default_conduit_type(doc))
+        _ct_diam = 0.082021
+        try:
+            _d = float(settings.get('default_diameter', '').replace("mm", "").strip())
+            if _d > 0:
+                _ct_diam = _d / 304.8
+        except Exception:
+            pass
+        if _ct_diam <= 0.001 and _ct_last_ref:
+            try:
+                p = _ct_last_ref.get_Parameter(BuiltInParameter.RBS_CONDUIT_DIAMETER_PARAM)
+                if p:
+                    _ct_diam = p.AsDouble()
+            except Exception:
+                pass
+        _execute_cabletray_connection(
+            doc, settings, cable_tray_el, cable_tray_click, other_el, other_click,
+            use_connector_mode, _ct_conduit_id, _ct_diam, _ct_level_id, _ct_last_ref
+        )
         return
 
     # ── Conectores ────────────────────────────────────────────────

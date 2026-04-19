@@ -1,124 +1,66 @@
-#! python3
 # -*- coding: utf-8 -*-
-"""Transferir Circuitos - Desconecta circuitos do quadro de origem e reconecta no destino especificado."""
+"""Transferir Circuitos — Desconecta circuitos do quadro de origem
+e reconecta no destino com o número de polos escolhido.
+
+Fluxo:
+  1. Tenta SelectPanel (rápido, quando tensão/fases são compatíveis).
+  2. Se falhar, recria o circuito no destino preservando propriedades.
+"""
 __title__ = "Transferir\nCircuitos"
 __author__ = "Luís Fernando"
 
-import clr
+# ╔══════════════════════════════════════════════════════════╗
+# ║  DEBUG_MODE                                              ║
+# ║  True  = imprime detalhes no console pyRevit             ║
+# ║  False = silencioso                                      ║
+# ╚══════════════════════════════════════════════════════════╝
+DEBUG_MODE = False
+
 import os
 import re
+import clr
+
 clr.AddReference('RevitAPI')
 clr.AddReference('RevitAPIUI')
-clr.AddReference('PresentationCore')
-clr.AddReference('PresentationFramework')
-clr.AddReference('WindowsBase')
-clr.AddReference('System.Windows.Forms')
-
-import System
-import System.Windows.Forms as _WF
-from System.IO import StringReader
-from System.Windows.Markup import XamlReader
-import System.Xml
-from System.Windows import Visibility, Thickness
-from System.Windows.Controls import CheckBox
-from System.Windows.Media import SolidColorBrush
-from System.Windows.Media import Color as WpfColor
-from System.Collections.Generic import List
 
 from Autodesk.Revit.DB import (
-    FilteredElementCollector, BuiltInCategory, Transaction, TransactionStatus
+    FilteredElementCollector, BuiltInCategory, BuiltInParameter,
+    Transaction, TransactionStatus, ElementSet, StorageType
 )
+from Autodesk.Revit.DB.Electrical import ElectricalSystem, ElectricalSystemType
+
+from pyrevit import forms, script
+from lf_utils import DebugLogger, make_warning_swallower
+
+# ══════════════════════════════════════════════════════════════
+#  INIT
+# ══════════════════════════════════════════════════════════════
+
+dbg   = DebugLogger(DEBUG_MODE)
+uidoc = __revit__.ActiveUIDocument
+doc   = uidoc.Document
 
 _BUNDLE_DIR = os.path.dirname(__file__)
 
-# ==================== CPython Compat ====================
 
-def _alert(msg, title="LF Tools", yes=False, no=False, exitscript=False, **kw):
+# ══════════════════════════════════════════════════════════════
+#  FUNÇÕES DE APOIO
+# ══════════════════════════════════════════════════════════════
+
+def _safe_name(el):
+    """Lê .Name de forma segura (IronPython e pythonnet)."""
     try:
-        if yes and no:
-            r = _WF.MessageBox.Show(str(msg), str(title), _WF.MessageBoxButtons.YesNo)
-            ans = (r == _WF.DialogResult.Yes)
-            if exitscript and not ans:
-                import sys; sys.exit(0)
-            return ans
-        _WF.MessageBox.Show(str(msg), str(title))
+        return el.Name
     except Exception:
-        print("{}: {}".format(title, msg))
-    if exitscript:
-        import sys; sys.exit(0)
+        pass
+    try:
+        p = el.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+        if p and p.HasValue:
+            return p.AsString()
+    except Exception:
+        pass
+    return "ID " + str(el.Id)
 
-# (no monkey-patch needed — _alert used directly)
-
-
-class _WPFWindowCPy:
-    """CPython drop-in para pyrevit.forms.WPFWindow."""
-
-    _XAML_EVENTS = re.compile(
-        r'\s+(?:x:Class|'
-        r'Click|DoubleClick|'
-        r'Mouse(?:Down|Up|Move|Enter|Leave|Wheel)|'
-        r'Preview(?:Mouse(?:Down|Up|Move|LeftButtonDown|LeftButtonUp)|'
-        r'Key(?:Down|Up)|TextInput)|'
-        r'Key(?:Down|Up)|TextInput|TextChanged|SelectionChanged|'
-        r'SelectedItemChanged|ValueChanged|ScrollChanged|'
-        r'Got(?:Focus|KeyboardFocus)|Lost(?:Focus|KeyboardFocus)|'
-        r'Checked|Unchecked|Indeterminate|'
-        r'Loaded|Unloaded|Initialized|'
-        r'Clos(?:ing|ed)|Activated|Deactivated|'
-        r'SizeChanged|LayoutUpdated|ContentRendered|'
-        r'Drag(?:Enter|Leave|Over)|Drop|'
-        r'ContextMenu(?:Opening|Closing)|'
-        r'ToolTip(?:Opening|Closing)|'
-        r'DataContextChanged|IsVisibleChanged|IsEnabledChanged|'
-        r'RequestBringIntoView|SourceUpdated|TargetUpdated)'
-        r'\s*=\s*(?:"[^"]*"|\'[^\']*\')'
-    )
-
-    def __init__(self, xaml_source, literal_string=None):
-        stripped = str(xaml_source).strip()
-        is_inline = (literal_string is True or
-                     (literal_string is None and stripped.startswith('<')))
-        if not is_inline:
-            with open(str(xaml_source), 'r', encoding='utf-8') as _f:
-                stripped = _f.read().strip()
-        xaml_clean = self._XAML_EVENTS.sub('', stripped)
-        rdr = System.Xml.XmlReader.Create(StringReader(xaml_clean))
-        self._window = XamlReader.Load(rdr)
-
-    def __getattr__(self, name):
-        if name.startswith('_'):
-            raise AttributeError(name)
-        win = object.__getattribute__(self, '_window')
-        el = win.FindName(name)
-        if el is not None:
-            return el
-        return getattr(win, name)
-
-    def ShowDialog(self):
-        return self._window.ShowDialog()
-
-    def Show(self):
-        return self._window.Show()
-
-    def Close(self):
-        self._window.Close()
-
-
-# ==================== Fim CPython Compat ====================
-
-# ==================== Init Doc ====================
-
-uidoc = __revit__.ActiveUIDocument  # noqa: F821
-doc   = uidoc.Document if uidoc else None
-
-if not doc:
-    _alert("Nenhum projeto aberto.", exitscript=True)
-
-app = doc.Application
-
-# ==================== Fim Init Doc ====================
-
-# ==================== Funções de Apoio ====================
 
 def get_electrical_panels():
     """Retorna lista de painéis (ElectricalEquipment) ordenados pelo nome."""
@@ -127,7 +69,7 @@ def get_electrical_panels():
                  .WhereElementIsNotElementType())
     panels = []
     for p in collector:
-        name = p.Name if p.Name else "Sem Nome"
+        name = _safe_name(p)
         panels.append({
             "element": p,
             "id": p.Id,
@@ -138,7 +80,7 @@ def get_electrical_panels():
 
 
 def get_circuits_from_panel(panel_element):
-    """Pega os circuitos onde o panel_element atua como painel."""
+    """Pega os circuitos onde panel_element atua como painel (BaseEquipment)."""
     circuits = []
     try:
         mep = panel_element.MEPModel
@@ -147,62 +89,294 @@ def get_circuits_from_panel(panel_element):
         systems = mep.GetElectricalSystems()
         if systems:
             for sys in systems:
-                base_eq = sys.BaseEquipment
-                if base_eq and base_eq.Id == panel_element.Id:
-                    circuits.append(sys)
-    except Exception:
-        pass
+                try:
+                    base_eq = sys.BaseEquipment
+                    if base_eq and base_eq.Id == panel_element.Id:
+                        circuits.append(sys)
+                except Exception:
+                    pass
+    except Exception as e:
+        dbg.error("get_circuits_from_panel: {}".format(e))
     return circuits
 
 
-# ==================== Classe UI ====================
+# ══════════════════════════════════════════════════════════════
+#  SNAPSHOT / RESTORE DE PROPRIEDADES
+# ══════════════════════════════════════════════════════════════
 
-class TransferCircuitsWindow(_WPFWindowCPy):
+# (label, BuiltInParameter ou None, [nomes lookup fallback])
+_CIRCUIT_PROPS = [
+    ("LoadName",        BuiltInParameter.RBS_ELEC_CIRCUIT_NAME, []),
+    ("Rating",          BuiltInParameter.RBS_ELEC_CIRCUIT_RATING_PARAM, []),
+    ("Comments",        BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS, []),
+    ("LoadClassification", None, ["Tipo de Carga"]),
+    ("Description",     None, ["Descrição", "Description"]),
+    ("WireSize",        None, ["Seção do Condutor Adotado (mm²)", "Condutor Adotado"]),
+    ("L Considerado",   None, ["L Considerado", "L Considerado (m)"]),
+    ("FCA",             None, ["FCA"]),
+    ("FCT",             None, ["FCT"]),
+]
+
+
+def _read_param(elem, bip, names):
+    """Lê o valor de um parâmetro (BuiltInParameter → LookupParameter)."""
+    if bip is not None:
+        try:
+            p = elem.get_Parameter(bip)
+            if p and p.HasValue:
+                st = p.StorageType
+                if st == StorageType.String:
+                    return ("str", p.AsString())
+                elif st == StorageType.Double:
+                    return ("dbl", p.AsDouble())
+                elif st == StorageType.Integer:
+                    return ("int", p.AsInteger())
+                elif st == StorageType.ElementId:
+                    return ("eid", p.AsElementId())
+        except Exception:
+            pass
+    for n in names:
+        try:
+            p = elem.LookupParameter(n)
+            if p and p.HasValue:
+                st = p.StorageType
+                if st == StorageType.String:
+                    return ("str", p.AsString())
+                elif st == StorageType.Double:
+                    return ("dbl", p.AsDouble())
+                elif st == StorageType.Integer:
+                    return ("int", p.AsInteger())
+                elif st == StorageType.ElementId:
+                    return ("eid", p.AsElementId())
+        except Exception:
+            pass
+    return None
+
+
+def _write_param(elem, bip, names, typed_val):
+    """Escreve (tipo, valor) num parâmetro. Retorna True se conseguiu."""
+    if typed_val is None:
+        return False
+    kind, val = typed_val
+
+    def _do_set(p):
+        if p is None or p.IsReadOnly:
+            return False
+        try:
+            if kind == "str" and p.StorageType == StorageType.String:
+                p.Set(str(val) if val else "")
+                return True
+            elif kind == "dbl" and p.StorageType == StorageType.Double:
+                p.Set(float(val))
+                return True
+            elif kind == "int" and p.StorageType == StorageType.Integer:
+                p.Set(int(val))
+                return True
+            elif kind == "eid" and p.StorageType == StorageType.ElementId:
+                p.Set(val)
+                return True
+        except Exception:
+            pass
+        return False
+
+    if bip is not None:
+        try:
+            if _do_set(elem.get_Parameter(bip)):
+                return True
+        except Exception:
+            pass
+    for n in names:
+        try:
+            if _do_set(elem.LookupParameter(n)):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def snapshot_circuit(circ):
+    """Captura todas as propriedades de um circuito elétrico."""
+    snap = {}
+    for label, bip, names in _CIRCUIT_PROPS:
+        snap[label] = _read_param(circ, bip, names)
+    try:
+        snap["_CircuitNumber"] = circ.CircuitNumber
+    except Exception:
+        snap["_CircuitNumber"] = ""
+    try:
+        snap["_LoadName"] = circ.LoadName
+    except Exception:
+        snap["_LoadName"] = ""
+    try:
+        snap["_Poles"] = circ.PolesNumber
+    except Exception:
+        snap["_Poles"] = 1
+    return snap
+
+
+def restore_circuit(new_circ, snap):
+    """Aplica as propriedades capturadas no circuito novo."""
+    for label, bip, names in _CIRCUIT_PROPS:
+        val = snap.get(label)
+        if val is not None:
+            _write_param(new_circ, bip, names, val)
+
+
+# ══════════════════════════════════════════════════════════════
+#  TRANSFERÊNCIA INTELIGENTE
+# ══════════════════════════════════════════════════════════════
+
+def transfer_one_circuit(circ, dest_panel, target_poles):
+    """Transfere um circuito para dest_panel.
+
+    Estratégia:
+      1. SelectPanel (rápido, compatível).
+      2. Se falhar, recria: snapshot → delete → create → restore.
+
+    Retorna (sucesso, mensagem).
+    """
+    circ_num = ""
+    try:
+        circ_num = circ.CircuitNumber
+    except Exception:
+        pass
+
+    # ── 1. SelectPanel direto ──
+    try:
+        circ.SelectPanel(dest_panel)
+        # Ajustar polos se necessário
+        try:
+            if circ.PolesNumber != target_poles:
+                p = circ.get_Parameter(BuiltInParameter.RBS_ELEC_NUMBER_OF_POLES)
+                if p and not p.IsReadOnly:
+                    p.Set(target_poles)
+        except Exception:
+            pass
+        dbg.info("C{}: SelectPanel OK".format(circ_num))
+        return True, "SelectPanel OK"
+    except Exception as e:
+        dbg.debug("C{}: SelectPanel falhou ({}), tentando recriar".format(circ_num, e))
+
+    # ── 2. Recriar circuito ──
+    snap = snapshot_circuit(circ)
+
+    # Coletar membros
+    members = []
+    try:
+        if circ.Elements:
+            for el in circ.Elements:
+                members.append(el)
+    except Exception:
+        pass
+
+    if not members:
+        return False, "Circuito sem membros"
+
+    # Deletar circuito antigo
+    try:
+        doc.Delete(circ.Id)
+    except Exception as e:
+        return False, "Erro ao deletar: {}".format(e)
+
+    doc.Regenerate()
+
+    # Criar novo circuito a partir do primeiro membro
+    new_circ = None
+    try:
+        first_set = ElementSet()
+        first_set.Insert(members[0])
+        new_circ = ElectricalSystem.Create(doc, first_set, ElectricalSystemType.PowerCircuit)
+    except Exception as e:
+        return False, "Erro ao criar: {}".format(e)
+
+    if new_circ is None:
+        return False, "ElectricalSystem.Create retornou None"
+
+    # Adicionar membros restantes
+    for m in members[1:]:
+        try:
+            add_set = ElementSet()
+            add_set.Insert(m)
+            new_circ.AddToCircuit(add_set)
+        except Exception as e:
+            dbg.warn("C{}: membro {} não adicionado: {}".format(circ_num, m.Id, e))
+
+    # Conectar ao painel destino
+    try:
+        new_circ.SelectPanel(dest_panel)
+    except Exception as e:
+        return False, "Recriado mas falhou ao conectar: {}".format(e)
+
+    # Ajustar número de polos
+    try:
+        p = new_circ.get_Parameter(BuiltInParameter.RBS_ELEC_NUMBER_OF_POLES)
+        if p and not p.IsReadOnly:
+            p.Set(target_poles)
+    except Exception:
+        pass
+
+    # Restaurar propriedades
+    restore_circuit(new_circ, snap)
+
+    dbg.info("C{}: Recriado e transferido".format(circ_num))
+    return True, "Recriado"
+
+
+# ══════════════════════════════════════════════════════════════
+#  INTERFACE (WPF / pyrevit.forms)
+# ══════════════════════════════════════════════════════════════
+
+class TransferCircuitsWindow(forms.WPFWindow):
+
     def __init__(self, xaml_file):
-        _WPFWindowCPy.__init__(self, xaml_file)
+        forms.WPFWindow.__init__(self, xaml_file)
         self.panels = get_electrical_panels()
         self.dest_panels = []
-        self.circuit_checkboxes = []
+        # Cada item: (checkbox, combobox_polos, circuito)
+        self.circuit_rows = []
 
-        self.init_ui()
-        self.bind_events()
+        self._init_ui()
+        self._bind_events()
 
-    def init_ui(self):
+    # ── Inicialização ──
+
+    def _init_ui(self):
         if not self.panels:
             self.lbl_Info.Text = "Nenhum quadro elétrico encontrado no projeto."
             self.btn_Transfer.IsEnabled = False
             return
 
-        displays = [p["display"] for p in self.panels]
-        
-        # Converte para lista .NET de forma segura para o CPython 3
-        net_displays = List[System.Object]()
-        for d in displays:
-            net_displays.Add(d)
-            
-        self.cb_SourcePanel.ItemsSource = net_displays
-        # O destino comeca vazio ou filtrado
-        self._update_dest_list(-1)
+        for p in self.panels:
+            self.cb_SourcePanel.Items.Add(p["display"])
 
+        self._update_dest_list(-1)
         self.lbl_Info.Text = "Selecione o quadro de origem."
 
-        if displays:
+        if self.panels:
             self.cb_SourcePanel.SelectedIndex = 0
 
-    def bind_events(self):
-        self.btn_Cancel.Click += lambda s, a: self.Close()
-        self.btn_Transfer.Click += self.on_transfer
-        self.btn_SelectAll.Click += self.select_all
-        self.btn_SelectNone.Click += self.select_none
-        self.cb_SourcePanel.SelectionChanged += self.on_source_changed
+    def _bind_events(self):
+        self.btn_Cancel.Click    += self._on_cancel
+        self.btn_Transfer.Click  += self._on_transfer
+        self.btn_SelectAll.Click += self._on_select_all
+        self.btn_SelectNone.Click += self._on_select_none
+        self.cb_SourcePanel.SelectionChanged += self._on_source_changed
 
-    def on_source_changed(self, sender, args):
+    # ── Eventos ──
+
+    def _on_cancel(self, sender, args):
+        self.Close()
+
+    def _on_source_changed(self, sender, args):
+        from System.Windows.Controls import CheckBox, ComboBox as WpfComboBox
+        from System.Windows import Thickness
+
         self.sp_Circuits.Children.Clear()
-        self.circuit_checkboxes = []
+        self.circuit_rows = []
 
         idx = self.cb_SourcePanel.SelectedIndex
         self._update_dest_list(idx)
-        
+
         if idx < 0:
             return
 
@@ -210,124 +384,182 @@ class TransferCircuitsWindow(_WPFWindowCPy):
         circuits = get_circuits_from_panel(panel)
 
         if not circuits:
-            self.lbl_CircuitsCount.Text = "Nenhum circuito neste quadro."
+            self.lbl_CircuitsCount.Text = "Nenhum circuito."
             return
 
-        self.lbl_CircuitsCount.Text = "{} circuito(s) disponívei(s)".format(len(circuits))
+        self.lbl_CircuitsCount.Text = "{} circuito(s)".format(len(circuits))
 
-        def get_sort_key(c):
-            circ_str = c.CircuitNumber
-            nums = re.findall(r'\d+', circ_str)
-            if nums:
-                return [int(n) for n in nums]
-            return [circ_str]
+        # Ordenar por número do circuito
+        def _sort_key(c):
+            try:
+                nums = re.findall(r'\d+', c.CircuitNumber)
+                return [int(n) for n in nums] if nums else [c.CircuitNumber]
+            except Exception:
+                return [0]
 
-        circuits = sorted(circuits, key=get_sort_key)
+        circuits = sorted(circuits, key=_sort_key)
 
         for circ in circuits:
-            cb = CheckBox()
-            c_name = circ.LoadName if hasattr(circ, 'LoadName') and circ.LoadName else "Sem Nome"
-            c_num = circ.CircuitNumber
-
-            poles = circ.Poles if hasattr(circ, 'Poles') else ""
-
-            try:
-                load_va = circ.ApparentLoad
-                load_str = "{:.0f}W".format(load_va) if load_va < 1000 else "{:.1f}kW".format(load_va / 1000)
-            except Exception:
-                load_str = ""
-
-            try:
-                voltage = circ.Voltage
-                voltage_str = "{:.0f}V".format(voltage)
-            except Exception:
-                voltage_str = ""
-
-            lbl = "C{} — {}".format(c_num, c_name)
-            extras = []
-            if load_str:
-                extras.append(load_str)
-            if voltage_str:
-                extras.append(voltage_str)
-            if poles:
-                extras.append("{}P".format(poles))
-            if extras:
-                lbl += "  [{}]".format(" | ".join(extras))
-
-            cb.Content = lbl
-            cb.IsChecked = True
-            cb.Margin = Thickness(0, 3, 0, 3)
-            try:
-                cb.Foreground = SolidColorBrush(WpfColor.FromArgb(255, 241, 241, 241))
-            except Exception:
-                pass
-
-            self.sp_Circuits.Children.Add(cb)
-            self.circuit_checkboxes.append((cb, circ))
+            self._add_circuit_row(circ)
 
         self.lbl_Info.Text = "{} circuito(s) — selecione e escolha o destino.".format(len(circuits))
 
+    def _add_circuit_row(self, circ):
+        """Cria uma linha: [CheckBox (info)] + [ComboBox (polos)]."""
+        from System.Windows.Controls import (
+            CheckBox, Grid as WpfGrid, ColumnDefinition,
+            ComboBox as WpfComboBox
+        )
+        from System.Windows import Thickness, GridLength, GridUnitType
+
+        # ── Dados ──
+        c_name = ""
+        try:
+            c_name = circ.LoadName or ""
+        except Exception:
+            pass
+        if not c_name:
+            c_name = "Sem Nome"
+
+        c_num = ""
+        try:
+            c_num = circ.CircuitNumber
+        except Exception:
+            pass
+
+        curr_poles = 1
+        try:
+            curr_poles = circ.PolesNumber
+        except Exception:
+            pass
+
+        load_str = ""
+        try:
+            load_va = circ.ApparentLoad
+            load_str = "{:.0f}VA".format(load_va) if load_va < 1000 else "{:.1f}kVA".format(load_va / 1000)
+        except Exception:
+            pass
+
+        voltage_str = ""
+        try:
+            voltage_str = "{:.0f}V".format(circ.Voltage)
+        except Exception:
+            pass
+
+        lbl = "C{} — {}".format(c_num, c_name)
+        extras = []
+        if load_str:
+            extras.append(load_str)
+        if voltage_str:
+            extras.append(voltage_str)
+        if curr_poles:
+            extras.append("{}P".format(curr_poles))
+        if extras:
+            lbl += "  [{}]".format(" | ".join(extras))
+
+        # ── Visual: Grid com CheckBox + ComboBox ──
+        row = WpfGrid()
+        col0 = ColumnDefinition()
+        col0.Width = GridLength(1.0, GridUnitType.Star)
+        col1 = ColumnDefinition()
+        col1.Width = GridLength(90.0, GridUnitType.Pixel)
+        row.ColumnDefinitions.Add(col0)
+        row.ColumnDefinitions.Add(col1)
+        row.Margin = Thickness(0, 2, 0, 2)
+
+        cb = CheckBox()
+        cb.Content = lbl
+        cb.IsChecked = True
+        cb.FontSize = 13
+        WpfGrid.SetColumn(cb, 0)
+        row.Children.Add(cb)
+
+        poles_cb = WpfComboBox()
+        poles_cb.Items.Add("1 Polo")
+        poles_cb.Items.Add("2 Polos")
+        poles_cb.Items.Add("3 Polos")
+        if curr_poles == 3:
+            poles_cb.SelectedIndex = 2
+        elif curr_poles == 2:
+            poles_cb.SelectedIndex = 1
+        else:
+            poles_cb.SelectedIndex = 0
+        poles_cb.Width = 80
+        poles_cb.Height = 22
+        poles_cb.FontSize = 11
+        WpfGrid.SetColumn(poles_cb, 1)
+        row.Children.Add(poles_cb)
+
+        self.sp_Circuits.Children.Add(row)
+        self.circuit_rows.append((cb, poles_cb, circ))
+
     def _update_dest_list(self, source_idx):
-        """Atualiza a lista do destino removendo o quadro selecionado na origem."""
-        dest_display_list = []
+        """Atualiza a ComboBox destino excluindo o quadro de origem."""
+        prev_sel = self.cb_DestPanel.SelectedItem
+
+        self.cb_DestPanel.Items.Clear()
         self.dest_panels = []
+
         for i, p in enumerate(self.panels):
             if i != source_idx:
-                dest_display_list.append(p["display"])
+                self.cb_DestPanel.Items.Add(p["display"])
                 self.dest_panels.append(p)
-        
-        net_dest = List[System.Object]()
-        for d in dest_display_list:
-            net_dest.Add(d)
-        
-        # Guardar seleçao atual se possivel
-        prev_sel = self.cb_DestPanel.SelectedItem
-        
-        self.cb_DestPanel.ItemsSource = net_dest
-        
-        # Tentar restaurar seleçao
-        if prev_sel and prev_sel in dest_display_list:
+
+        if prev_sel and prev_sel in [p["display"] for p in self.dest_panels]:
             self.cb_DestPanel.SelectedItem = prev_sel
         else:
             self.cb_DestPanel.SelectedIndex = -1
 
-    def select_all(self, sender, args):
-        for cb, _ in self.circuit_checkboxes:
+    def _on_select_all(self, sender, args):
+        for cb, _, _ in self.circuit_rows:
             cb.IsChecked = True
-        self._update_selection_count()
+        self._update_count()
 
-    def select_none(self, sender, args):
-        for cb, _ in self.circuit_checkboxes:
+    def _on_select_none(self, sender, args):
+        for cb, _, _ in self.circuit_rows:
             cb.IsChecked = False
-        self._update_selection_count()
+        self._update_count()
 
-    def _update_selection_count(self):
-        count = sum(1 for cb, _ in self.circuit_checkboxes if cb.IsChecked)
-        total = len(self.circuit_checkboxes)
-        self.lbl_Info.Text = "{} de {} circuito(s) selecionado(s).".format(count, total)
+    def _update_count(self):
+        count = sum(1 for cb, _, _ in self.circuit_rows if cb.IsChecked)
+        total = len(self.circuit_rows)
+        self.lbl_Info.Text = "{} de {} selecionado(s).".format(count, total)
 
-    def on_transfer(self, sender, args):
+    # ── Transferir ──
+
+    def _on_transfer(self, sender, args):
         s_idx = self.cb_SourcePanel.SelectedIndex
         d_idx = self.cb_DestPanel.SelectedIndex
 
         if s_idx < 0:
-            _alert("Escolha o quadro de origem.")
+            forms.alert("Escolha o quadro de origem.", title="Transferir Circuitos")
             return
         if d_idx < 0:
-            _alert("Escolha o quadro de destino.")
+            forms.alert("Escolha o quadro de destino.", title="Transferir Circuitos")
             return
 
-        source_panel = self.panels[s_idx]["element"]
         dest_panel = self.dest_panels[d_idx]["element"]
 
-        selected_circs = [circ for cb, circ in self.circuit_checkboxes if cb.IsChecked]
-        if not selected_circs:
-            _alert("Selecione pelo menos um circuito.")
+        # Coletar selecionados + polos desejados
+        selected = []
+        for cb, poles_cb, circ in self.circuit_rows:
+            if cb.IsChecked:
+                pi = poles_cb.SelectedIndex
+                target_poles = [1, 2, 3][pi] if 0 <= pi <= 2 else 1
+                selected.append((circ, target_poles))
+
+        if not selected:
+            forms.alert("Selecione pelo menos um circuito.", title="Transferir Circuitos")
             return
 
-        confirma = _alert(
-            "Transferir {} circuito(s) para o quadro '{}'?".format(
-                len(selected_circs), dest_panel.Name),
+        dest_name = _safe_name(dest_panel)
+
+        confirma = forms.alert(
+            "Transferir {} circuito(s) para '{}'?\n\n"
+            "Os circuitos serão desconectados do quadro atual\n"
+            "e reconectados no destino com os polos escolhidos.".format(
+                len(selected), dest_name),
+            title="Transferir Circuitos",
             yes=True, no=True
         )
         if not confirma:
@@ -335,27 +567,49 @@ class TransferCircuitsWindow(_WPFWindowCPy):
 
         self.Close()
 
+        # ── Executar transferência ──
+        dbg.section("Transferir Circuitos")
+        dbg.info("Destino: {} ({} circuitos)".format(dest_name, len(selected)))
+
         sucessos = 0
         erros = []
 
-        t = Transaction(doc, "Transferir Circuitos Inteligente")
+        t = Transaction(doc, "Transferir Circuitos")
+        preprocessor = make_warning_swallower()
+        if preprocessor:
+            opts = t.GetFailureHandlingOptions()
+            opts.SetFailuresPreprocessor(preprocessor)
+            t.SetFailureHandlingOptions(opts)
         t.Start()
+
         try:
-            for circ in selected_circs:
-                circ_num_original = circ.CircuitNumber
+            for circ, target_poles in selected:
+                circ_num = ""
                 try:
-                    circ.SelectPanel(dest_panel)
+                    circ_num = circ.CircuitNumber
+                except Exception:
+                    pass
+
+                ok, msg = transfer_one_circuit(circ, dest_panel, target_poles)
+                if ok:
                     sucessos += 1
-                except Exception as e:
-                    erros.append((circ_num_original, str(e)))
+                else:
+                    erros.append((circ_num, msg))
+                    dbg.error("C{}: {}".format(circ_num, msg))
+
             t.Commit()
         except Exception as e:
             try:
                 if t.GetStatus() == TransactionStatus.Started:
                     t.RollBack()
-            except:
+            except Exception:
                 pass
-            pass
+            erros.append(("GERAL", str(e)))
+            dbg.error("Exceção geral: {}".format(e))
+
+        # ── Resumo ──
+        dbg.section("Resultado")
+        dbg.info("Sucesso: {}  |  Falhas: {}".format(sucessos, len(erros)))
 
         msg = "Transferência Concluída!\n\n"
         msg += "Circuitos movidos com sucesso: {}\n".format(sucessos)
@@ -363,18 +617,15 @@ class TransferCircuitsWindow(_WPFWindowCPy):
         if erros:
             msg += "\nFalhas: {}\n".format(len(erros))
             for num, err in erros:
-                err_lower = err.lower()
-                if any(kw in err_lower for kw in ["voltage", "poles", "phase", "wire", "distribution"]):
-                    msg += " - Circuito {}: Incompatibilidade de tensão/fases/fios com o quadro de destino.\n".format(num)
-                elif "space" in err_lower or "slot" in err_lower or "full" in err_lower:
-                    msg += " - Circuito {}: Quadro de destino sem espaço disponível.\n".format(num)
-                elif "selectpanel" in err_lower or "member" in err_lower or "attribute" in err_lower:
-                    msg += " - Circuito {}: Método SelectPanel não suportado — tente versão mais recente do Revit.\n".format(num)
-                else:
-                    msg += " - Circuito {}: {}.\n".format(num, err.split("\n")[0][:120])
+                msg += " • C{}: {}\n".format(num, err[:120])
 
-        _alert(msg, title="Resumo da Transferência")
+        forms.alert(msg, title="Resumo da Transferência")
 
 
-ui_obj = TransferCircuitsWindow(os.path.join(_BUNDLE_DIR, 'ui.xaml'))
-ui_obj.ShowDialog()
+# ══════════════════════════════════════════════════════════════
+#  MAIN
+# ══════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    win = TransferCircuitsWindow(os.path.join(_BUNDLE_DIR, 'ui.xaml'))
+    win.ShowDialog()

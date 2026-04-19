@@ -1,12 +1,12 @@
 {
-  "conduit_type_plan": "(Usar Ultimo Desenhado)", 
+  "angle_mode_plan": "90", 
+  "conduit_type_vertical": "(Usar Último Desenhado)", 
+  "conduit_type_plan": "(Usar Último Desenhado)", 
+  "angle_mode_vertical": "90", 
   "debug_mode": false, 
+  "service_type": "", 
+  "selection_mode": "caixa", 
   "routing_strategy": "auto", 
   "default_diameter": "", 
-  "conduit_type_vertical": "(Usar Ultimo Desenhado)", 
-  "angle_mode_vertical": "90", 
-  "service_type": "", 
-  "angle_mode_plan": "90", 
-  "conduit_type": "(Usar Último Desenhado)", 
-  "selection_mode": "caixa"
+  "conduit_type": "(Usar Último Desenhado)"
 }

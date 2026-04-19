@@ -8,7 +8,7 @@ __author__ = "Luís Fernando"
 # ║  True  = imprime detalhes no console pyRevit                 ║
 # ║  False = silencioso                                          ║
 # ╚══════════════════════════════════════════════════════════════╝
-DEBUG_MODE = False
+DEBUG_MODE = True
 import os
 import clr
 
@@ -23,6 +23,7 @@ from System.Windows import (
     Thickness, GridLength, GridUnitType,
     VerticalAlignment, HorizontalAlignment, TextWrapping, Visibility, CornerRadius
 )
+from System.Windows.Data import CollectionViewSource
 from System.Windows.Controls import (
     CheckBox, Grid, ColumnDefinition, RowDefinition, TextBlock, ComboBox, TextBox, Border, ScrollViewer, StackPanel
 )
@@ -32,7 +33,7 @@ from System.Collections.Generic import List
 from Autodesk.Revit.DB import (
     FilteredElementCollector, BuiltInCategory,
     RevitLinkInstance, Level, Transaction, TransactionStatus,
-    BuiltInParameter,
+    BuiltInParameter, Phase
 )
 from Autodesk.Revit.DB.Structure import StructuralType
 
@@ -52,17 +53,23 @@ SCAN_CATS = [
     BuiltInCategory.OST_LightingFixtures,
     BuiltInCategory.OST_MechanicalEquipment,
     BuiltInCategory.OST_SpecialityEquipment,
+    BuiltInCategory.OST_ConduitFitting,
+    BuiltInCategory.OST_ElectricalFixtures,
+    BuiltInCategory.OST_DataDevices,
+    BuiltInCategory.OST_CommunicationDevices,
 ]
 
 ELEC_CATS = [
     BuiltInCategory.OST_LightingFixtures,
     BuiltInCategory.OST_ElectricalFixtures,
+    BuiltInCategory.OST_ConduitFitting,
 ]
 
 DATA_CATS = [
     BuiltInCategory.OST_DataDevices,
     BuiltInCategory.OST_CommunicationDevices,
     BuiltInCategory.OST_ElectricalFixtures,
+    BuiltInCategory.OST_ConduitFitting,
 ]
 
 # Palavras-chave para filtrar famílias NÃO-ELÉTRICAS
@@ -90,6 +97,33 @@ def _is_non_electric(display_name):
     return any(_normalize(kw) in name for kw in NON_ELECTRIC_KEYWORDS)
 
 
+def _is_non_electric_smart(display_name, std_cat=""):
+    """Usa STD_CATEGORIA se disponível, senão cai para palavras-chave."""
+    if std_cat:
+        norm = _normalize(std_cat)
+        if norm in ("eletrica", "elétrica"):
+            return False
+        return True
+    return _is_non_electric(display_name)
+
+
+def _get_safe_name(el):
+    if not el: return "—"
+    try:
+        return el.Name
+    except:
+        pass
+    try:
+        p = el.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+        if p and p.HasValue: return p.AsString()
+    except:
+        pass
+    try:
+        return "ID " + str(el.Id)
+    except:
+        return "Unknown"
+
+
 def get_link_instances():
     result = []
     for link in FilteredElementCollector(doc).OfClass(RevitLinkInstance):
@@ -102,8 +136,137 @@ def get_link_instances():
     return sorted(result, key=lambda x: x["display"])
 
 
+def _collect_load_classifications(doc, extra_docs=None):
+    """Retorna lista ordenada de {name, id, is_native} das Classificações de Carga.
+    Tenta LoadClassification nativa; se vazia, coleta valores distintos do
+    parâmetro de texto 'Tipo de Carga' no projeto e nos vínculos."""
+    result = []
+    lc_class = None
+    try:
+        from Autodesk.Revit.DB.Electrical import LoadClassification
+        lc_class = LoadClassification
+    except:
+        pass
+    if lc_class is None:
+        try:
+            from Autodesk.Revit.DB import LoadClassification
+            lc_class = LoadClassification
+        except:
+            pass
+    if lc_class is not None:
+        try:
+            for lc in FilteredElementCollector(doc).OfCategory(BuiltInCategory.OST_ElectricalLoadClassifications).ToElements():
+                try:
+                    lc_name = ""
+                    try:
+                        lc_name = lc.Name
+                    except:
+                        pass
+                    if not lc_name:
+                        try:
+                            p = lc.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+                            if p and p.HasValue: lc_name = p.AsString()
+                        except: pass
+                    if not lc_name:
+                        lc_name = "ID " + str(lc.Id)
+
+                    result.append({"name": lc_name, "id": lc.Id, "is_native": True})
+                except Exception as e:
+                    dbg.error("Erro lendo LoadClassification: {}".format(e))
+            result.sort(key=lambda x: x["name"])
+        except Exception as e:
+            dbg.error("Erro iterando LoadClassifications nativas: {}".format(e))
+        if result:
+            return result
+
+    # Fallback: coletar valores distintos do parâmetro texto "Tipo de Carga"
+    TEXT_SCAN_CATS = [
+        BuiltInCategory.OST_ConduitFitting,
+        BuiltInCategory.OST_ElectricalFixtures,
+        BuiltInCategory.OST_LightingFixtures,
+        BuiltInCategory.OST_MechanicalEquipment,
+        BuiltInCategory.OST_SpecialityEquipment,
+    ]
+    seen = set()
+    all_docs = [doc] + (list(extra_docs) if extra_docs else [])
+    for d in all_docs:
+        if not d:
+            continue
+        for bic in TEXT_SCAN_CATS:
+            try:
+                for el in FilteredElementCollector(d).OfCategory(bic).WhereElementIsNotElementType():
+                    try:
+                        p = el.LookupParameter("Tipo de Carga")
+                        if p and p.HasValue:
+                            val = (p.AsString() or "").strip()
+                            if val and val not in seen:
+                                seen.add(val)
+                                result.append({"name": val, "id": None, "is_native": False})
+                    except:
+                        pass
+            except:
+                pass
+    result.sort(key=lambda x: x["name"])
+    return result
+
+
+def _set_load_classification(element, lc_info):
+    """Atribui Classificação de Carga ao elemento.
+    lc_info: {"name": str, "id": ElementId|None, "is_native": bool}"""
+    if not lc_info:
+        return False
+    from Autodesk.Revit.DB import StorageType
+    # Abordagem nativa: via ElementId no conector ou BuiltInParameter
+    if lc_info.get("is_native") and lc_info.get("id"):
+        lc_id = lc_info["id"]
+        try:
+            from Autodesk.Revit.DB import Domain
+            if hasattr(element, 'MEPModel') and element.MEPModel:
+                cm = element.MEPModel.ConnectorManager
+                if cm:
+                    for conn in cm.Connectors:
+                        if conn.Domain == Domain.DomainElectrical:
+                            try:
+                                conn.LoadClassificationId = lc_id
+                                return True
+                            except:
+                                pass
+        except:
+            pass
+        try:
+            p = element.get_Parameter(BuiltInParameter.RBS_ELEC_LOAD_CLASSIFICATION)
+            if p and not p.IsReadOnly:
+                p.Set(lc_id)
+                return True
+        except:
+            pass
+            
+        try:
+            p = element.LookupParameter("Tipo de Carga")
+            if p and not p.IsReadOnly:
+                if p.StorageType == StorageType.ElementId:
+                    p.Set(lc_id)
+                    return True
+        except:
+            pass
+
+    # Abordagem texto: setar parâmetro "Tipo de Carga" por nome
+    text_val = lc_info.get("name", "")
+    if text_val:
+        try:
+            p = element.LookupParameter("Tipo de Carga")
+            if p and not p.IsReadOnly and p.StorageType == StorageType.String:
+                p.Set(text_val)
+                return True
+        except:
+            pass
+    return False
+
+
 # ── Nomes conhecidos do parâmetro de potência nas famílias do projeto ──
 _POWER_PARAM_NAMES = [
+    "Potência Ativa (W)",
+    "Potência Ativa",
     "Potência Aparente (VA)",
     "Potência Aparente",
     "Apparent Load",
@@ -240,8 +403,11 @@ class PontosVinculoWindow(forms.WPFWindow):
         )
         self._elec_symbols = self._collect_symbols(ELEC_CATS)
         self._data_symbols = self._collect_symbols(DATA_CATS)
+        link_docs = [l["link_doc"] for l in self._links if l.get("link_doc")]
+        self._load_classifications = _collect_load_classifications(self._doc, link_docs)
         self._family_rows = []
         self._filter_non_electric = True
+        self._filter_only_new = True
         self._init_ui()
 
     def _collect_symbols(self, categories):
@@ -249,16 +415,41 @@ class PontosVinculoWindow(forms.WPFWindow):
         seen = set()
         for bic in categories:
             try:
-                for s in FilteredElementCollector(self._doc).OfCategory(bic).WhereElementIsElementType():
+                for s in FilteredElementCollector(self._doc).OfCategory(bic).WhereElementIsElementType().ToElements():
                     try:
-                        full_name = "{} : {}".format(s.Family.Name, s.Name)
+                        fam_name = ""
+                        try:
+                            fam_name = s.FamilyName
+                        except:
+                            try:
+                                fam_name = s.Family.Name
+                            except:
+                                fam_name = "Unknown"
+                        
+                        sym_name = ""
+                        try:
+                            sym_name = s.Name
+                        except:
+                            pass
+                            
+                        if not sym_name:
+                            try:
+                                p = s.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+                                if p and p.HasValue: sym_name = p.AsString()
+                            except:
+                                pass
+                                
+                        if not sym_name:
+                            sym_name = "ID " + str(s.Id)
+                            
+                        full_name = "{} : {}".format(fam_name, sym_name)
                         if full_name not in seen:
                             seen.add(full_name)
-                            result.append({"full_name": full_name, "display": s.Name, "symbol": s})
-                    except:
-                        pass
-            except:
-                pass
+                            result.append({"full_name": full_name, "display": sym_name, "symbol": s})
+                    except Exception as e:
+                        dbg.error("Erro no simbolo {}: {}".format(getattr(s, 'Id', '?'), e))
+            except Exception as e:
+                dbg.error("Erro iterando categoria {}: {}".format(bic, e))
         result.sort(key=lambda x: x["display"])
         return result
 
@@ -287,6 +478,8 @@ class PontosVinculoWindow(forms.WPFWindow):
             net_links.Add(lnk["display"])
         self.cb_Link.ItemsSource = net_links
         self.cb_Link.SelectedIndex = 0
+        self.cb_Link.SelectionChanged += self._on_link_changed
+        self.cb_Link.KeyUp += self._on_cb_keyup
 
         net_levels = List[System.Object]()
         for lv in self._host_levels:
@@ -299,11 +492,65 @@ class PontosVinculoWindow(forms.WPFWindow):
         self.chk_FilterNonElec.Checked   += self._on_filter_toggle
         self.chk_FilterNonElec.Unchecked += self._on_filter_toggle
 
+        self.cb_Phase.KeyUp += self._on_cb_keyup
+        self._on_link_changed(None, None)
+
         self.btn_Scan.Click       += self._on_scan
         self.btn_Place.Click      += self._on_place
         self.btn_Cancel.Click     += lambda s, a: self.Close()
         self.btn_SelectAll.Click  += lambda s, a: self._set_all_checked(True)
         self.btn_SelectNone.Click += lambda s, a: self._set_all_checked(False)
+
+    def _on_link_changed(self, sender, args):
+        idx = self.cb_Link.SelectedIndex
+        if idx < 0:
+            self.cb_Phase.ItemsSource = None
+            return
+        link_doc = self._links[idx]["link_doc"]
+        if link_doc:
+            try:
+                phases = list(FilteredElementCollector(link_doc).OfClass(Phase))
+                net_phases = List[System.Object]()
+                net_phases.Add("Todas as Fases")
+                for p in phases:
+                    net_phases.Add(p.Name)
+                self.cb_Phase.ItemsSource = net_phases
+                if phases:
+                    self.cb_Phase.SelectedIndex = len(phases)
+                else:
+                    self.cb_Phase.SelectedIndex = 0
+            except:
+                self.cb_Phase.ItemsSource = None
+
+    def _on_cb_keyup(self, sender, args):
+        try:
+            # Ignorar teclas de navegação para permitir o uso normal do combobox
+            if str(args.Key) in ("Up", "Down", "Left", "Right", "Enter", "Tab", "Escape"):
+                return
+                
+            tb = sender.Template.FindName("PART_EditableTextBox", sender)
+            if not tb: return
+            
+            txt = tb.Text
+            caret = tb.CaretIndex
+            txt_lower = txt.lower()
+            
+            view = CollectionViewSource.GetDefaultView(sender.ItemsSource)
+            if not view: return
+            
+            def filter_func(item):
+                if not txt_lower: return True
+                return txt_lower in str(item).lower()
+                
+            view.Filter = System.Predicate[System.Object](filter_func)
+            view.Refresh()
+            sender.IsDropDownOpen = True
+            
+            # Restaurar texto e posição do cursor que se perdem no Refresh do WPF
+            tb.Text = txt
+            tb.CaretIndex = caret
+        except:
+            pass
 
     def _on_filter_toggle(self, sender, args):
         self._filter_non_electric = (self.chk_FilterNonElec.IsChecked == True)
@@ -344,25 +591,69 @@ class PontosVinculoWindow(forms.WPFWindow):
         self.sp_Families.Children.Clear()
         self._family_rows = []
 
+        selected_phase = self.cb_Phase.Text.strip() if self.cb_Phase.Text else ""
+        filter_phase = bool(selected_phase) and selected_phase != "Todas as Fases"
+
         mapa = {}
         for bic in SCAN_CATS:
             try:
                 count_cat = 0
                 for el in FilteredElementCollector(link_doc).OfCategory(bic).WhereElementIsNotElementType():
+                    # Filtro de fase: ignorar elementos se marcado
+                    if filter_phase:
+                        try:
+                            phase_p = el.get_Parameter(BuiltInParameter.PHASE_CREATED)
+                            if phase_p and phase_p.HasValue:
+                                phase_name = phase_p.AsValueString() or ""
+                                if selected_phase.lower() not in phase_name.lower():
+                                    continue
+                        except:
+                            pass
+
                     fam, type_n = "", ""
+                    std_cat = ""
+                    load_type_str = ""
                     try:
                         _sym = el.Symbol
                         fam, type_n = _sym.Family.Name, _sym.Name
+                        try:
+                            p_cat = _sym.LookupParameter("STD_CATEGORIA")
+                            if p_cat and p_cat.HasValue:
+                                std_cat = (p_cat.AsString() or "").strip()
+                        except:
+                            pass
                     except:
                         fam = el.Name
+                    try:
+                        p_lt = el.LookupParameter("Tipo de Carga")
+                        if p_lt and p_lt.HasValue:
+                            load_type_str = (p_lt.AsString() or "").strip()
+                    except:
+                        pass
                     display = "{} : {}".format(fam, type_n) if type_n else fam
                     if display not in mapa:
-                        mapa[display] = {"display": display, "instances": []}
+                        mapa[display] = {"display": display, "instances": [], "std_cat": std_cat, "load_type": load_type_str}
+                    elif not mapa[display].get("load_type") and load_type_str:
+                        mapa[display]["load_type"] = load_type_str
                     mapa[display]["instances"].append(el)
                     count_cat += 1
                 dbg.debug("Categoria {}: {} instâncias".format(str(bic).split('.')[-1], count_cat))
             except:
                 pass
+
+        # Atualizar classificações de carga com valores encontrados no vínculo
+        lc_from_scan = {}
+        for key, fam_data in mapa.items():
+            lt = fam_data.get("load_type", "")
+            if lt and lt not in lc_from_scan:
+                lc_from_scan[lt] = {"name": lt, "id": None, "is_native": False}
+        if lc_from_scan:
+            # Mescla com classificações nativas (se houver); scan tem prioridade para novos valores
+            existing_names = set(lc["name"] for lc in self._load_classifications)
+            for name, lc_obj in lc_from_scan.items():
+                if name not in existing_names:
+                    self._load_classifications.append(lc_obj)
+            self._load_classifications.sort(key=lambda x: x["name"])
 
         for key in sorted(mapa.keys()):
             row = self._build_row(mapa[key])
@@ -377,20 +668,20 @@ class PontosVinculoWindow(forms.WPFWindow):
     # ------------------------------------------------------------------
 
     def _make_editable_combo(self, symbol_list, default_idx):
-        """ComboBox com estilo e Autocomplete Nativo WPF (To Excel style)."""
+        """ComboBox com estilo e Autocomplete com filtro."""
         cb = ComboBox()
         cb.IsEditable = True  # Ativa campo digitável
-        # Em WPF, deixar IsTextSearchEnabled omitido/True + IsEditable=True 
-        # aciona o AutoComplete natural de Windows (começa pela letra etc.)
+        cb.StaysOpenOnEdit = True # Mantém aberto ao digitar
+        
         cb.Height = 28
         cb.Margin = Thickness(2, 2, 2, 2)
         cb.Padding = Thickness(6, 0, 0, 0)
         cb.VerticalContentAlignment = VerticalAlignment.Center
 
-        # ── Visual: cores dark do tema ──────────────────────────────────
-        INPUT_BG   = SolidColorBrush(Color.FromRgb(0x13, 0x16, 0x1C))
-        BORDER_CLR = SolidColorBrush(Color.FromRgb(0x31, 0x38, 0x44))
-        FG_CLR     = SolidColorBrush(Color.FromRgb(0xF2, 0xF4, 0xF8))
+        # ── Visual: light theme ─────────────────────────────────────────
+        INPUT_BG   = SolidColorBrush(Color.FromRgb(0xFF, 0xFF, 0xFF))
+        BORDER_CLR = SolidColorBrush(Color.FromRgb(0xC8, 0xC8, 0xC8))
+        FG_CLR     = SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33))
         cb.Background   = INPUT_BG
         cb.Foreground   = FG_CLR
         cb.BorderBrush  = BORDER_CLR
@@ -404,6 +695,9 @@ class PontosVinculoWindow(forms.WPFWindow):
             net.Add(it)
         cb.ItemsSource = net
         cb.SelectedIndex = default_idx
+        
+        # Adiciona o evento de pesquisa
+        cb.KeyUp += self._on_cb_keyup
 
         return cb
 
@@ -438,7 +732,7 @@ class PontosVinculoWindow(forms.WPFWindow):
         grid.Margin = Thickness(0, 1, 0, 1)
         grid.MinHeight = 34
 
-        widths = [(28, 0), (130, 0), (36, 0), (0, 2), (0, 2), (72, 0)]
+        widths = [(28, 0), (160, 0), (36, 0), (90, 0), (0, 2), (0, 2), (72, 0)]
         for w, star in widths:
             cd = ColumnDefinition()
             cd.Width = GridLength(star, GridUnitType.Star) if star > 0 else GridLength(w)
@@ -449,7 +743,7 @@ class PontosVinculoWindow(forms.WPFWindow):
         cb.IsChecked = True
         cb.VerticalAlignment = VerticalAlignment.Center
         cb.Margin = Thickness(4, 0, 0, 0)
-        cb.Foreground = SolidColorBrush(Color.FromRgb(0xF2, 0xF4, 0xF8))
+        cb.Foreground = SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33))
         Grid.SetColumn(cb, 0)
 
         # Nome da família
@@ -461,7 +755,7 @@ class PontosVinculoWindow(forms.WPFWindow):
         from System.Windows import TextTrimming as _TT
         tb_name.TextTrimming = _TT.CharacterEllipsis
         tb_name.ToolTip = fam["display"]
-        tb_name.Foreground = SolidColorBrush(Color.FromRgb(0xF2, 0xF4, 0xF8))
+        tb_name.Foreground = SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33))
         Grid.SetColumn(tb_name, 1)
 
         # Quantidade
@@ -469,22 +763,53 @@ class PontosVinculoWindow(forms.WPFWindow):
         tb_qty.Text = str(len(fam["instances"]))
         tb_qty.VerticalAlignment = VerticalAlignment.Center
         tb_qty.HorizontalAlignment = HorizontalAlignment.Center
-        tb_qty.Foreground = SolidColorBrush(Color.FromRgb(0xC4, 0xCA, 0xD4))
+        tb_qty.Foreground = SolidColorBrush(Color.FromRgb(0x77, 0x77, 0x77))
         Grid.SetColumn(tb_qty, 2)
+
+        # ComboBox — Tipo de Carga
+        INPUT_BG   = SolidColorBrush(Color.FromRgb(0xFF, 0xFF, 0xFF))
+        BORDER_CLR = SolidColorBrush(Color.FromRgb(0xC8, 0xC8, 0xC8))
+        FG_CLR     = SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33))
+        c_load = ComboBox()
+        c_load.IsEditable = True
+        c_load.StaysOpenOnEdit = True
+        c_load.KeyUp += self._on_cb_keyup
+        c_load.Height = 28
+        c_load.Margin = Thickness(2, 2, 2, 2)
+        c_load.Padding = Thickness(6, 0, 0, 0)
+        c_load.VerticalContentAlignment = VerticalAlignment.Center
+        c_load.Background  = INPUT_BG
+        c_load.Foreground  = FG_CLR
+        c_load.BorderBrush = BORDER_CLR
+        c_load.BorderThickness = Thickness(1)
+        load_items = List[System.Object]()
+        load_items.Add("")
+        for lc in self._load_classifications:
+            load_items.Add(lc["name"])
+        c_load.ItemsSource = load_items
+        # Pré-seleciona o valor lido da instância no vínculo
+        fam_load = fam.get("load_type", "")
+        load_default = 0
+        if fam_load:
+            for i, lc in enumerate(self._load_classifications):
+                if lc["name"] == fam_load:
+                    load_default = i + 1
+                    break
+            if load_default == 0:
+                c_load.Text = fam_load
+        c_load.SelectedIndex = load_default
+        Grid.SetColumn(c_load, 3)
 
         # ComboBox — Ponto Elétrico
         elec_default = self._find_match_idx(fam["display"], self._elec_symbols)
         c_elec = self._make_editable_combo(self._elec_symbols, elec_default)
-        Grid.SetColumn(c_elec, 3)
+        Grid.SetColumn(c_elec, 4)
 
         # ComboBox — Ponto de Dados
         c_dados = self._make_editable_combo(self._data_symbols, 0)
-        Grid.SetColumn(c_dados, 4)
+        Grid.SetColumn(c_dados, 5)
 
         # TextBox — Potência (VA)
-        INPUT_BG   = SolidColorBrush(Color.FromRgb(0x13, 0x16, 0x1C))
-        BORDER_CLR = SolidColorBrush(Color.FromRgb(0x31, 0x38, 0x44))
-        FG_CLR     = SolidColorBrush(Color.FromRgb(0xF2, 0xF4, 0xF8))
         t_pow = TextBox()
         t_pow.Height = 26
         t_pow.Margin = Thickness(2)
@@ -494,19 +819,20 @@ class PontosVinculoWindow(forms.WPFWindow):
         t_pow.BorderBrush  = BORDER_CLR
         t_pow.BorderThickness = Thickness(1)
         t_pow.Padding = Thickness(4, 0, 4, 0)
-        Grid.SetColumn(t_pow, 5)
+        Grid.SetColumn(t_pow, 6)
 
-        for child in [cb, tb_name, tb_qty, c_elec, c_dados, t_pow]:
+        for child in [cb, tb_name, tb_qty, c_load, c_elec, c_dados, t_pow]:
             grid.Children.Add(child)
 
         return {
             "grid": grid,
             "cb": cb,
+            "c_load": c_load,
             "c_elec": c_elec,
             "c_dados": c_dados,
             "t_pow": t_pow,
             "instances": fam["instances"],
-            "is_non_electric": _is_non_electric(fam["display"]),
+            "is_non_electric": _is_non_electric_smart(fam["display"], fam.get("std_cat", "")),
         }
 
     def _on_place(self, sender, args):
@@ -518,11 +844,16 @@ class PontosVinculoWindow(forms.WPFWindow):
             dados_sym = self._get_symbol_from_combo(r["c_dados"], self._data_symbols)
             if not elec_sym and not dados_sym:
                 continue
+            lc_idx = r["c_load"].SelectedIndex
+            lc_obj = None
+            if lc_idx > 0 and lc_idx - 1 < len(self._load_classifications):
+                lc_obj = self._load_classifications[lc_idx - 1]
             to_place.append({
                 "instances": r["instances"],
                 "elec_sym":  elec_sym,
                 "dados_sym": dados_sym,
                 "pow":       r["t_pow"].Text.strip() or None,
+                "load_classification": lc_obj,
             })
 
         if not to_place:
@@ -573,10 +904,21 @@ class PontosVinculoWindow(forms.WPFWindow):
             power_elements = []  # acumular (elemento, valor) para setar potência em lote
 
             for item in to_place:
-                elec_name  = item["elec_sym"].Name  if item["elec_sym"]  else "—"
-                dados_name = item["dados_sym"].Name if item["dados_sym"] else "—"
+                elec_name  = _get_safe_name(item["elec_sym"]) if item["elec_sym"]  else "—"
+                dados_name = _get_safe_name(item["dados_sym"]) if item["dados_sym"] else "—"
+                
+                fam_name = "?"
+                if item["instances"]:
+                    try:
+                        fam_name = item["instances"][0].Symbol.FamilyName
+                    except:
+                        try:
+                            fam_name = item["instances"][0].Symbol.Family.Name
+                        except:
+                            pass
+
                 dbg.sub("{} ({} inst.) → elec:{} dados:{} pot:{}".format(
-                    item["instances"][0].Symbol.Family.Name if item["instances"] else "?",
+                    fam_name,
                     len(item["instances"]), elec_name, dados_name, item["pow"] or "—"
                 ))
                 for inst in item["instances"]:
@@ -600,6 +942,8 @@ class PontosVinculoWindow(forms.WPFWindow):
                             placed_count += 1
                             if item["pow"]:
                                 power_elements.append((new_elec, item["pow"]))
+                            if item.get("load_classification"):
+                                _set_load_classification(new_elec, item["load_classification"])
                         except Exception as ex:
                             dbg.warn("  elétrico falhou inst.Id={}: {}".format(inst.Id, ex))
 
