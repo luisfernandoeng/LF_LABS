@@ -8,8 +8,11 @@ __author__ = "Luís Fernando"
 # ║  True  = imprime detalhes no console pyRevit                 ║
 # ║  False = silencioso                                          ║
 # ╚══════════════════════════════════════════════════════════════╝
-DEBUG_MODE = True
+DEBUG_MODE = False  # padrão; o checkbox na UI sobrescreve e persiste
 import os
+import io
+import json
+import re
 import clr
 
 clr.AddReference('RevitAPI')
@@ -33,14 +36,67 @@ from System.Collections.Generic import List
 from Autodesk.Revit.DB import (
     FilteredElementCollector, BuiltInCategory,
     RevitLinkInstance, Level, Transaction, TransactionStatus,
-    BuiltInParameter, Phase
+    BuiltInParameter, Phase,
+    View3D, ReferenceIntersector, FindReferenceTarget,
+    ElementCategoryFilter, XYZ, Line, ElementTransformUtils,
+    FamilyPlacementType,
 )
 from Autodesk.Revit.DB.Structure import StructuralType
 
 from pyrevit import forms, script
-from lf_utils import DebugLogger
+from lf_utils import DebugLogger, get_script_config, save_script_config
 
-dbg = DebugLogger(DEBUG_MODE)
+_debug_cfg = get_script_config(__file__, {'debug': DEBUG_MODE})
+dbg = DebugLogger(_debug_cfg.get('debug', DEBUG_MODE))
+
+# ==================== Perfis JSON ====================
+
+PROFILES_DIR = os.path.join(os.path.dirname(__file__), 'profiles')
+
+
+def _ensure_profiles_dir():
+    if not os.path.isdir(PROFILES_DIR):
+        os.makedirs(PROFILES_DIR)
+
+
+def _list_profiles():
+    try:
+        _ensure_profiles_dir()
+        return sorted(f[:-5] for f in os.listdir(PROFILES_DIR) if f.endswith('.json'))
+    except:
+        return []
+
+
+def _profile_path(name):
+    return os.path.join(PROFILES_DIR, name + '.json')
+
+
+def _load_profile(name):
+    """Carrega perfil do JSON. Retorna dict {display_name: {campos}} ou {}."""
+    try:
+        path = _profile_path(name)
+        with io.open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return {}
+
+
+def _save_profile(name, data):
+    """Salva dict de perfil em JSON. Retorna True se OK."""
+    try:
+        _ensure_profiles_dir()
+        path = _profile_path(name)
+        with io.open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2,
+                      sort_keys=True)
+        return True
+    except:
+        return False
+
+
+def _safe_filename(name):
+    return re.sub(r'[<>:"/\\|?*]', '_', name).strip()
+
 
 # ==================== Helpers ====================
 
@@ -390,6 +446,177 @@ def _set_power(element, pow_str):
         pass
 
 
+# ==================== Face Placement Helpers ====================
+
+def _get_3d_view(doc):
+    """Retorna a primeira View3D não-template disponível para ReferenceIntersector."""
+    try:
+        for v in FilteredElementCollector(doc).OfClass(View3D):
+            if not v.IsTemplate:
+                return v
+    except:
+        pass
+    return None
+
+
+def _is_luminaire_sym(symbol):
+    """Retorna True se o símbolo for da categoria Luminárias (OST_LightingFixtures)."""
+    try:
+        return symbol.Category.Id.IntegerValue == int(BuiltInCategory.OST_LightingFixtures)
+    except:
+        return False
+
+
+# ==================== Leitura de Circuito ====================
+
+def _read_circuit_info(el, _doc=None, cache=None):
+    """
+    Retorna dict com info do circuito do elemento:
+      nome              — número/identificador (ex: "Q1-3")
+      descricao         — descrição/nome do circuito (ex: "Tomadas Sala")
+      potencia_individual — VA por elemento (total ÷ qtd no circuito)
+    Retorna None se não encontrar circuito.
+    cache: dict opcional {circuit_id_int → info_dict} para evitar recalcular.
+    """
+    if cache is None:
+        cache = {}
+
+    circuit = None
+
+    # Método 1: MEPModel
+    try:
+        mep = getattr(el, 'MEPModel', None)
+        if mep:
+            for attr in ['GetElectricalSystems', 'GetAssignedElectricalSystems']:
+                if hasattr(mep, attr):
+                    try:
+                        result = getattr(mep, attr)()
+                        if result:
+                            for sys in result:
+                                circuit = sys
+                                break
+                    except:
+                        pass
+                if circuit:
+                    break
+        if not circuit and hasattr(el, 'ElectricalSystems'):
+            for sys in el.ElectricalSystems:
+                circuit = sys
+                break
+    except:
+        pass
+
+    # Método 2: Conectores
+    if not circuit:
+        try:
+            cm = None
+            mep = getattr(el, 'MEPModel', None)
+            if mep:
+                cm = getattr(mep, 'ConnectorManager', None)
+            if cm is None:
+                cm = getattr(el, 'ConnectorManager', None)
+            if cm:
+                for conn in cm.Connectors:
+                    if conn.Domain != Domain.DomainElectrical:
+                        continue
+                    sys = getattr(conn, 'MEPSystem', None)
+                    if isinstance(sys, ElectricalSystem):
+                        circuit = sys
+                        break
+                    if conn.IsConnected:
+                        for ref in conn.AllRefs:
+                            if isinstance(ref.Owner, ElectricalSystem):
+                                circuit = ref.Owner
+                                break
+                    if circuit:
+                        break
+        except:
+            pass
+
+    if not circuit:
+        return None
+
+    # Verifica cache
+    try:
+        cid = circuit.Id.IntegerValue
+        if cid in cache:
+            return cache[cid]
+    except:
+        cid = None
+
+    info = {
+        "nome":                u"",
+        "descricao":           u"",
+        "potencia_individual": 0.0,
+    }
+
+    # Nome do circuito (número)
+    try:
+        info["nome"] = circuit.CircuitNumber or u""
+    except:
+        pass
+
+    # Descrição: tenta vários parâmetros
+    _DESC_PARAMS = [
+        BuiltInParameter.RBS_ELEC_CIRCUIT_NAME,
+        BuiltInParameter.RBS_ELEC_CIRCUIT_LOAD_NAME,
+    ]
+    for bip in _DESC_PARAMS:
+        try:
+            p = circuit.get_Parameter(bip)
+            if p and p.HasValue:
+                val = (p.AsString() or u"").strip()
+                if val:
+                    info["descricao"] = val
+                    break
+        except:
+            pass
+    if not info["descricao"]:
+        for pname in [u"Descrição", u"Description", u"Load Name", u"Nome da Carga"]:
+            try:
+                p = circuit.LookupParameter(pname)
+                if p and p.HasValue:
+                    val = (p.AsString() or u"").strip()
+                    if val:
+                        info["descricao"] = val
+                        break
+            except:
+                pass
+
+    # Potência individual = carga total do circuito ÷ qtd de elementos
+    try:
+        total_va = 0.0
+        count    = 0
+
+        # Carga aparente total do circuito
+        for bip in [BuiltInParameter.RBS_ELEC_APPARENT_LOAD,
+                    BuiltInParameter.RBS_ELEC_TRUE_LOAD]:
+            try:
+                p = circuit.get_Parameter(bip)
+                if p and p.HasValue:
+                    total_va = p.AsDouble()  # unidades internas (VA)
+                    if total_va > 0:
+                        break
+            except:
+                pass
+
+        # Conta elementos no circuito
+        try:
+            for _ in circuit.Elements:
+                count += 1
+        except:
+            pass
+
+        if total_va > 0 and count > 0:
+            info["potencia_individual"] = total_va / count
+    except:
+        pass
+
+    if cid is not None:
+        cache[cid] = info
+    return info
+
+
 # ==================== UI ====================
 
 class PontosVinculoWindow(forms.WPFWindow):
@@ -403,11 +630,14 @@ class PontosVinculoWindow(forms.WPFWindow):
         )
         self._elec_symbols = self._collect_symbols(ELEC_CATS)
         self._data_symbols = self._collect_symbols(DATA_CATS)
+        self._elec_face_symbols = [s for s in self._elec_symbols if s.get('is_face')]
+        self._data_face_symbols = [s for s in self._data_symbols if s.get('is_face')]
         link_docs = [l["link_doc"] for l in self._links if l.get("link_doc")]
         self._load_classifications = _collect_load_classifications(self._doc, link_docs)
         self._family_rows = []
         self._filter_non_electric = True
         self._filter_only_new = True
+        self._profile = {}
         self._init_ui()
 
     def _collect_symbols(self, categories):
@@ -445,7 +675,15 @@ class PontosVinculoWindow(forms.WPFWindow):
                         full_name = "{} : {}".format(fam_name, sym_name)
                         if full_name not in seen:
                             seen.add(full_name)
-                            result.append({"full_name": full_name, "display": sym_name, "symbol": s})
+                            is_face = False
+                            try:
+                                fpt = s.Family.FamilyPlacementType
+                                is_face = fpt in (FamilyPlacementType.WorkPlaneBased,
+                                                  FamilyPlacementType.OneLevelBasedHosted)
+                            except:
+                                pass
+                            result.append({"full_name": full_name, "display": sym_name,
+                                           "symbol": s, "is_face": is_face})
                     except Exception as e:
                         dbg.error("Erro no simbolo {}: {}".format(getattr(s, 'Id', '?'), e))
             except Exception as e:
@@ -500,6 +738,20 @@ class PontosVinculoWindow(forms.WPFWindow):
         self.btn_Cancel.Click     += lambda s, a: self.Close()
         self.btn_SelectAll.Click  += lambda s, a: self._set_all_checked(True)
         self.btn_SelectNone.Click += lambda s, a: self._set_all_checked(False)
+
+        self._refresh_profiles()
+        self.btn_LoadProfile.Click  += self._on_load_profile
+        self.btn_SaveProfile.Click  += self._on_save_profile
+        self.btn_ReadProject.Click  += self._on_read_project
+
+        self.chk_Debug.IsChecked = dbg.enabled
+        self.chk_Debug.Checked   += self._on_debug_toggle
+        self.chk_Debug.Unchecked += self._on_debug_toggle
+
+        face_cfg = _debug_cfg.get('face_placement', False)
+        self.chk_FacePlacement.IsChecked = face_cfg
+        self.chk_FacePlacement.Checked   += self._on_face_toggle
+        self.chk_FacePlacement.Unchecked += self._on_face_toggle
 
     def _on_link_changed(self, sender, args):
         idx = self.cb_Link.SelectedIndex
@@ -572,6 +824,420 @@ class PontosVinculoWindow(forms.WPFWindow):
         for row in self._family_rows:
             if row["grid"].Visibility == Visibility.Visible:
                 row["cb"].IsChecked = state
+
+    # ── Debug ────────────────────────────────────────────────────────────
+
+    def _on_debug_toggle(self, _sender, _args):
+        dbg.enabled = bool(self.chk_Debug.IsChecked)
+        save_script_config(__file__, {
+            'debug':         dbg.enabled,
+            'face_placement': bool(self.chk_FacePlacement.IsChecked),
+        })
+        if dbg.enabled:
+            dbg.section(u"Debug ativado")
+
+    def _update_row_face_combos(self, row, use_face):
+        """Troca ItemsSource dos combos elétrico/dados para a lista face ou completa."""
+        pairs = [
+            ("c_elec",  self._elec_face_symbols  if use_face else self._elec_symbols),
+            ("c_dados", self._data_face_symbols   if use_face else self._data_symbols),
+            ]
+        sym_keys = ["elec_sym_list", "dados_sym_list"]
+        for (combo_key, new_list), sym_key in zip(pairs, sym_keys):
+            cb = row[combo_key]
+            old_list = row[sym_key]
+            # Guarda texto selecionado antes de trocar
+            cur_text = u""
+            if cb.SelectedIndex > 0:
+                idx = cb.SelectedIndex - 1
+                if idx < len(old_list):
+                    cur_text = old_list[idx]["display"]
+            elif cb.Text and cb.Text != u"— Não colocar —":
+                cur_text = cb.Text
+
+            net = List[System.Object]()
+            net.Add(u"— Não colocar —")
+            for s in new_list:
+                net.Add(s["display"])
+            cb.ItemsSource = net
+
+            # Tenta restaurar seleção
+            cb.SelectedIndex = 0
+            if cur_text:
+                for i, s in enumerate(new_list):
+                    if s["display"].lower() == cur_text.lower():
+                        cb.SelectedIndex = i + 1
+                        break
+
+            row[sym_key] = new_list
+
+    def _on_face_toggle(self, _sender, _args):
+        use_face = bool(self.chk_FacePlacement.IsChecked)
+        save_script_config(__file__, {
+            'debug':          dbg.enabled,
+            'face_placement': use_face,
+        })
+        for row in self._family_rows:
+            self._update_row_face_combos(row, use_face)
+
+    def _find_nearest_wall_face(self, ri, pt, max_dist_ft=6.56):
+        """
+        Lança raios horizontais (4 direções cardeais) a partir de pt.
+        Retorna (Reference, XYZ ponto_na_face, XYZ direção_do_raio) da parede mais próxima,
+        ou (None, None, None) se nenhuma parede encontrada dentro de max_dist_ft.
+        max_dist_ft padrão ≈ 2 m.
+        """
+        dirs = [XYZ(1, 0, 0), XYZ(-1, 0, 0), XYZ(0, 1, 0), XYZ(0, -1, 0)]
+        best_ref  = None
+        best_pt   = None
+        best_dir  = None
+        best_dist = max_dist_ft
+
+        for d in dirs:
+            try:
+                results = ri.Find(pt, d)
+                if not results:
+                    continue
+                for r in results:
+                    if r.Proximity < best_dist:
+                        best_dist = r.Proximity
+                        best_ref  = r.GetReference()
+                        best_dir  = d
+                        # Projeta o ponto original na face (mantém Z original)
+                        best_pt   = XYZ(
+                            pt.X + d.X * r.Proximity,
+                            pt.Y + d.Y * r.Proximity,
+                            pt.Z,
+                        )
+            except:
+                pass
+
+        return best_ref, best_pt, best_dir
+
+    # ── Perfis ──────────────────────────────────────────────────────────
+
+    def _refresh_profiles(self):
+        names = _list_profiles()
+        net = List[System.Object]()
+        net.Add(u"— Selecionar perfil —")
+        for n in names:
+            net.Add(n)
+        self.cb_Profile.ItemsSource = net
+        self.cb_Profile.SelectedIndex = 0
+
+    def _on_load_profile(self, sender, args):
+        idx = self.cb_Profile.SelectedIndex
+        if idx <= 0:
+            forms.alert(u"Selecione um perfil antes de carregar.", title=u"Perfil")
+            return
+        names = _list_profiles()
+        if idx - 1 >= len(names):
+            return
+        name = names[idx - 1]
+        self._profile = _load_profile(name)
+        if not self._profile:
+            forms.alert(u"Perfil '{}' está vazio ou corrompido.".format(name), title=u"Perfil")
+            return
+        self._apply_profile_to_rows()
+        self.lbl_Status.Text = u"Perfil '{}' carregado ({} entrada(s)).".format(
+            name, len(self._profile))
+
+    def _on_save_profile(self, sender, args):
+        if not self._family_rows:
+            forms.alert(u"Escaneie o vínculo antes de salvar o perfil.", title=u"Perfil")
+            return
+        name = forms.ask_for_string(
+            prompt=u"Nome do perfil:",
+            title=u"Salvar Perfil",
+            default=u"Meu Perfil"
+        )
+        if not name:
+            return
+        name = _safe_filename(name)
+
+        data = {}
+        for row in self._family_rows:
+            display = row.get("display", u"")
+            if not display:
+                continue
+
+            # tipo_carga
+            tc = u""
+            try:
+                tc = (row["c_load"].Text or u"").strip()
+            except:
+                pass
+
+            # ponto_eletrico — prefere display name do símbolo selecionado
+            pe = u""
+            try:
+                elec_list = row.get("elec_sym_list", self._elec_symbols)
+                pe_idx = row["c_elec"].SelectedIndex
+                if pe_idx > 0 and pe_idx - 1 < len(elec_list):
+                    pe = elec_list[pe_idx - 1]["display"]
+                else:
+                    pe = (row["c_elec"].Text or u"").strip()
+                    if pe == u"— Não colocar —":
+                        pe = u""
+            except:
+                pass
+
+            # ponto_dados
+            pd_val = u""
+            try:
+                data_list = row.get("dados_sym_list", self._data_symbols)
+                pd_idx = row["c_dados"].SelectedIndex
+                if pd_idx > 0 and pd_idx - 1 < len(data_list):
+                    pd_val = data_list[pd_idx - 1]["display"]
+                else:
+                    pd_val = (row["c_dados"].Text or u"").strip()
+                    if pd_val == u"— Não colocar —":
+                        pd_val = u""
+            except:
+                pass
+
+            # potencia
+            pot = u""
+            try:
+                pot = (row["t_pow"].Text or u"").strip()
+            except:
+                pass
+
+            data[display] = {
+                "tipo_carga":     tc,
+                "ponto_eletrico": pe,
+                "ponto_dados":    pd_val,
+                "potencia":       pot,
+            }
+
+        if _save_profile(name, data):
+            self._refresh_profiles()
+            # Seleciona o perfil recém-salvo
+            for i in range(self.cb_Profile.Items.Count):
+                if str(self.cb_Profile.Items[i]) == name:
+                    self.cb_Profile.SelectedIndex = i
+                    break
+            forms.toast(u"Perfil '{}' salvo com {} elemento(s)!".format(name, len(data)))
+        else:
+            forms.alert(u"Erro ao salvar o perfil.", title=u"Perfil")
+
+    def _on_read_project(self, _sender, _args):
+        """
+        Varre os elementos elétricos já colocados no projeto atual,
+        lê tipo de carga, potência individual (total do circuito / qtd elementos),
+        descrição e nome do circuito, e salva tudo como perfil JSON.
+        """
+        READ_CATS = [
+            BuiltInCategory.OST_LightingFixtures,
+            BuiltInCategory.OST_ElectricalFixtures,
+            BuiltInCategory.OST_ConduitFitting,
+            BuiltInCategory.OST_DataDevices,
+            BuiltInCategory.OST_CommunicationDevices,
+            BuiltInCategory.OST_MechanicalEquipment,
+            BuiltInCategory.OST_SpecialityEquipment,
+        ]
+
+        # ── 1. Varrer elementos ──────────────────────────────────────────
+        mapa = {}  # display_name → acumulador
+        for bic in READ_CATS:
+            try:
+                for el in FilteredElementCollector(self._doc).OfCategory(bic).WhereElementIsNotElementType():
+                    try:
+                        sym = el.Symbol
+                        fam_name  = u""
+                        type_name = u""
+                        try:
+                            fam_name = sym.Family.Name
+                        except:
+                            pass
+                        try:
+                            type_name = sym.Name
+                        except:
+                            pass
+                        if not fam_name:
+                            try:
+                                fam_name = el.Name
+                            except:
+                                fam_name = u"ID_{}".format(el.Id.IntegerValue)
+
+                        display = u"{} : {}".format(fam_name, type_name) if type_name else fam_name
+
+                        if display not in mapa:
+                            mapa[display] = {
+                                "instances":     [],
+                                "tipo_carga":    u"",
+                                "potencia_soma": 0.0,
+                                "potencia_count": 0,
+                            }
+                        mapa[display]["instances"].append(el)
+
+                        # Tipo de carga (pega do primeiro que tiver)
+                        if not mapa[display]["tipo_carga"]:
+                            try:
+                                p = el.LookupParameter(u"Tipo de Carga")
+                                if p and p.HasValue:
+                                    mapa[display]["tipo_carga"] = (p.AsString() or u"").strip()
+                            except:
+                                pass
+                    except:
+                        pass
+            except:
+                pass
+
+        if not mapa:
+            forms.alert(
+                u"Nenhum elemento elétrico encontrado no projeto atual.",
+                title=u"Ler Projeto"
+            )
+            return
+
+        # ── 2. Enriquecer com dados de circuito ──────────────────────────
+        # Cache de circuitos já processados {circuit.Id → info_dict}
+        circuit_cache = {}
+
+        for display, entry in mapa.items():
+            circuit_infos = []  # pode ter vários circuitos para a mesma família
+
+            for el in entry["instances"]:
+                ci = _read_circuit_info(el, self._doc, circuit_cache)
+                if ci:
+                    circuit_infos.append(ci)
+
+            if not circuit_infos:
+                continue
+
+            # Potência individual: média das potências calculadas por circuito
+            pots = [c["potencia_individual"] for c in circuit_infos if c["potencia_individual"] > 0]
+            if pots:
+                entry["potencia_media"] = sum(pots) / len(pots)
+            else:
+                entry["potencia_media"] = 0.0
+
+            # Descrição e nome de circuito: usa o mais frequente
+            from collections import Counter as _Counter
+            descs = [c["descricao"] for c in circuit_infos if c["descricao"]]
+            nomes = [c["nome"]     for c in circuit_infos if c["nome"]]
+            entry["circuito_descricao"] = _Counter(descs).most_common(1)[0][0] if descs else u""
+            entry["circuito_nome"]      = _Counter(nomes).most_common(1)[0][0] if nomes else u""
+
+        # ── 3. Montar profile dict ───────────────────────────────────────
+        profile_data = {}
+        for display, entry in sorted(mapa.items()):
+            pot = entry.get("potencia_media", 0.0)
+            pot_str = u"{:.0f}".format(pot) if pot > 0 else u""
+            profile_data[display] = {
+                "tipo_carga":          entry.get("tipo_carga", u""),
+                "ponto_eletrico":      display,
+                "ponto_dados":         u"",
+                "potencia":            pot_str,
+                "circuito_descricao":  entry.get("circuito_descricao", u""),
+                "circuito_nome":       entry.get("circuito_nome", u""),
+                "qtd_encontrados":     len(entry["instances"]),
+            }
+
+        # ── 4. Resumo e salvar ───────────────────────────────────────────
+        total = len(profile_data)
+        com_pot = sum(1 for v in profile_data.values() if v["potencia"])
+        com_circ = sum(1 for v in profile_data.values() if v["circuito_descricao"])
+
+        msg = (
+            u"Leitura concluída!\n\n"
+            u"  Tipos encontrados:       {}\n"
+            u"  Com potência calculada:  {}\n"
+            u"  Com descrição de circuito: {}\n\n"
+            u"Deseja salvar como perfil?"
+        ).format(total, com_pot, com_circ)
+
+        if not forms.alert(msg, title=u"Ler Projeto", yes=True, no=True):
+            return
+
+        name = forms.ask_for_string(
+            prompt=u"Nome do perfil:",
+            title=u"Salvar Perfil Lido",
+            default=u"Lido do Projeto"
+        )
+        if not name:
+            return
+        name = _safe_filename(name)
+
+        if _save_profile(name, profile_data):
+            self._refresh_profiles()
+            for i in range(self.cb_Profile.Items.Count):
+                if str(self.cb_Profile.Items[i]) == name:
+                    self.cb_Profile.SelectedIndex = i
+                    break
+            forms.toast(
+                u"Perfil '{}' gerado com {} tipo(s)!".format(name, total)
+            )
+        else:
+            forms.alert(u"Erro ao salvar o perfil.", title=u"Ler Projeto")
+
+    def _find_profile_entry(self, display):
+        """Busca entrada no perfil: exato → por família (antes do ' : ')."""
+        disp_low = display.lower()
+        for k, v in self._profile.items():
+            if k.lower() == disp_low:
+                return v
+        fam_part = display.split(u" : ")[0].strip().lower()
+        for k, v in self._profile.items():
+            if k.split(u" : ")[0].strip().lower() == fam_part:
+                return v
+        return None
+
+    def _apply_profile_to_rows(self):
+        for row in self._family_rows:
+            entry = self._find_profile_entry(row.get("display", u""))
+            if entry:
+                self._apply_entry_to_row(row, entry)
+
+    def _apply_entry_to_row(self, row, entry):
+        # tipo_carga
+        tc = entry.get("tipo_carga", u"")
+        if tc:
+            items = list(row["c_load"].ItemsSource or [])
+            matched = False
+            for i, item in enumerate(items):
+                if str(item).lower() == tc.lower():
+                    row["c_load"].SelectedIndex = i
+                    matched = True
+                    break
+            if not matched:
+                row["c_load"].Text = tc
+
+        # ponto_eletrico
+        pe = entry.get("ponto_eletrico", u"")
+        if pe:
+            elec_list = row.get("elec_sym_list", self._elec_symbols)
+            matched = False
+            for i, sym in enumerate(elec_list):
+                if (sym["display"].lower() == pe.lower() or
+                        sym.get("full_name", "").lower() == pe.lower()):
+                    row["c_elec"].SelectedIndex = i + 1
+                    matched = True
+                    break
+            if not matched:
+                row["c_elec"].Text = pe
+
+        # ponto_dados
+        pd_val = entry.get("ponto_dados", u"")
+        if pd_val:
+            data_list = row.get("dados_sym_list", self._data_symbols)
+            matched = False
+            for i, sym in enumerate(data_list):
+                if (sym["display"].lower() == pd_val.lower() or
+                        sym.get("full_name", "").lower() == pd_val.lower()):
+                    row["c_dados"].SelectedIndex = i + 1
+                    matched = True
+                    break
+            if not matched:
+                row["c_dados"].Text = pd_val
+
+        # potencia
+        pot = entry.get("potencia", u"")
+        if pot:
+            row["t_pow"].Text = pot
+
+    # ── Scan ────────────────────────────────────────────────────────────
 
     def _on_scan(self, sender, args):
         idx = self.cb_Link.SelectedIndex
@@ -657,6 +1323,11 @@ class PontosVinculoWindow(forms.WPFWindow):
 
         for key in sorted(mapa.keys()):
             row = self._build_row(mapa[key])
+            # Aplica perfil carregado (se houver) antes de exibir a linha
+            if self._profile:
+                entry = self._find_profile_entry(mapa[key]["display"])
+                if entry:
+                    self._apply_entry_to_row(row, entry)
             self.sp_Families.Children.Add(row["grid"])
             self._family_rows.append(row)
 
@@ -801,12 +1472,15 @@ class PontosVinculoWindow(forms.WPFWindow):
         Grid.SetColumn(c_load, 3)
 
         # ComboBox — Ponto Elétrico
-        elec_default = self._find_match_idx(fam["display"], self._elec_symbols)
-        c_elec = self._make_editable_combo(self._elec_symbols, elec_default)
+        use_face_now = (self.chk_FacePlacement.IsChecked == True)
+        active_elec  = self._elec_face_symbols if use_face_now else self._elec_symbols
+        active_data  = self._data_face_symbols if use_face_now else self._data_symbols
+        elec_default = self._find_match_idx(fam["display"], active_elec)
+        c_elec = self._make_editable_combo(active_elec, elec_default)
         Grid.SetColumn(c_elec, 4)
 
         # ComboBox — Ponto de Dados
-        c_dados = self._make_editable_combo(self._data_symbols, 0)
+        c_dados = self._make_editable_combo(active_data, 0)
         Grid.SetColumn(c_dados, 5)
 
         # TextBox — Potência (VA)
@@ -832,7 +1506,10 @@ class PontosVinculoWindow(forms.WPFWindow):
             "c_dados": c_dados,
             "t_pow": t_pow,
             "instances": fam["instances"],
+            "display": fam["display"],
             "is_non_electric": _is_non_electric_smart(fam["display"], fam.get("std_cat", "")),
+            "elec_sym_list":   active_elec,
+            "dados_sym_list":  active_data,
         }
 
     def _on_place(self, sender, args):
@@ -840,8 +1517,8 @@ class PontosVinculoWindow(forms.WPFWindow):
         for r in self._family_rows:
             if not r["cb"].IsChecked:
                 continue
-            elec_sym  = self._get_symbol_from_combo(r["c_elec"],  self._elec_symbols)
-            dados_sym = self._get_symbol_from_combo(r["c_dados"], self._data_symbols)
+            elec_sym  = self._get_symbol_from_combo(r["c_elec"],  r.get("elec_sym_list",  self._elec_symbols))
+            dados_sym = self._get_symbol_from_combo(r["c_dados"], r.get("dados_sym_list", self._data_symbols))
             if not elec_sym and not dados_sym:
                 continue
             lc_idx = r["c_load"].SelectedIndex
@@ -875,6 +1552,20 @@ class PontosVinculoWindow(forms.WPFWindow):
 
             levels = list(FilteredElementCollector(_doc).OfClass(Level))
 
+            # ── Face-based placement setup ──
+            use_face = (self.chk_FacePlacement.IsChecked == True)
+            ri = None
+            if use_face:
+                view3d = _get_3d_view(_doc)
+                if view3d:
+                    wall_filter = ElementCategoryFilter(BuiltInCategory.OST_Walls)
+                    ri = ReferenceIntersector(wall_filter, FindReferenceTarget.Face, view3d)
+                    ri.FindReferencesInRevitLinks = True
+                    dbg.debug("ReferenceIntersector criado (inclui vínculos).")
+                else:
+                    dbg.warn("Posicionar na face: nenhuma vista 3D disponível — usando placement normal.")
+                    use_face = False
+
             # Ativar todos os símbolos necessários e regenerar UMA VEZ antes de criar instâncias.
             # Revit exige Regenerate() após Activate() — sem isso NewFamilyInstance falha silenciosamente.
             any_activated = False
@@ -894,8 +1585,6 @@ class PontosVinculoWindow(forms.WPFWindow):
             #   +0.15 m em X (15 cm lateral) →  em pés: +0.15 / 0.3048
             DADOS_OFFSET_Z = -0.10 / 0.3048
             DADOS_OFFSET_X = +0.15 / 0.3048
-
-            from Autodesk.Revit.DB import XYZ
 
             placed_count = 0
             power_ok = 0
@@ -935,17 +1624,82 @@ class PontosVinculoWindow(forms.WPFWindow):
                     # ── Ponto Elétrico ──
                     new_elec = None
                     if item["elec_sym"]:
-                        try:
-                            new_elec = _doc.Create.NewFamilyInstance(
-                                pt, item["elec_sym"], lvl, StructuralType.NonStructural
-                            )
+                        placed   = False
+                        face_ref = None
+                        face_pt  = None
+                        face_dir = None
+
+                        if use_face and ri and not _is_luminaire_sym(item["elec_sym"]):
+                            try:
+                                face_ref, face_pt, face_dir = self._find_nearest_wall_face(ri, pt)
+                            except:
+                                pass
+
+                            if face_ref and face_pt:
+                                # Camada 1: face hosting oficial
+                                try:
+                                    new_elec = _doc.Create.NewFamilyInstance(
+                                        face_ref, face_pt, XYZ(0, 0, 1), item["elec_sym"]
+                                    )
+                                    placed = True
+                                    dbg.debug("  [L1-face] inst.Id={}".format(inst.Id))
+                                except Exception as ex:
+                                    dbg.debug("  [L1] falhou: {} — tentando L2".format(ex))
+
+                                # Camada 2: posição na face + rotação (sem face hosting)
+                                if not placed:
+                                    try:
+                                        new_elec = _doc.Create.NewFamilyInstance(
+                                            face_pt, item["elec_sym"], lvl, StructuralType.NonStructural
+                                        )
+                                        placed = True
+                                        dbg.debug("  [L2-pos] inst.Id={}".format(inst.Id))
+                                        if face_dir:
+                                            try:
+                                                _doc.Regenerate()
+                                                outward = XYZ(-face_dir.X, -face_dir.Y, 0)
+                                                facing  = new_elec.FacingOrientation
+                                                if facing and facing.GetLength() > 1e-6:
+                                                    import math as _math
+                                                    angle = facing.AngleTo(outward)
+                                                    cross = facing.CrossProduct(outward)
+                                                    if cross.Z < 0:
+                                                        angle = -angle
+                                                    if abs(angle) > 1e-6:
+                                                        axis = Line.CreateBound(
+                                                            face_pt,
+                                                            XYZ(face_pt.X, face_pt.Y, face_pt.Z + 1)
+                                                        )
+                                                        ElementTransformUtils.RotateElement(
+                                                            _doc, new_elec.Id, axis, angle
+                                                        )
+                                                        dbg.debug("  rot {:.1f}°".format(
+                                                            _math.degrees(abs(angle))
+                                                        ))
+                                            except Exception as rot_ex:
+                                                dbg.debug("  rotação falhou: {}".format(rot_ex))
+                                    except Exception as ex:
+                                        dbg.warn("  [L2] falhou inst.Id={}: {}".format(inst.Id, ex))
+                            else:
+                                dbg.debug("  sem parede próxima inst.Id={}".format(inst.Id))
+
+                        # Camada 3: placement normal (luminária, sem face ou tudo falhou)
+                        if not placed:
+                            try:
+                                new_elec = _doc.Create.NewFamilyInstance(
+                                    pt, item["elec_sym"], lvl, StructuralType.NonStructural
+                                )
+                                placed = True
+                            except Exception as ex:
+                                dbg.warn("  [L3] falhou inst.Id={}: {}".format(inst.Id, ex))
+
+                        if placed:
                             placed_count += 1
+                        if new_elec:
                             if item["pow"]:
                                 power_elements.append((new_elec, item["pow"]))
                             if item.get("load_classification"):
                                 _set_load_classification(new_elec, item["load_classification"])
-                        except Exception as ex:
-                            dbg.warn("  elétrico falhou inst.Id={}: {}".format(inst.Id, ex))
 
                     # ── Ponto de Dados (independente do elétrico) ──
                     if item["dados_sym"]:

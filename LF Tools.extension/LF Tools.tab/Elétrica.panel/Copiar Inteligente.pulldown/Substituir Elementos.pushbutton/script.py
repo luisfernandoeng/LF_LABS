@@ -22,7 +22,7 @@ import os
 from Autodesk.Revit.DB import (
     FilteredElementCollector, Transaction, ElementSet, ElementId,
     FamilyInstance, FamilySymbol, BuiltInCategory, BuiltInParameter,
-    LocationPoint, StorageType, XYZ, Line
+    LocationPoint, StorageType, XYZ, Line, ConnectorType
 )
 from Autodesk.Revit.DB.Electrical import ElectricalSystem
 from Autodesk.Revit.UI import TaskDialog, TaskDialogCommonButtons
@@ -200,8 +200,100 @@ def transfer_extra_params(src_elem, dst_elem, logs):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# MOTOR DE CIRCUITO
+# MOTOR DE CIRCUITO E CONEXÕES
 # ═══════════════════════════════════════════════════════════════════════
+
+def get_physical_connections(elem):
+    """
+    Retorna lista com os conectores conectados fisicamente (conduítes, eletrocalhas).
+    """
+    connections = []
+    try:
+        cm = None
+        if hasattr(elem, 'MEPModel') and elem.MEPModel:
+            cm = elem.MEPModel.ConnectorManager
+        elif hasattr(elem, 'ConnectorManager'):
+            cm = elem.ConnectorManager
+            
+        if cm:
+            for conn in cm.Connectors:
+                if conn.IsConnected:
+                    refs = []
+                    for ref in conn.AllRefs:
+                        try:
+                            # Ignora conexão lógica (circuitos) ou do próprio elemento
+                            if ref.ConnectorType == ConnectorType.Logical:
+                                continue
+                            if ref.Owner.Id != elem.Id:
+                                refs.append(ref)
+                        except Exception:
+                            continue
+                    
+                    if refs:
+                        connections.append({
+                            'old_conn': conn,
+                            'domain': conn.Domain,
+                            'origin': conn.Origin,
+                            'refs': refs
+                        })
+    except Exception as e:
+        dbg.warn("Erro ao coletar conexões físicas: {}".format(e))
+    return connections
+
+
+def restore_physical_connections(new_elem, connections, logs):
+    """
+    Tenta reconectar os conduítes e eletrocalhas ao novo elemento.
+    """
+    if not connections:
+        return
+        
+    try:
+        cm = None
+        if hasattr(new_elem, 'MEPModel') and new_elem.MEPModel:
+            cm = new_elem.MEPModel.ConnectorManager
+        elif hasattr(new_elem, 'ConnectorManager'):
+            cm = new_elem.ConnectorManager
+            
+        if not cm:
+            return
+            
+        # Converter ConnectorSet para lista Python
+        new_conns = []
+        for c in cm.Connectors:
+            new_conns.append(c)
+        
+        for old_c in connections:
+            best_match = None
+            min_dist = float('inf')
+            
+            # Encontra o conector mais próximo do novo elemento que tenha o mesmo domínio
+            for nc in new_conns:
+                if nc.Domain == old_c['domain']:
+                    dist = nc.Origin.DistanceTo(old_c['origin'])
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_match = nc
+                        
+            if best_match:
+                new_conns.remove(best_match)
+                
+                # Desconecta os antigos e conecta ao novo
+                for ref in old_c['refs']:
+                    try:
+                        # Tenta desconectar o antigo primeiro para liberar o ref
+                        try:
+                            old_c['old_conn'].DisconnectFrom(ref)
+                        except Exception:
+                            pass
+                            
+                        best_match.ConnectTo(ref)
+                        logs.append("  🔗 Conexão com conduíte/eletrocalha restaurada")
+                    except Exception as e:
+                        logs.append("  ⚠️ Falha ao reconectar conduíte/eletrocalha: {}".format(e))
+    except Exception as e:
+        logs.append("  ⚠️ Erro ao restaurar conexões físicas: {}".format(e))
+
 
 def find_circuit(elem):
     """
@@ -411,6 +503,9 @@ def replace_element(src_elem, new_symbol, logs):
     snap = get_snapshot(src_elem)
     circuit = snap['circuit']
 
+    # Capturar conexões físicas antes de deletar
+    phys_conns = get_physical_connections(src_elem)
+
     logs.append("📍 Localização: X={:.1f} Y={:.1f} Z={:.1f} | Rot: {:.2f}°".format(
         (snap['xyz'].X * 304.8) if snap['xyz'] else 0,
         (snap['xyz'].Y * 304.8) if snap['xyz'] else 0,
@@ -437,6 +532,11 @@ def replace_element(src_elem, new_symbol, logs):
     transfer_shared_params(src_elem, new_inst, logs)
     # Parâmetros extras
     transfer_extra_params(src_elem, new_inst, logs)
+
+    # Fase B.5: Restaurar conexões físicas
+    if phys_conns:
+        dbg.step("Restaurando conexões físicas")
+        restore_physical_connections(new_inst, phys_conns, logs)
 
     # Fase C: Reconexão ao circuito
     if circuit:

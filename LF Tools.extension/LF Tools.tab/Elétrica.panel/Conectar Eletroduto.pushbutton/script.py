@@ -85,6 +85,7 @@ def __get_family_name__(obj):
 def load_config():
     return get_script_config(__commandpath__, defaults={
         'selection_mode':        'conector',
+        'multi_select':          False,
         'angle_mode_plan':       '90',
         'angle_mode_vertical':   '90',
         'conduit_type_plan':     '',
@@ -126,6 +127,8 @@ class SettingsWindow(object):
         self.cb_type_vert  = self.win.FindName("cb_type_vert")
 
         # Aba Geral
+        self.rb_qtd_2        = self.win.FindName("rb_qtd_2")
+        self.rb_qtd_multi    = self.win.FindName("rb_qtd_multi")
         self.rb_sel_conector = self.win.FindName("rb_sel_conector")
         self.rb_sel_caixa    = self.win.FindName("rb_sel_caixa")
         self.tb_diameter     = self.win.FindName("tb_diameter")
@@ -172,6 +175,11 @@ class SettingsWindow(object):
         else:
             self.cb_type_vert.SelectedIndex = 0
 
+        multi = self.settings.get('multi_select', False)
+        if self.rb_qtd_multi:
+            self.rb_qtd_multi.IsChecked = multi
+            if self.rb_qtd_2: self.rb_qtd_2.IsChecked = not multi
+
         # Modo seleção
         mode = self.settings.get('selection_mode', 'conector')
         self.rb_sel_conector.IsChecked = (mode == 'conector')
@@ -209,6 +217,8 @@ class SettingsWindow(object):
         sel_vert = self.cb_type_vert.SelectedItem
         self.settings['conduit_type_vertical'] = sel_vert if sel_vert else ''
 
+        if self.rb_qtd_multi:
+            self.settings['multi_select'] = bool(self.rb_qtd_multi.IsChecked)
         self.settings['selection_mode']   = 'caixa' if self.rb_sel_caixa.IsChecked else 'conector'
         self.settings['default_diameter'] = self.tb_diameter.Text or ''
         self.settings['service_type']     = self.tb_service.Text or ''
@@ -1181,21 +1191,94 @@ def execute_connection():
     use_connector_mode = (settings.get('selection_mode', 'conector') == 'conector')
     dbg.info("Modo de seleção: {}".format("conector" if use_connector_mode else "caixa"))
 
-    # ── Seleção ──────────────────────────────────────────────────
-    dbg.section("Fase 1: Seleção")
-    pt_click1 = pt_click2 = None
-    if use_connector_mode:
-        el1, pt_click1, el2, pt_click2 = pick_elements_with_points()
+
+    # ── Fase 1: Seleção em Lote ou Par ────────────────────────────
+    multi_select = settings.get('multi_select', False)
+    picked_elements = []
+    points_list = []
+    
+    if multi_select:
+        use_connector_mode = False  # Força seleção automática
+        selected_ids = list(uidoc.Selection.GetElementIds())
+        if selected_ids:
+            for eid in selected_ids:
+                el = doc.GetElement(eid)
+                if el: picked_elements.append(el)
+        else:
+            try:
+                refs = uidoc.Selection.PickObjects(ObjectType.Element, "Selecione os elementos a conectar em lote")
+                for ref in refs:
+                    el = doc.GetElement(ref)
+                    if el: picked_elements.append(el)
+            except OperationCanceledException:
+                pass
+                
+        if len(picked_elements) < 2: return
+        
+        def sort_by_proximity(elements):
+            if len(elements) <= 2: return elements
+            pts = {}
+            for el in elements:
+                conns = get_connectors(el)
+                if conns: pts[el.Id] = conns[0].Origin
+                else: pts[el.Id] = el.Location.Point if hasattr(el.Location, 'Point') else XYZ.Zero
+            max_d = -1
+            start_el = elements[0]
+            for e1 in elements:
+                for e2 in elements:
+                    if e1.Id != e2.Id:
+                        d = pts[e1.Id].DistanceTo(pts[e2.Id])
+                        if d > max_d: max_d, start_el = d, e1
+            sorted_els = [start_el]
+            remaining = [e for e in elements if e.Id != start_el.Id]
+            current = start_el
+            while remaining:
+                closest, min_d = None, float('inf')
+                for r in remaining:
+                    d = pts[current.Id].DistanceTo(pts[r.Id])
+                    if d < min_d: min_d, closest = d, r
+                sorted_els.append(closest)
+                remaining.remove(closest)
+                current = closest
+            return sorted_els
+            
+        picked_elements = sort_by_proximity(picked_elements)
+        points_list = [None] * len(picked_elements)
     else:
-        el1, el2 = pick_elements_automatic()
+        if use_connector_mode:
+            el1, pt_click1, el2, pt_click2 = pick_elements_with_points()
+            if el1 and el2:
+                picked_elements = [el1, el2]
+                points_list = [pt_click1, pt_click2]
+        else:
+            el1, el2 = pick_elements_automatic()
+            if el1 and el2:
+                picked_elements = [el1, el2]
+                points_list = [None, None]
+        if len(picked_elements) < 2:
+            dbg.info("Seleção cancelada.")
+            return
 
-    if not el1 or not el2:
-        dbg.info("Seleção cancelada.")
-        return
+    tg = TransactionGroup(doc, "Conectar Eletrodutos em Lote")
+    tg.Start()
+    try:
+        for i in range(len(picked_elements) - 1):
+            el1 = picked_elements[i]
+            el2 = picked_elements[i+1]
+            pt1 = points_list[i]
+            pt2 = points_list[i+1]
+            same_box = (el1.Id == el2.Id)
+            
+            dbg.section("Processando Par {}/{}".format(i+1, len(picked_elements)-1))
+            _process_pair(el1, el2, pt1, pt2, same_box, use_connector_mode, settings)
+            
+        tg.Assimilate()
+    except Exception as e:
+        tg.RollBack()
+        raise e
 
-    same_box = (el1.Id == el2.Id)
-    dbg.info("el1.Id={}  el2.Id={}  same_box={}".format(el1.Id, el2.Id, same_box))
-
+def _process_pair(el1, el2, pt_click1, pt_click2, same_box, use_connector_mode, settings):
+    global uidoc, doc, dbg
     def _is_cabletray(el):
         try:
             if el and hasattr(el, "Category") and el.Category:
@@ -1210,7 +1293,7 @@ def execute_connection():
     if ct1 and ct2:
         forms.alert(u"Selecione uma eletrocalha/perfilado e um ponto elétrico — não dois percursos.",
                     title="Conectar Eletroduto")
-        return
+        return False
     if ct1 or ct2:
         cable_tray_el    = el1 if ct1 else el2
         cable_tray_click = (pt_click1 if ct1 else pt_click2)
@@ -1224,7 +1307,7 @@ def execute_connection():
             except Exception:
                 forms.alert(u"Use o modo 'Conector' (Shift+Click → Configurações) para clicar no ponto exato da eletrocalha.",
                             title="Conectar Eletroduto")
-                return
+                return False
         # Parâmetros de eletroduto (versão simplificada de Fase 3)
         _ct_level_id = cable_tray_el.LevelId
         if _ct_level_id == ElementId.InvalidElementId:
@@ -1254,7 +1337,7 @@ def execute_connection():
             doc, settings, cable_tray_el, cable_tray_click, other_el, other_click,
             use_connector_mode, _ct_conduit_id, _ct_diam, _ct_level_id, _ct_last_ref
         )
-        return
+        return False
 
     # ── Conectores ────────────────────────────────────────────────
     dbg.section("Fase 2: Conectores")
@@ -1263,14 +1346,14 @@ def execute_connection():
             conns = get_connectors(el1)
             if len(conns) < 2:
                 TaskDialog.Show("Erro", "Caixa precisa ter pelo menos 2 conectores.")
-                return
+                return False
             conn1 = min(conns, key=lambda c: c.Origin.DistanceTo(pt_click1))
             remaining = [c for c in conns if not c.Origin.IsAlmostEqualTo(conn1.Origin)]
             if remaining:
                 conn2 = min(remaining, key=lambda c: c.Origin.DistanceTo(pt_click2))
             else:
                 TaskDialog.Show("Erro", "Não foi possível identificar um segundo conector diferente.")
-                return
+                return False
         else:
             conn1, conn2 = find_symmetric_connector_pair(el1, pt_click1, el2, pt_click2)
     else:
@@ -1281,7 +1364,7 @@ def execute_connection():
 
     if not conn1 or not conn2:
         forms.alert("Não foi possível encontrar conectores para iniciar o traçado.", title="Erro")
-        return
+        return False
 
     pt1  = conn1.Origin
     pt2  = conn2.Origin

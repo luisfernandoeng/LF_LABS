@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Inicializa o AutoSave assim que o Revit abre."""
+"""Inicializa o AutoSave e aplica as abas ocultas assim que o Revit abre."""
 
 import os
 import sys
@@ -31,4 +31,16 @@ try:
 
 except Exception:
     # Nunca deixa o startup quebrar o carregamento da extensão
+    pass
+
+# ── Ocultar abas do Revit ──────────────────────────────────────────────────
+try:
+    from pyrevit import script as _script
+    from pyrevit.runtime import types as _types
+
+    _cfg = _script.get_config('lf_hidden_tabs')
+    _hidden = _cfg.get_option('hidden_tabs', [])
+    if _hidden:
+        _types.RibbonTabVisibilityUtils.StartHidingTabs(_hidden)
+except Exception:
     pass

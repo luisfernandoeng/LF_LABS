@@ -28,57 +28,85 @@ import traceback
 #  DEBUG LOGGER
 # =============================================================================
 
+class _DebugCtx(object):
+    """Context manager retornado por DebugLogger.ctx(). Não instanciar diretamente."""
+
+    def __init__(self, logger, label):
+        self._logger = logger
+        self._label  = label
+        self._t0     = None
+
+    def __enter__(self):
+        self._t0 = time.time()
+        if self._logger.enabled:
+            self._logger._print("", u"  {} >> {}".format(self._logger._SUB[:20], self._label))
+        return self
+
+    def __exit__(self, exc_type, _exc_val, _exc_tb):
+        elapsed = time.time() - (self._t0 or time.time())
+        if self._logger.enabled:
+            status = u"ERRO" if exc_type else u"ok"
+            self._logger._print(
+                "[TIMER]",
+                u"<< {} — {:.3f}s [{}]".format(self._label, elapsed, status)
+            )
+        return False  # não suprime exceções
+
+
 class DebugLogger(object):
     """
     Logger de debug para scripts pyRevit.
-    Controlado pela flag DEBUG_MODE no topo de cada script.
+    Controlado pela flag DEBUG_MODE no topo de cada script ou por checkbox na UI.
 
-    Uso:
+    Uso básico:
         dbg = DebugLogger(DEBUG_MODE)
-        dbg.section("Iniciando conexão")
-        dbg.info("Elemento encontrado: {}".format(el.Id))
-        dbg.warn("Nenhum conector disponível")
-        dbg.timer_start("busca")
-        # ... código ...
-        dbg.timer_end("busca")
-        dbg.result(True, "Conectado com sucesso")
+        dbg.section("Iniciando")
+        dbg.info("Elemento: {}".format(el.Id))
+        dbg.warn("Sem conector")
+        dbg.exc("Falhou ao criar", e)   # traceback completo
+        dbg.var("elemento", el)         # nome + repr + tipo
+        with dbg.ctx("Busca de pontos"): # timing automático
+            ...
 
     Métodos:
-      dbg.section(titulo)    — separador visual de seção
-      dbg.sub(titulo)        — sub-separador
-      dbg.info(msg)          — informação geral
-      dbg.debug(msg)         — detalhe técnico
-      dbg.warn(msg)          — aviso (sempre impresso, mesmo com enabled=False)
-      dbg.error(msg)         — erro  (sempre impresso, mesmo com enabled=False)
-      dbg.dump(label, obj)   — despeja repr de um objeto
-      dbg.xyz(label, pt)     — imprime coordenadas XYZ (ponto Revit ou tupla)
-      dbg.table(headers, rows) — imprime tabela formatada
-      dbg.timer_start(label) — inicia cronômetro nomeado
-      dbg.timer_end(label)   — encerra e imprime tempo decorrido
-      dbg.result(ok, msg)    — OK/FAIL visual
-      dbg.sep()              — linha separadora simples
+      dbg.section(titulo)      — separador visual de seção
+      dbg.sub(titulo)          — sub-separador
+      dbg.info(msg)            — informação geral
+      dbg.debug(msg)           — detalhe técnico
+      dbg.warn(msg)            — aviso (sempre impresso)
+      dbg.error(msg)           — erro (sempre impresso)
+      dbg.exc(msg, e=None)     — exceção com traceback completo (sempre impresso)
+      dbg.var(name, value)     — imprime nome = repr(value) [tipo]
+      dbg.dump(label, obj)     — despeja repr de um objeto
+      dbg.xyz(label, pt)       — coordenadas XYZ (ponto Revit ou tupla)
+      dbg.table(headers, rows) — tabela formatada
+      dbg.timer_start(label)   — inicia cronômetro nomeado
+      dbg.timer_end(label)     — encerra e imprime tempo
+      dbg.ctx(label)           — context manager com timing automático
+      dbg.result(ok, msg)      — OK/FAIL visual
+      dbg.sep()                — linha separadora simples
     """
 
     _SECTION = "=" * 60
     _SUB     = "-" * 40
 
-    def __init__(self, enabled=False, log_func=None):
-        self.enabled  = bool(enabled)
-        self._timers  = {}
-        self.log_func = log_func
+    def __init__(self, enabled=False, log_func=None, timestamps=False):
+        self.enabled     = bool(enabled)
+        self._timers     = {}
+        self.log_func    = log_func
+        self._timestamps = bool(timestamps)
 
     def _print(self, prefix, msg):
         import sys
-        line = "{} {}".format(prefix, msg) if prefix else str(msg)
-        
-        # Se houver uma função de log customizada (ex: log da UI), usa ela
+        ts = time.strftime("[%H:%M:%S] ") if self._timestamps else ""
+        line = u"{}{}{}".format(ts, prefix + " " if prefix else "", msg)
+
         if self.log_func:
             try:
                 self.log_func(line)
             except:
                 pass
-        
-        # Sempre tenta imprimir no console padrão para garantir visibilidade no output do pyRevit
+
         try:
             print(line)
         except Exception:
@@ -172,6 +200,35 @@ class DebugLogger(object):
         if self.enabled:
             tag = "[  OK ]" if ok else "[FAIL ]"
             self._print(tag, msg)
+
+    def exc(self, msg, e=None):
+        """Sempre impresso. Mostra mensagem + traceback completo da exceção atual ou de `e`."""
+        self._print("[EXCEP]", msg)
+        tb_str = ""
+        try:
+            tb_str = traceback.format_exc()
+        except Exception:
+            pass
+        if not tb_str or tb_str.strip() == "None":
+            tb_str = repr(e) if e is not None else ""
+        if tb_str:
+            for line in tb_str.splitlines():
+                if line.strip():
+                    self._print("      |", line)
+
+    def var(self, name, value):
+        """Imprime: name = repr(value)  [tipo]. Útil para inspecionar variáveis."""
+        if not self.enabled:
+            return
+        try:
+            type_name = type(value).__name__
+            self._print("[VAR  ]", u"{} = {!r}  [{}]".format(name, value, type_name))
+        except Exception:
+            self._print("[VAR  ]", u"{} = <erro ao formatar>".format(name))
+
+    def ctx(self, label):
+        """Retorna context manager que imprime sub-seção + tempo decorrido ao sair."""
+        return _DebugCtx(self, label)
 
 
 # =============================================================================

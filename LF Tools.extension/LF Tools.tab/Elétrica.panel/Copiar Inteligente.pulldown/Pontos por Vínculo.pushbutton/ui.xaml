@@ -321,6 +321,7 @@
 
         <!-- ── CONFIGURAÇÃO ── -->
         <Border Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="16,12">
+            <StackPanel>
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>   <!-- label Vínculo -->
@@ -354,6 +355,38 @@
                           Style="{StaticResource ModernCheckBox}"
                           VerticalAlignment="Center" IsChecked="True"/>
             </Grid>
+
+            <Separator Margin="0,10,0,8"/>
+
+            <!-- Linha de Perfil -->
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="8"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="8"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="8"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0"
+                           Text="Perfil:" FontWeight="SemiBold"
+                           VerticalAlignment="Center" Margin="0,0,10,0"/>
+                <ComboBox x:Name="cb_Profile" Grid.Column="1" Height="30"/>
+                <Button x:Name="btn_LoadProfile" Grid.Column="3"
+                        Content="Carregar Perfil"
+                        Style="{StaticResource SecondaryActionButton}" Width="120"/>
+                <Button x:Name="btn_SaveProfile" Grid.Column="5"
+                        Content="Salvar Perfil"
+                        Style="{StaticResource SecondaryActionButton}" Width="110"/>
+                <Button x:Name="btn_ReadProject" Grid.Column="7"
+                        Content="&#128366; Ler Projeto"
+                        Style="{StaticResource SecondaryActionButton}" Width="120"
+                        ToolTip="Lê elementos elétricos do projeto atual e gera um perfil automaticamente"/>
+            </Grid>
+            </StackPanel>
         </Border>
 
         <!-- ── MAPEAMENTO DE NÍVEIS ── -->
@@ -419,30 +452,51 @@
 
         <!-- ── NÍVEL PADRÃO (fallback) ── -->
         <Border Grid.Row="8" Style="{StaticResource PanelBorder}" Padding="16,10">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="200"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="80"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0"
-                           Text="Nível padrão (famílias sem correspondência):"
-                           FontSize="12" Foreground="{StaticResource TextSecondary}"
-                           VerticalAlignment="Center" Margin="0,0,10,0"/>
-                <ComboBox x:Name="cb_DefaultLevel" Grid.Column="1"
-                          IsEditable="True" StaysOpenOnEdit="True"/>
-                <TextBlock Grid.Column="2"
-                           Text="Altura:" FontSize="12"
-                           Foreground="{StaticResource TextSecondary}"
-                           VerticalAlignment="Center" Margin="12,0,8,0"/>
-                <TextBox x:Name="tb_DefaultHeight" Grid.Column="3"
-                         Text="0,00" TextAlignment="Right"/>
-                <TextBlock Grid.Column="4" Text="m"
-                           FontSize="12" Foreground="{StaticResource TextSecondary}"
-                           VerticalAlignment="Center" Margin="6,0,0,0"/>
-            </Grid>
+            <StackPanel>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="200"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="80"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               Text="Nível padrão (famílias sem correspondência):"
+                               FontSize="12" Foreground="{StaticResource TextSecondary}"
+                               VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    <ComboBox x:Name="cb_DefaultLevel" Grid.Column="1"
+                              IsEditable="True" StaysOpenOnEdit="True"/>
+                    <TextBlock Grid.Column="2"
+                               Text="Altura:" FontSize="12"
+                               Foreground="{StaticResource TextSecondary}"
+                               VerticalAlignment="Center" Margin="12,0,8,0"/>
+                    <TextBox x:Name="tb_DefaultHeight" Grid.Column="3"
+                             Text="0,00" TextAlignment="Right"/>
+                    <TextBlock Grid.Column="4" Text="m"
+                               FontSize="12" Foreground="{StaticResource TextSecondary}"
+                               VerticalAlignment="Center" Margin="6,0,0,0"/>
+                </Grid>
+
+                <Separator Margin="0,8,0,6"/>
+
+                <!-- Opção: posicionar na face da parede -->
+                <CheckBox x:Name="chk_FacePlacement"
+                          Style="{StaticResource ModernCheckBox}"
+                          Margin="0,0,0,2">
+                    <CheckBox.Content>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Posicionar na face da parede"
+                                       VerticalAlignment="Center"/>
+                            <TextBlock Text="  (luminárias mantêm posicionamento normal)"
+                                       FontSize="11"
+                                       Foreground="{StaticResource TextMuted}"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </CheckBox.Content>
+                </CheckBox>
+
+            </StackPanel>
         </Border>
 
         <!-- ── BOTÕES ── -->
@@ -457,6 +511,10 @@
                         Style="{StaticResource SecondaryActionButton}" Margin="0,0,6,0"/>
                 <Button x:Name="btn_SelectNone" Content="Nenhum"
                         Style="{StaticResource SecondaryActionButton}"/>
+                <CheckBox x:Name="chk_Debug" Content="Debug"
+                          Style="{StaticResource ModernCheckBox}"
+                          VerticalAlignment="Center" Margin="20,0,0,0"
+                          Foreground="{StaticResource TextMuted}"/>
             </StackPanel>
 
             <StackPanel Orientation="Horizontal" Grid.Column="1">

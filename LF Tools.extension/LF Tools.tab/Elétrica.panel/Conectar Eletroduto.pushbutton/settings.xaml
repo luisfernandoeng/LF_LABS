@@ -165,6 +165,15 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto" Background="#F2F2F2">
                     <StackPanel Margin="4,6,4,10">
 
+                        <GroupBox Header="Quantidade de Elementos" Style="{StaticResource Gb}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource Hint}"
+                                    Text="Se 'Múltiplos', você seleciona vários e o script conecta em sequência por proximidade. Compatível apenas com o modo 'Caixa Inteira'."/>
+                                <RadioButton x:Name="rb_qtd_2"     Content="Apenas 2 elementos"/>
+                                <RadioButton x:Name="rb_qtd_multi" Content="Múltiplos elementos (Em lote)"/>
+                            </StackPanel>
+                        </GroupBox>
+
                         <GroupBox Header="Modo de Seleção" Style="{StaticResource Gb}">
                             <StackPanel>
                                 <TextBlock Style="{StaticResource Hint}"

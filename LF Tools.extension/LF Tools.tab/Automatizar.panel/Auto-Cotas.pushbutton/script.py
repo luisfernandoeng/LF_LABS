@@ -78,44 +78,48 @@ def get_element_curve(el):
 
 
 def get_element_reference(el):
-    """Obtém uma Reference geométrica válida para criar dimensão."""
+    """Obtém uma Reference geométrica válida para o eixo central do elemento."""
+    # 1. Grids
     if isinstance(el, RevitGrid):
         try: return Reference(el)
         except: pass
 
+    # 2. Famílias (Luminárias, Dispositivos, etc.) - Tenta planos centrais primeiro
+    if isinstance(el, FamilyInstance):
+        for ref_type in [FamilyInstanceReferenceType.CenterLeftRight, 
+                        FamilyInstanceReferenceType.CenterFrontBack,
+                        FamilyInstanceReferenceType.Left,
+                        FamilyInstanceReferenceType.Right]:
+            try:
+                refs = el.GetReferences(ref_type)
+                if refs: return refs[0]
+            except: pass
+
+    # 3. Curvas (Conduítes, Tubos, Dutos)
+    loc = el.Location
+    if isinstance(loc, LocationCurve):
+        try:
+            # Em Conduítes/Tubos, o Reference do elemento costuma ser o eixo
+            return Reference(el)
+        except: pass
+
+    # 4. Fallback: Geometria explícita
     opt = Options()
     opt.ComputeReferences = True
     opt.IncludeNonVisibleObjects = True
     opt.View = active_view
 
-    if isinstance(el, Wall):
-        try:
-            geom = el.get_Geometry(opt)
-            for obj in geom:
-                if hasattr(obj, 'Faces'):
-                    for face in obj.Faces:
-                        if face.Reference:
-                            return face.Reference
-        except: pass
-
     geom = el.get_Geometry(opt)
     if geom:
         for obj in geom:
-            if hasattr(obj, 'Reference') and obj.Reference:
-                return obj.Reference
+            # Tenta pegar referências de instâncias
             if hasattr(obj, 'GetInstanceGeometry'):
-                inst_geom = obj.GetInstanceGeometry()
-                for sub in inst_geom:
-                    if hasattr(sub, 'Reference') and sub.Reference:
-                        return sub.Reference
-                    if hasattr(sub, 'Faces'):
-                        for f in sub.Faces:
-                            if f.Reference: return f.Reference
-            if hasattr(obj, 'Faces'):
-                for face in obj.Faces:
-                    if face.Reference:
-                        return face.Reference
-
+                for sub in obj.GetInstanceGeometry():
+                    if hasattr(sub, 'Reference') and sub.Reference: return sub.Reference
+            # Tenta pegar referências diretas (linhas/faces)
+            if hasattr(obj, 'Reference') and obj.Reference: return obj.Reference
+            
+    # 5. Último recurso: Referência direta do elemento
     try: return Reference(el)
     except: pass
 
@@ -194,28 +198,32 @@ def create_individual_dimensions(elements, direction, offset_mm, dim_type=None, 
     view_normal = view.ViewDirection
     view_plane_depth = view.Origin.DotProduct(view_normal)
 
-    if direction == "horizontal":
-        if master_dir and abs(master_dir.DotProduct(view_up)) > 0.8:
-            master_dir = None
+    # Melhoria de Robustez: Força eixos puros se master_dir estiver quase alinhado
+    def _clean_dir(d):
+        if abs(d.DotProduct(view_right)) > 0.99: return view_right
+        if abs(d.DotProduct(view_up)) > 0.99:    return view_up
+        return d
 
-        sort_axis = master_dir if master_dir else view_right
+    if direction == "horizontal":
+        sort_axis = _clean_dir(master_dir) if master_dir else view_right
+        if abs(sort_axis.DotProduct(view_up)) > 0.5: # Inversão detectada
+             sort_axis = view_right
+             
         if sort_axis.DotProduct(view_right) < 0:
             sort_axis = sort_axis.Negate()
 
-        # BUG 1 FIX: perpendicular no plano da vista usando cross product com view_normal
-        # Funciona corretamente em plantas, cortes e elevações.
+        # Eixo perpendicular para o offset da cota
         offset_axis = view_normal.CrossProduct(sort_axis).Normalize()
         if offset_axis.DotProduct(view_up) < 0:
             offset_axis = offset_axis.Negate()
     else:
-        if master_dir and abs(master_dir.DotProduct(view_right)) > 0.8:
-            master_dir = None
+        sort_axis = _clean_dir(master_dir) if master_dir else view_up
+        if abs(sort_axis.DotProduct(view_right)) > 0.5: # Inversão detectada
+             sort_axis = view_up
 
-        sort_axis = master_dir if master_dir else view_up
         if sort_axis.DotProduct(view_up) < 0:
             sort_axis = sort_axis.Negate()
 
-        # BUG 1 FIX: mesmo cálculo para direção vertical
         offset_axis = view_normal.CrossProduct(sort_axis).Normalize()
         if offset_axis.DotProduct(view_right) < 0:
             offset_axis = offset_axis.Negate()

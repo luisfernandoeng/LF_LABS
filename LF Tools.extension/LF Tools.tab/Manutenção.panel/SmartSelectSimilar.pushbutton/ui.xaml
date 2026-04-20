@@ -1,56 +1,64 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Smart Select Similar" 
-        Height="760" 
-        Width="500"
+        Title="Smart Select Similar"
+        Height="720" Width="480"
+        MinHeight="520" MinWidth="400"
         WindowStartupLocation="CenterScreen"
-        Background="#FF0D0E12" 
-        Foreground="#FFF8FAFC"
-        FontFamily="Segoe UI" 
-        ShowInTaskbar="False" 
-        ResizeMode="NoResize"
+        Background="#FF0D0F14"
+        Foreground="#FFF1F5F9"
+        FontFamily="Segoe UI"
+        FontSize="13"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip"
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Display">
-    
-    <Window.Resources>
-        <SolidColorBrush x:Key="PanelColor" Color="#FF15171C"/>
-        <SolidColorBrush x:Key="BorderColor" Color="#FF2A2E39"/>
-        <SolidColorBrush x:Key="InputColor" Color="#FF0D0E12"/>
-        <SolidColorBrush x:Key="AccentTeal" Color="#FF5EEAD4"/>
-        <SolidColorBrush x:Key="TextPrimary" Color="#FFF8FAFC"/>
-        <SolidColorBrush x:Key="TextSecondary" Color="#FF94A3B8"/>
 
-        <Style x:Key="HeaderStyle" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="14"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Foreground" Value="{StaticResource AccentTeal}"/>
-            <Setter Property="Margin" Value="0,15,0,8"/>
-        </Style>
-        
+    <Window.Resources>
+
+        <!-- Cores base -->
+        <SolidColorBrush x:Key="BgBase"      Color="#FF0D0F14"/>
+        <SolidColorBrush x:Key="BgPanel"     Color="#FF161921"/>
+        <SolidColorBrush x:Key="BgInput"     Color="#FF1C2030"/>
+        <SolidColorBrush x:Key="BorderMuted" Color="#FF2A3040"/>
+        <SolidColorBrush x:Key="Teal"        Color="#FF5EEAD4"/>
+        <SolidColorBrush x:Key="TealDim"     Color="#FF2DD4BF"/>
+        <SolidColorBrush x:Key="TxtPrimary"  Color="#FFF1F5F9"/>
+        <SolidColorBrush x:Key="TxtMuted"    Color="#FF64748B"/>
+        <SolidColorBrush x:Key="TxtDim"      Color="#FF94A3B8"/>
+
+        <!-- CheckBox circular estilo toggle -->
         <Style TargetType="CheckBox">
-            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
-            <Setter Property="Margin" Value="0,4"/>
-            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Foreground"  Value="{StaticResource TxtPrimary}"/>
+            <Setter Property="Margin"      Value="0,3"/>
+            <Setter Property="Cursor"      Value="Hand"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="CheckBox">
-                        <Grid Background="Transparent">
+                        <Grid Background="Transparent" Margin="0,1">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="20"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <Border x:Name="CheckBorder" Width="18" Height="18" BorderThickness="1.5" BorderBrush="{StaticResource BorderColor}" CornerRadius="9" Margin="0,0,10,0" VerticalAlignment="Center" Background="Transparent">
-                                <Ellipse x:Name="CheckFill" Width="10" Height="10" Fill="Transparent"/>
+                            <Border x:Name="Box" Width="16" Height="16"
+                                    BorderThickness="1.5"
+                                    BorderBrush="{StaticResource BorderMuted}"
+                                    CornerRadius="8" VerticalAlignment="Center"
+                                    Background="Transparent">
+                                <Ellipse x:Name="Dot" Width="8" Height="8"
+                                         Fill="Transparent"/>
                             </Border>
-                            <ContentPresenter Grid.Column="1" VerticalAlignment="Center" Content="{TemplateBinding Content}"/>
+                            <ContentPresenter Grid.Column="1"
+                                              VerticalAlignment="Center"
+                                              Margin="2,0,0,0"/>
                         </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="CheckFill" Property="Fill" Value="{StaticResource AccentTeal}"/>
-                                <Setter TargetName="CheckBorder" Property="BorderBrush" Value="{StaticResource AccentTeal}"/>
+                                <Setter TargetName="Dot" Property="Fill"   Value="{StaticResource Teal}"/>
+                                <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource Teal}"/>
+                                <Setter TargetName="Box" Property="Background"  Value="#1A5EEAD4"/>
                             </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="CheckBorder" Property="BorderBrush" Value="{StaticResource AccentTeal}"/>
+                                <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource TealDim}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -58,30 +66,38 @@
             </Setter>
         </Style>
 
+        <!-- RadioButton idêntico ao CheckBox mas sem preenchimento de fundo -->
         <Style TargetType="RadioButton">
-            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
-            <Setter Property="Margin" Value="0,4"/>
-            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Foreground" Value="{StaticResource TxtPrimary}"/>
+            <Setter Property="Margin"     Value="0,3"/>
+            <Setter Property="Cursor"     Value="Hand"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="RadioButton">
                         <Grid Background="Transparent">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="20"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <Border x:Name="RadioBorder" Width="18" Height="18" BorderThickness="1.5" BorderBrush="{StaticResource BorderColor}" CornerRadius="9" Margin="0,0,10,0" VerticalAlignment="Center">
-                                <Ellipse x:Name="RadioDot" Width="8" Height="8" Fill="{StaticResource AccentTeal}" Visibility="Collapsed"/>
+                            <Border x:Name="Ring" Width="16" Height="16"
+                                    BorderThickness="1.5"
+                                    BorderBrush="{StaticResource BorderMuted}"
+                                    CornerRadius="8" VerticalAlignment="Center">
+                                <Ellipse x:Name="Fill" Width="8" Height="8"
+                                         Fill="{StaticResource Teal}"
+                                         Visibility="Collapsed"/>
                             </Border>
-                            <ContentPresenter Grid.Column="1" VerticalAlignment="Center" Content="{TemplateBinding Content}"/>
+                            <ContentPresenter Grid.Column="1"
+                                              VerticalAlignment="Center"
+                                              Margin="2,0,0,0"/>
                         </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="RadioDot" Property="Visibility" Value="Visible"/>
-                                <Setter TargetName="RadioBorder" Property="BorderBrush" Value="{StaticResource AccentTeal}"/>
+                                <Setter TargetName="Fill" Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="Ring" Property="BorderBrush" Value="{StaticResource Teal}"/>
                             </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="RadioBorder" Property="BorderBrush" Value="{StaticResource AccentTeal}"/>
+                                <Setter TargetName="Ring" Property="BorderBrush" Value="{StaticResource TealDim}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -89,28 +105,34 @@
             </Setter>
         </Style>
 
-        <Style x:Key="ActionButtonStyle" TargetType="Button">
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
-            <Setter Property="Height" Value="34"/>
-            <Setter Property="Padding" Value="8,0"/>
-            <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
-            <Setter Property="RenderTransform">
-                <Setter.Value><ScaleTransform ScaleX="1" ScaleY="1"/></Setter.Value>
-            </Setter>
+        <!-- Botão secundário (ghost) -->
+        <Style x:Key="GhostBtn" TargetType="Button">
+            <Setter Property="Background"       Value="Transparent"/>
+            <Setter Property="Foreground"       Value="{StaticResource TxtDim}"/>
+            <Setter Property="BorderBrush"      Value="{StaticResource BorderMuted}"/>
+            <Setter Property="BorderThickness"  Value="1"/>
+            <Setter Property="Height"           Value="32"/>
+            <Setter Property="Padding"          Value="14,0"/>
+            <Setter Property="Cursor"           Value="Hand"/>
+            <Setter Property="FontSize"         Value="12"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="border" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="12">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        <Border x:Name="bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="16" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="border" Property="Background" Value="#0AFFFFFF"/>
-                                <Setter TargetName="border" Property="BorderBrush" Value="{StaticResource TextSecondary}"/>
+                                <Setter TargetName="bd" Property="Background"  Value="#14FFFFFF"/>
+                                <Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource TxtDim}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="#20FFFFFF"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -118,134 +140,223 @@
             </Setter>
         </Style>
 
-        <Style x:Key="PrimaryButtonStyle" TargetType="Button">
-            <Setter Property="Background" Value="{StaticResource AccentTeal}"/>
-            <Setter Property="Foreground" Value="#0F172A"/>
-            <Setter Property="Padding" Value="25,0"/>
-            <Setter Property="Height" Value="44"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="FontSize" Value="14"/>
-            <Setter Property="Cursor" Value="Hand"/>
+        <!-- Botão primário (teal) -->
+        <Style x:Key="PrimaryBtn" TargetType="Button">
+            <Setter Property="Background"      Value="{StaticResource Teal}"/>
+            <Setter Property="Foreground"      Value="#0F172A"/>
             <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Height"          Value="40"/>
+            <Setter Property="Padding"         Value="28,0"/>
+            <Setter Property="FontWeight"      Value="SemiBold"/>
+            <Setter Property="FontSize"        Value="13"/>
+            <Setter Property="Cursor"          Value="Hand"/>
             <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
             <Setter Property="RenderTransform">
-                <Setter.Value><ScaleTransform ScaleX="1" ScaleY="1"/></Setter.Value>
+                <Setter.Value><ScaleTransform/></Setter.Value>
             </Setter>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="border" Background="{TemplateBinding Background}" CornerRadius="22">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        <Border x:Name="bd"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="20"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="border" Property="Background" Value="#99F6E4"/>
+                                <Setter TargetName="bd" Property="Background" Value="#7AF0D9"/>
                             </Trigger>
-                            <EventTrigger RoutedEvent="MouseEnter">
-                                <BeginStoryboard>
-                                    <Storyboard>
-                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleX" To="1.03" Duration="0:0:0.15"/>
-                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleY" To="1.03" Duration="0:0:0.15"/>
-                                    </Storyboard>
-                                </BeginStoryboard>
-                            </EventTrigger>
-                            <EventTrigger RoutedEvent="MouseLeave">
-                                <BeginStoryboard>
-                                    <Storyboard>
-                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleX" To="1" Duration="0:0:0.15"/>
-                                        <DoubleAnimation Storyboard.TargetProperty="RenderTransform.ScaleY" To="1" Duration="0:0:0.15"/>
-                                    </Storyboard>
-                                </BeginStoryboard>
-                            </EventTrigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="#4DD9C0"/>
+                            </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
         </Style>
-    </Window.Resources>
 
-    <Grid Margin="20">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/> <!-- Title/Selection -->
-            <RowDefinition Height="*"/>    <!-- Params List -->
-            <RowDefinition Height="Auto"/> <!-- Scope -->
-            <RowDefinition Height="Auto"/> <!-- Buttons/Preview -->
-        </Grid.RowDefinitions>
-
-        <!-- Selection Info -->
-        <StackPanel Grid.Row="0">
-            <TextBlock Text="🎯 Smart Select Similar" FontSize="20" FontWeight="Light" Foreground="{StaticResource AccentTeal}" Margin="0,0,0,15"/>
-            <Border Background="{StaticResource PanelColor}" Padding="20" CornerRadius="18" BorderBrush="{StaticResource BorderColor}" BorderThickness="1">
-                <StackPanel>
-                    <TextBlock x:Name="ElementNameLabel" Text="Carregando elemento..." FontSize="13" FontWeight="SemiBold" TextWrapping="Wrap" Foreground="{StaticResource TextPrimary}"/>
-                    <TextBlock x:Name="ElementIdLabel" Text="ID: ---" FontSize="11" Foreground="{StaticResource TextSecondary}" Margin="0,4,0,0"/>
-                </StackPanel>
-            </Border>
-        </StackPanel>
-
-        <!-- Parameters List Header & Search -->
-        <Grid Grid.Row="1" Margin="0,15">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
-            </Grid.RowDefinitions>
-            
-            <TextBlock Grid.Row="0" Text="Filtrar Parâmetros:" FontWeight="SemiBold" Margin="0,0,0,8" Foreground="{StaticResource TextSecondary}"/>
-            <TextBox Grid.Row="1" x:Name="SearchBox" Padding="12,8" Height="38" 
-                    Background="{StaticResource InputColor}" Foreground="White" 
-                    BorderBrush="{StaticResource BorderColor}"
-                    TextChanged="on_search_changed">
-                <TextBox.Template>
+        <!-- TextBox (busca) -->
+        <Style x:Key="SearchBoxStyle" TargetType="TextBox">
+            <Setter Property="Background"        Value="{StaticResource BgInput}"/>
+            <Setter Property="Foreground"        Value="{StaticResource TxtPrimary}"/>
+            <Setter Property="BorderBrush"       Value="{StaticResource BorderMuted}"/>
+            <Setter Property="BorderThickness"   Value="1"/>
+            <Setter Property="CaretBrush"        Value="{StaticResource Teal}"/>
+            <Setter Property="Padding"           Value="12,0"/>
+            <Setter Property="Height"            Value="36"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Template">
+                <Setter.Value>
                     <ControlTemplate TargetType="TextBox">
-                        <Border x:Name="border" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1.5" CornerRadius="19">
-                            <ScrollViewer x:Name="PART_ContentHost" VerticalAlignment="Center" Margin="10,0"/>
+                        <Border x:Name="bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="18">
+                            <ScrollViewer x:Name="PART_ContentHost"
+                                          Margin="{TemplateBinding Padding}"
+                                          VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsFocused" Value="True">
-                                <Setter TargetName="border" Property="BorderBrush" Value="{StaticResource AccentTeal}"/>
+                                <Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource Teal}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
-                </TextBox.Template>
-            </TextBox>
-            
-            <ScrollViewer Grid.Row="2" Margin="0,15,0,0" VerticalScrollBarVisibility="Auto">
-                <StackPanel x:Name="ParametersPanel">
-                    <!-- Data populated via script -->
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>  <!-- cabeçalho -->
+            <RowDefinition Height="Auto"/>  <!-- busca -->
+            <RowDefinition Height="*"/>     <!-- lista de parâmetros -->
+            <RowDefinition Height="Auto"/>  <!-- escopo + presets -->
+            <RowDefinition Height="Auto"/>  <!-- rodapé -->
+        </Grid.RowDefinitions>
+
+        <!-- ── Cabeçalho ──────────────────────────────────────────────── -->
+        <Border Grid.Row="0"
+                Background="{StaticResource BgPanel}"
+                Padding="20,16">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- Título + badge -->
+                <StackPanel Grid.Row="0" Orientation="Horizontal"
+                            VerticalAlignment="Center" Margin="0,0,0,10">
+                    <TextBlock Text="Smart Select Similar"
+                               FontSize="16" FontWeight="SemiBold"
+                               Foreground="{StaticResource Teal}"
+                               VerticalAlignment="Center"/>
+                    <Border Background="#1A5EEAD4" CornerRadius="10"
+                            Padding="10,3" Margin="12,0,0,0"
+                            VerticalAlignment="Center">
+                        <TextBlock x:Name="PreviewLabel"
+                                   Text="0 elemento(s)"
+                                   FontSize="11" FontWeight="SemiBold"
+                                   Foreground="{StaticResource Teal}"/>
+                    </Border>
                 </StackPanel>
-            </ScrollViewer>
-        </Grid>
 
-        <!-- Scope & Presets -->
-        <StackPanel Grid.Row="2" Margin="0,10">
-            <Border Height="1" Background="{StaticResource BorderColor}" Margin="0,5"/>
-            <TextBlock Text="Escopo de Busca:" FontWeight="SemiBold" Margin="0,8" Foreground="{StaticResource TextSecondary}"/>
-            <StackPanel Orientation="Horizontal" Margin="0,4,0,12">
-                <RadioButton x:Name="RadioActiveView" Content="Vista Ativa" IsChecked="True" Margin="0,0,25,0"/>
-                <RadioButton x:Name="RadioProject" Content="Projeto Inteiro" />
-            </StackPanel>
-            
-            <TextBlock Text="Quick Presets:" FontWeight="SemiBold" Margin="0,5,0,8" Foreground="{StaticResource TextSecondary}"/>
-            <WrapPanel>
-                <Button x:Name="BtnPresetFamilyType" Content="Família + Tipo" Style="{StaticResource ActionButtonStyle}"/>
-                <Button x:Name="BtnPresetFamilyComments" Content="Família + Coment." Style="{StaticResource ActionButtonStyle}"/>
-                <Button x:Name="BtnClearAll" Content="Limpar" Style="{StaticResource ActionButtonStyle}"/>
-            </WrapPanel>
-        </StackPanel>
+                <!-- Info do elemento -->
+                <Border Grid.Row="1"
+                        Background="{StaticResource BgInput}"
+                        CornerRadius="10" Padding="14,10">
+                    <StackPanel>
+                        <TextBlock x:Name="ElementNameLabel"
+                                   Text="Carregando..."
+                                   FontSize="12" FontWeight="SemiBold"
+                                   Foreground="{StaticResource TxtPrimary}"
+                                   TextWrapping="Wrap"/>
+                        <TextBlock x:Name="ElementIdLabel"
+                                   Text="ID: —"
+                                   FontSize="11" Margin="0,3,0,0"
+                                   Foreground="{StaticResource TxtMuted}"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
 
-        <!-- Footer -->
-        <StackPanel Grid.Row="3">
-            <Border Height="1" Background="{StaticResource BorderColor}" Margin="0,15"/>
-            <TextBlock x:Name="PreviewLabel" Text="📊 0 elementos encontrados" Foreground="{StaticResource AccentTeal}" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,20"/>
-            
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button Content="Cancelar" Margin="0,0,8,0" Style="{StaticResource ActionButtonStyle}" IsCancel="True"/>
-                <Button x:Name="PaintButton" Content="🎨 Pintar" Margin="0,0,8,0" Style="{StaticResource ActionButtonStyle}" Click="on_paint_click"/>
-                <Button x:Name="ZoomButton" Content="🔍 Zoom" Margin="0,0,8,0" Style="{StaticResource ActionButtonStyle}" Click="on_zoom_click"/>
-                <Button x:Name="BtnPreview" Content="Preview" Margin="0,0,8,0" Style="{StaticResource ActionButtonStyle}"/>
-                <Button x:Name="BtnSelect" Content="Selecionar" Style="{StaticResource PrimaryButtonStyle}"/>
+        <!-- ── Busca ───────────────────────────────────────────────────── -->
+        <Border Grid.Row="1" Padding="16,10,16,0">
+            <TextBox x:Name="SearchBox"
+                     Style="{StaticResource SearchBoxStyle}"
+                     Tag="Filtrar parâmetros..."/>
+        </Border>
+
+        <!-- ── Lista de parâmetros ─────────────────────────────────────── -->
+        <ScrollViewer Grid.Row="2"
+                      Margin="16,8,16,0"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+            <StackPanel x:Name="ParametersPanel"/>
+        </ScrollViewer>
+
+        <!-- ── Escopo + Presets ────────────────────────────────────────── -->
+        <Border Grid.Row="3" Padding="16,12,16,0">
+            <StackPanel>
+                <Rectangle Height="1" Fill="{StaticResource BorderMuted}"
+                           Margin="0,0,0,12"/>
+
+                <!-- Escopo -->
+                <TextBlock Text="Escopo de Busca"
+                           FontSize="11" FontWeight="SemiBold" Margin="0,0,0,8"
+                           Foreground="{StaticResource TxtMuted}"/>
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                    <RadioButton x:Name="RadioActiveView"
+                                 Content="Vista Ativa"
+                                 IsChecked="True" Margin="0,0,24,0"/>
+                    <RadioButton x:Name="RadioProject"
+                                 Content="Projeto Inteiro"/>
+                </StackPanel>
+
+                <!-- Presets -->
+                <TextBlock Text="Presets Rápidos"
+                           FontSize="11" FontWeight="SemiBold" Margin="0,0,0,8"
+                           Foreground="{StaticResource TxtMuted}"/>
+                <WrapPanel Margin="0,0,0,4">
+                    <Button x:Name="BtnPresetFamilyType"
+                            Content="Família + Tipo"
+                            Style="{StaticResource GhostBtn}"
+                            Margin="0,0,6,6"/>
+                    <Button x:Name="BtnPresetFamilyComments"
+                            Content="Família + Comentário"
+                            Style="{StaticResource GhostBtn}"
+                            Margin="0,0,6,6"/>
+                    <Button x:Name="BtnClearAll"
+                            Content="Limpar Tudo"
+                            Style="{StaticResource GhostBtn}"
+                            Margin="0,0,0,6"/>
+                </WrapPanel>
             </StackPanel>
-        </StackPanel>
+        </Border>
+
+        <!-- ── Rodapé ──────────────────────────────────────────────────── -->
+        <Border Grid.Row="4"
+                Background="{StaticResource BgPanel}"
+                Padding="16,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Ações secundárias -->
+                <StackPanel Grid.Column="0" Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <Button x:Name="PaintButton"
+                            Content="Pintar"
+                            Style="{StaticResource GhostBtn}"
+                            Margin="0,0,6,0"/>
+                    <Button x:Name="ZoomButton"
+                            Content="Zoom"
+                            Style="{StaticResource GhostBtn}"
+                            Margin="0,0,6,0"/>
+                    <Button x:Name="BtnPreview"
+                            Content="Preview"
+                            Style="{StaticResource GhostBtn}"/>
+                </StackPanel>
+
+                <!-- Ações primárias -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button Content="Cancelar"
+                            Style="{StaticResource GhostBtn}"
+                            IsCancel="True" Margin="0,0,8,0"/>
+                    <Button x:Name="BtnSelect"
+                            Content="Selecionar"
+                            Style="{StaticResource PrimaryBtn}"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
     </Grid>
 </Window>

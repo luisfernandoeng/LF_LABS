@@ -61,6 +61,7 @@ def load_config():
         'default_width':  '200',
         'default_height': '100',
         'default_offset': '3.00',  # metros
+        'use_connector': True,
         'debug_mode': False,
     })
 
@@ -79,17 +80,14 @@ class SettingsWindow(forms.WPFWindow):
         self.tb_offset.Text = settings.get('default_offset', '3.00')
         self.chk_debug.IsChecked = settings.get('debug_mode', False)
         
+        if hasattr(self, 'chk_use_connector'):
+            self.chk_use_connector.IsChecked = settings.get('use_connector', True)
+        
         types = self._get_cabletray_types()
         self._populate_combo(self.cb_type, types, settings.get('cabletray_type', ''))
         
         self.btn_save.Click += self._on_save
         self.btn_cancel.Click += self._on_cancel
-
-    def __getattr__(self, name):
-        el = self._window.FindName(name)
-        if el is not None:
-            return el
-        raise AttributeError(name)
 
     def _get_cabletray_types(self):
         names = []
@@ -114,18 +112,23 @@ class SettingsWindow(forms.WPFWindow):
         s['default_height'] = self.tb_height.Text.strip()
         s['default_offset'] = self.tb_offset.Text.strip()
         try:
+            if hasattr(self, 'chk_use_connector'):
+                s['use_connector'] = bool(self.chk_use_connector.IsChecked)
+        except:
+            s['use_connector'] = True
+        try:
             s['debug_mode'] = bool(self.chk_debug.IsChecked)
         except:
             s['debug_mode'] = False
             
         self._saved = True
-        self._window.Close()
+        self.Close()
 
     def _on_cancel(self, _sender, _args):
-        self._window.Close()
+        self.Close()
 
     def show(self):
-        self._window.ShowDialog()
+        self.ShowDialog()
         return self._settings if self._saved else None
 
 
@@ -154,7 +157,12 @@ def get_connectors(element):
         if mgr:
             for c in mgr.Connectors:
                 if c.Domain == Domain.DomainCableTrayConduit:
-                    connectors.append(c)
+                    # Filtra apenas conectores retangulares para ignorar eletrodutos (redondos)
+                    try:
+                        if c.Shape == ConnectorProfileType.Rectangular:
+                            connectors.append(c)
+                    except Exception:
+                        connectors.append(c)
     except Exception:
         pass
     return connectors
@@ -162,11 +170,16 @@ def get_connectors(element):
 def get_element_point(element, reference_point=None):
     """Tenta achar o ponto ideal de um elemento (conector mais próximo ou Location)."""
     conns = get_connectors(element)
-    if conns and reference_point:
-        best_conn = min(conns, key=lambda c: c.Origin.DistanceTo(reference_point))
-        return best_conn.Origin, best_conn
-    elif conns:
-        return conns[0].Origin, conns[0]
+    if conns:
+        # Priorizar conectores que ainda não estão conectados a nada
+        free_conns = [c for c in conns if not c.IsConnected]
+        valid_conns = free_conns if free_conns else conns
+        
+        if reference_point:
+            best_conn = min(valid_conns, key=lambda c: c.Origin.DistanceTo(reference_point))
+            return best_conn.Origin, best_conn
+        else:
+            return valid_conns[0].Origin, valid_conns[0]
     try:
         loc = element.Location
         if isinstance(loc, LocationPoint):
@@ -195,6 +208,18 @@ def get_default_cabletray_type():
 
 # WarningSwallower vem de lf_utils.make_warning_swallower() — importado no topo
 
+def get_connector_dimensions(conn):
+    try:
+        if conn.Shape == ConnectorProfileType.Rectangular:
+            return conn.Width, conn.Height
+        elif conn.Shape == ConnectorProfileType.Round:
+            return conn.Radius * 2.0, conn.Radius * 2.0
+        elif conn.Shape == ConnectorProfileType.Oval:
+            return conn.Width, conn.Height
+    except Exception:
+        pass
+    return None, None
+
 # =====================================================================
 #  EXECUÇÃO PRINCIPAL
 # =====================================================================
@@ -219,36 +244,74 @@ def execute_connection():
     settings = load_config()
     dbg.dump("settings", settings)
 
-    # ── 1. Seleção sequencial de elementos ───────────────────────
+    # ── 1. Seleção de elementos ──────────────────────────────────────
     dbg.section("Fase 1: Seleção de Elementos")
     picked_elements = []
-    uidoc.Selection.SetElementIds(List[ElementId]())
-
-    try:
-        while True:
-            msg = "Selecione o elemento {} (ESC para finalizar rota)".format(
-                len(picked_elements) + 1)
-            ref = uidoc.Selection.PickObject(ObjectType.Element, msg)
-            el = doc.GetElement(ref)
+    
+    selected_ids = uidoc.Selection.GetElementIds()
+    if selected_ids:
+        for eid in selected_ids:
+            el = doc.GetElement(eid)
             if el:
                 picked_elements.append(el)
-                dbg.info("Elemento {} selecionado: Id={} Categoria={}".format(
-                    len(picked_elements), el.Id,
-                    el.Category.Name if el.Category else "N/A"))
-    except OperationCanceledException:
-        dbg.info("Seleção encerrada pelo usuário (ESC). Total: {} elemento(s).".format(
-            len(picked_elements)))
+    else:
+        try:
+            refs = uidoc.Selection.PickObjects(ObjectType.Element, "Selecione os dispositivos/eletrocalhas a conectar")
+            for ref in refs:
+                el = doc.GetElement(ref)
+                if el:
+                    picked_elements.append(el)
+        except OperationCanceledException:
+            pass
 
     if len(picked_elements) < 2:
-        if len(picked_elements) == 1:
-            forms.alert(
-                "Você selecionou apenas 1 elemento.\n"
-                "É necessário pelo menos 2 para formar uma rota.",
-                title="Aviso"
-            )
-        else:
-            dbg.info("Nenhum elemento selecionado. Operação cancelada.")
+        forms.alert(
+            "Selecione pelo menos 2 elementos para formar uma rota.",
+            title="Aviso"
+        )
         return
+
+    # Ordenar por proximidade para criar uma sequência lógica
+    def sort_by_proximity(elements):
+        if len(elements) <= 2:
+            return elements
+        
+        pts = {}
+        for el in elements:
+            pt, _ = get_element_point(el)
+            pts[el.Id] = pt if pt else XYZ.Zero
+                
+        # Achar o par mais distante para identificar as extremidades
+        max_d = -1
+        start_el = elements[0]
+        for e1 in elements:
+            for e2 in elements:
+                if e1.Id != e2.Id:
+                    d = pts[e1.Id].DistanceTo(pts[e2.Id])
+                    if d > max_d:
+                        max_d = d
+                        start_el = e1
+                        
+        sorted_els = [start_el]
+        remaining = [e for e in elements if e.Id != start_el.Id]
+        
+        current = start_el
+        while remaining:
+            closest = None
+            min_d = float('inf')
+            for r in remaining:
+                d = pts[current.Id].DistanceTo(pts[r.Id])
+                if d < min_d:
+                    min_d = d
+                    closest = r
+            sorted_els.append(closest)
+            remaining.remove(closest)
+            current = closest
+            
+        return sorted_els
+
+    picked_elements = sort_by_proximity(picked_elements)
+    dbg.info("Ordem definida para {} elementos.".format(len(picked_elements)))
 
     # ── 2. Resolver tipo e parâmetros ────────────────────────────
     dbg.section("Fase 2: Parâmetros")
@@ -265,7 +328,7 @@ def execute_connection():
 
     if not ct_type_id:
         ct_type_id = get_default_cabletray_type()
-        dbg.warn("Tipo preferido não encontrado. Usando default: Id={}".format(ct_type_id))
+        dbg.debug("Tipo preferido não encontrado. Usando default: Id={}".format(ct_type_id))
 
     if not ct_type_id or ct_type_id == ElementId.InvalidElementId:
         forms.alert(
@@ -275,9 +338,17 @@ def execute_connection():
         )
         return
 
-    width_ft  = float(settings.get('default_width',  '200')) / 304.8
-    height_ft = float(settings.get('default_height', '100')) / 304.8
-    offset_ft = float(settings.get('default_offset', '3.00')) / 0.3048
+    def _parse_float(val, default_val):
+        try:
+            if val is None or str(val).strip() == '':
+                return float(default_val)
+            return float(str(val).replace(',', '.'))
+        except Exception:
+            return float(default_val)
+
+    width_ft  = _parse_float(settings.get('default_width'), 200) / 304.8
+    height_ft = _parse_float(settings.get('default_height'), 100) / 304.8
+    offset_ft = _parse_float(settings.get('default_offset'), 3.00) / 0.3048
 
     dbg.debug("ct_type_id = {}".format(ct_type_id))
     dbg.debug("width_ft   = {:.6f}  ({} mm)".format(width_ft,  settings.get('default_width')))
@@ -292,7 +363,7 @@ def execute_connection():
             base_level_id = view.GenLevel.Id
         else:
             base_level_id = FilteredElementCollector(doc).OfClass(Level).FirstElementId()
-        dbg.warn("Elemento 0 sem LevelId. Usando nível da view: Id={}".format(base_level_id))
+        dbg.debug("Elemento 0 sem LevelId. Usando nível da view: Id={}".format(base_level_id))
 
     base_level      = doc.GetElement(base_level_id)
     level_elevation = base_level.Elevation if base_level else 0.0
@@ -351,12 +422,27 @@ def execute_connection():
 
             if dist < 0.1:
                 msg = "Par {}: Pontos muito próximos ({:.4f} ft). Pulando.".format(i + 1, dist)
-                dbg.warn(msg)
+                dbg.debug(msg)
                 creation_errors.append(msg)
                 continue
 
             # ── Detectar tamanho das bandejas vizinhas ────────────────
-            # Prioridade: el1 → el2 → configurações
+            # Prioridade: conector 1 → conector 2 → parâmetros de el1 → el2 → configurações
+            pair_w = None
+            pair_h = None
+            
+            use_conn = settings.get('use_connector', True)
+
+            if use_conn and conn1:
+                cw, ch = get_connector_dimensions(conn1)
+                if cw and ch:
+                    pair_w, pair_h = cw, ch
+                    
+            if use_conn and not pair_w and conn2:
+                cw, ch = get_connector_dimensions(conn2)
+                if cw and ch:
+                    pair_w, pair_h = cw, ch
+
             def _read_dim(el, bip):
                 try:
                     p = el.get_Parameter(bip)
@@ -366,12 +452,13 @@ def execute_connection():
                     pass
                 return None
 
-            pair_w = (_read_dim(el1, BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM)
-                   or _read_dim(el2, BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM)
-                   or width_ft)
-            pair_h = (_read_dim(el1, BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
-                   or _read_dim(el2, BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
-                   or height_ft)
+            if not pair_w:
+                pair_w = (_read_dim(el1, BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM)
+                       or _read_dim(el2, BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM)
+                       or width_ft)
+                pair_h = (_read_dim(el1, BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
+                       or _read_dim(el2, BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
+                       or height_ft)
             dbg.debug("  Tamanho par: w={:.4f} ft  h={:.4f} ft".format(pair_w, pair_h))
 
             try:
@@ -391,14 +478,14 @@ def execute_connection():
                     p_w.Set(pair_w)
                     dbg.debug("  Width setado: {:.4f} ft".format(pair_w))
                 else:
-                    dbg.warn("  Width param ausente ou read-only.")
+                    dbg.debug("  Width param ausente ou read-only.")
 
                 p_h = ctray.get_Parameter(BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
                 if p_h and not p_h.IsReadOnly:
                     p_h.Set(pair_h)
                     dbg.debug("  Height setado: {:.4f} ft".format(pair_h))
                 else:
-                    dbg.warn("  Height param ausente ou read-only.")
+                    dbg.debug("  Height param ausente ou read-only.")
 
                 # ── Conectar fisicamente aos elementos originais ───────
                 # CableTray.Create posiciona geometricamente mas NÃO
@@ -413,17 +500,17 @@ def execute_connection():
                     dbg.debug("  {} dist={:.4f} ft  new_connected={} orig_connected={}".format(
                         label, dist_c, new_c.IsConnected, orig_c.IsConnected))
                     if dist_c > 1.0:
-                        dbg.warn("  {} distância alta ({:.4f} ft) — ConnectTo ignorado.".format(
+                        dbg.debug("  {} distância alta ({:.4f} ft) — ConnectTo ignorado.".format(
                             label, dist_c))
                         return
                     if orig_c.IsConnected:
-                        dbg.warn("  {} orig_c já está conectado — pulando.".format(label))
+                        dbg.debug("  {} orig_c já está conectado — pulando.".format(label))
                         return
                     try:
                         new_c.ConnectTo(orig_c)
                         dbg.result(True, "  {} ConnectTo OK".format(label))
                     except Exception as ce:
-                        dbg.warn("  {} ConnectTo falhou: {}".format(label, ce))
+                        dbg.debug("  {} ConnectTo falhou: {}".format(label, ce))
 
                 if new_conns and len(new_conns) >= 2:
                     # Associar conector da nova bandeja ao conector mais próximo de cada extremidade
@@ -432,7 +519,7 @@ def execute_connection():
                     _try_connect(c_near_1, conn1, "conn→el1")
                     _try_connect(c_near_2, conn2, "conn→el2")
                 else:
-                    dbg.warn("  Nova bandeja com <2 conectores — conexão pulada.")
+                    dbg.debug("  Nova bandeja com <2 conectores — conexão pulada.")
 
                 drawn_trays.append(ctray)
                 dbg.result(True, "Eletrocalha criada: Id={}".format(ctray.Id))
@@ -458,12 +545,14 @@ def execute_connection():
                     len(c1_candidates), len(c2_candidates)))
 
                 if not c1_candidates or not c2_candidates:
-                    dbg.warn("Sem conectores disponíveis para par {}.".format(i + 1))
+                    dbg.debug("Sem conectores disponíveis para par {}.".format(i + 1))
                     continue
 
                 best_c1, best_c2, min_dist = None, None, float('inf')
                 for c1 in c1_candidates:
+                    if c1.IsConnected: continue
                     for c2 in c2_candidates:
+                        if c2.IsConnected: continue
                         d = c1.Origin.DistanceTo(c2.Origin)
                         if d < min_dist:
                             min_dist, best_c1, best_c2 = d, c1, c2
@@ -475,14 +564,14 @@ def execute_connection():
                         doc.Create.NewElbowFitting(best_c1, best_c2)
                         dbg.result(True, "Elbow/fitting criado para par {}.".format(i + 1))
                     except Exception as ex:
-                        dbg.warn("NewElbowFitting falhou ({}). Tentando ConnectTo...".format(ex))
+                        dbg.debug("NewElbowFitting falhou ({}). Tentando ConnectTo...".format(ex))
                         try:
                             best_c1.ConnectTo(best_c2)
                             dbg.result(True, "ConnectTo OK para par {}.".format(i + 1))
                         except Exception as ex2:
                             dbg.error("ConnectTo também falhou: {}".format(ex2))
                 else:
-                    dbg.warn("Par {}: dist={:.4f} ft > 2.0 ft. Nenhuma curva criada.".format(
+                    dbg.debug("Par {}: dist={:.4f} ft > 2.0 ft. Nenhuma curva criada.".format(
                         i + 1, min_dist))
 
         # ── Commit ────────────────────────────────────────────────
@@ -491,9 +580,9 @@ def execute_connection():
         dbg.info("Transação commitada.")
         dbg.info("Eletrocalhas criadas: {}".format(len(drawn_trays)))
         if creation_errors:
-            dbg.warn("Erros registrados durante a criação:")
+            dbg.debug("Erros registrados durante a criação:")
             for idx, err in enumerate(creation_errors, 1):
-                dbg.warn("  [{}] {}".format(idx, err))
+                dbg.debug("  [{}] {}".format(idx, err))
 
         if not drawn_trays:
             err_detail = "\n\n".join(creation_errors) if creation_errors else "Sem detalhes."

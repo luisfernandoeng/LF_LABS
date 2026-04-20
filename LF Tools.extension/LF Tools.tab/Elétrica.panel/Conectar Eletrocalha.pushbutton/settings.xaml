@@ -80,10 +80,18 @@
                     </StackPanel>
                 </GroupBox>
 
+                <GroupBox Header="Dimensionamento" Style="{StaticResource Gb}">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource Hint}"
+                            Text="Se ativado, lê as dimensões (largura/altura) direto do conector do equipamento. Caso contrário, usa os valores padrão abaixo."/>
+                        <CheckBox x:Name="chk_use_connector" Content="Ler dimensões do conector automaticamente"/>
+                    </StackPanel>
+                </GroupBox>
+
                 <GroupBox Header="Largura (mm)" Style="{StaticResource Gb}">
                     <StackPanel>
                         <TextBlock Style="{StaticResource Hint}"
-                            Text="Em mm — ex: 100, 200, 300."/>
+                            Text="Em mm — ex: 100, 200, 300 (Usado se falhar ao ler do conector)."/>
                         <TextBox x:Name="tb_width"/>
                     </StackPanel>
                 </GroupBox>

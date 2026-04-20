@@ -1,12 +1,18 @@
 {
-  "angle_mode_plan": "90", 
-  "conduit_type_vertical": "(Usar Último Desenhado)", 
-  "conduit_type_plan": "(Usar Último Desenhado)", 
-  "angle_mode_vertical": "90", 
-  "debug_mode": false, 
+  "default_offset": "", 
+  "default_diameter": "", 
+  "default_height": "100", 
+  "use_connector": true, 
   "service_type": "", 
   "selection_mode": "caixa", 
+  "conduit_type_plan": "(Usar Último Desenhado)", 
+  "angle_mode_plan": "90", 
   "routing_strategy": "auto", 
-  "default_diameter": "", 
-  "conduit_type": "(Usar Último Desenhado)"
+  "conduit_type_vertical": "(Usar Último Desenhado)", 
+  "conduit_type": "(Usar Último Desenhado)", 
+  "default_width": "200", 
+  "cabletray_type": "(Padrão do Revit)", 
+  "angle_mode_vertical": "90", 
+  "debug_mode": false, 
+  "multi_select": true
 }

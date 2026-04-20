@@ -1,8 +1,6 @@
 # coding: utf-8
 """Gerenciar Circuito - Adicionar/Remover elementos de circuitos
 Autor: Luís Fernando
-Comando standalone para atalho de teclado no Revit.
-Selecione um elemento → membros ficam vermelhos → adicione ou remova.
 """
 
 __title__ = "Gerenciar\nCircuito"
@@ -17,120 +15,127 @@ from Autodesk.Revit.DB import *
 from Autodesk.Revit.DB.Electrical import *
 from Autodesk.Revit.UI import *
 from Autodesk.Revit.UI.Selection import ObjectType
-from pyrevit import forms, script
+from pyrevit import forms
+
+doc = __revit__.ActiveUIDocument.Document
+uidoc = __revit__.ActiveUIDocument
+
 
 class WarningSwallower(IFailuresPreprocessor):
     def PreprocessFailures(self, failuresAccessor):
-        failures = failuresAccessor.GetFailureMessages()
-        for f in failures:
+        for f in failuresAccessor.GetFailureMessages():
             if f.GetSeverity() == FailureSeverity.Warning:
                 failuresAccessor.DeleteWarning(f)
         return FailureProcessingResult.Continue
 
-doc = __revit__.ActiveUIDocument.Document
-uidoc = __revit__.ActiveUIDocument
-output = script.get_output()
+
+def with_warning_swallower(t):
+    opts = t.GetFailureHandlingOptions()
+    opts.SetFailuresPreprocessor(WarningSwallower())
+    t.SetFailureHandlingOptions(opts)
 
 
 def set_red_override(view, element_ids, apply=True):
     if apply:
-        # Busca o padrão de preenchimento sólido no documento
         solid_fill = None
-        fill_patterns = FilteredElementCollector(doc).OfClass(FillPatternElement)
-        for fp in fill_patterns:
+        for fp in FilteredElementCollector(doc).OfClass(FillPatternElement):
             try:
                 if fp.GetFillPattern().IsSolidFill:
                     solid_fill = fp
                     break
-            except: continue
-        
+            except:
+                continue
+
         ogs = OverrideGraphicSettings()
         red = Color(255, 0, 0)
-        
-        # Configura as linhas em vermelho e com espessura maior
         ogs.SetProjectionLineColor(red)
-        try: ogs.SetProjectionLineWeight(8)
-        except: pass
-        
-        # Se encontrou o padrão sólido, aplica preenchimento (Foreground e Background)
+        try:
+            ogs.SetProjectionLineWeight(8)
+        except:
+            pass
         if solid_fill:
-            # Foreground
-            try:
-                ogs.SetSurfaceForegroundPatternId(solid_fill.Id)
-                ogs.SetSurfaceForegroundPatternColor(red)
-                ogs.SetSurfaceForegroundPatternVisible(True)
-            except: pass
-            
-            # Background (importante se houver outro padrão sobreposto)
-            try:
-                ogs.SetSurfaceBackgroundPatternId(solid_fill.Id)
-                ogs.SetSurfaceBackgroundPatternColor(red)
-                ogs.SetSurfaceBackgroundPatternVisible(True)
-            except: pass
-
-            # Fallback para versões mais antigas do Revit
-            try:
-                ogs.SetProjectionFillPatternId(solid_fill.Id)
-                ogs.SetProjectionFillColor(red)
-            except: pass
-            
+            for setter in [
+                lambda: (ogs.SetSurfaceForegroundPatternId(solid_fill.Id),
+                         ogs.SetSurfaceForegroundPatternColor(red),
+                         ogs.SetSurfaceForegroundPatternVisible(True)),
+                lambda: (ogs.SetSurfaceBackgroundPatternId(solid_fill.Id),
+                         ogs.SetSurfaceBackgroundPatternColor(red),
+                         ogs.SetSurfaceBackgroundPatternVisible(True)),
+                lambda: (ogs.SetProjectionFillPatternId(solid_fill.Id),
+                         ogs.SetProjectionFillColor(red)),
+            ]:
+                try:
+                    setter()
+                except:
+                    pass
         for eid in element_ids:
-            try: view.SetElementOverrides(eid, ogs)
-            except: pass
+            try:
+                view.SetElementOverrides(eid, ogs)
+            except:
+                pass
     else:
-        # Limpa todos os overrides aplicados
         blank = OverrideGraphicSettings()
         for eid in element_ids:
-            try: view.SetElementOverrides(eid, blank)
-            except: pass
+            try:
+                view.SetElementOverrides(eid, blank)
+            except:
+                pass
 
 
 def find_circuit(elem):
     if isinstance(elem, ElectricalSystem):
         return elem
 
-    circuit = None
-
-    # Método 1: MEPModel e métodos diretos
+    # Método 1: MEPModel e ElectricalSystems direto
     try:
-        if hasattr(elem, 'MEPModel') and elem.MEPModel:
-            mep = elem.MEPModel
-            # Tenta diversos métodos de obtenção de sistemas elétricos
-            for method_name in ['GetElectricalSystems', 'GetAssignedElectricalSystems', 'ElectricalSystems']:
-                if hasattr(mep, method_name):
-                    res = getattr(mep, method_name)
-                    # No caso de ElectricalSystems é propriedade, outros são métodos
-                    systems = res() if method_name != 'ElectricalSystems' else res
-                    if systems:
-                        for sys in systems:
-                            return sys
-        
-        # Tenta também no próprio elemento (caso de fios/wires)
-        if hasattr(elem, 'ElectricalSystems'):
-            for sys in elem.ElectricalSystems:
-                return sys
-    except: pass
+        mep = getattr(elem, 'MEPModel', None)
+        sources = [mep] if mep else []
+        sources.append(elem)
+        for src in sources:
+            if src is None:
+                continue
+            for attr in ['GetElectricalSystems', 'GetAssignedElectricalSystems']:
+                if hasattr(src, attr):
+                    try:
+                        result = getattr(src, attr)()
+                        if result:
+                            for sys in result:
+                                return sys
+                    except:
+                        pass
+            if hasattr(src, 'ElectricalSystems'):
+                try:
+                    for sys in src.ElectricalSystems:
+                        return sys
+                except:
+                    pass
+    except:
+        pass
 
     # Método 2: Conectores elétricos
     try:
         cm = None
-        if hasattr(elem, 'MEPModel') and elem.MEPModel:
-            cm = elem.MEPModel.ConnectorManager
-        elif hasattr(elem, 'ConnectorManager'):
-            cm = elem.ConnectorManager
+        mep = getattr(elem, 'MEPModel', None)
+        if mep:
+            cm = getattr(mep, 'ConnectorManager', None)
+        if cm is None:
+            cm = getattr(elem, 'ConnectorManager', None)
         if cm:
             for conn in cm.Connectors:
-                if conn.Domain == Domain.DomainElectrical:
-                    if conn.IsConnected:
-                        for ref_conn in conn.AllRefs:
-                            if isinstance(ref_conn.Owner, ElectricalSystem):
-                                return ref_conn.Owner
-                    if hasattr(conn, 'MEPSystem') and conn.MEPSystem:
-                        if isinstance(conn.MEPSystem, ElectricalSystem):
-                            return conn.MEPSystem
-    except: pass
+                if conn.Domain != Domain.DomainElectrical:
+                    continue
+                for attr in ['MEPSystem']:
+                    sys = getattr(conn, attr, None)
+                    if isinstance(sys, ElectricalSystem):
+                        return sys
+                if conn.IsConnected:
+                    for ref in conn.AllRefs:
+                        if isinstance(ref.Owner, ElectricalSystem):
+                            return ref.Owner
+    except:
+        pass
 
-    # Método 3: Busca global (Fallback lento)
+    # Método 3: Varredura global (fallback lento)
     try:
         for es in FilteredElementCollector(doc).OfClass(ElectricalSystem).ToElements():
             try:
@@ -138,10 +143,107 @@ def find_circuit(elem):
                     for member in es.Elements:
                         if member.Id == elem.Id:
                             return es
-            except: continue
-    except: pass
+            except:
+                continue
+    except:
+        pass
 
     return None
+
+
+def get_member_ids(circuit):
+    ids = []
+    try:
+        for el in circuit.Elements:
+            ids.append(el.Id)
+    except:
+        pass
+    return ids
+
+
+def is_in_circuit(circuit, elem_id):
+    """Verifica se elemento ainda está no circuito (re-query após transação)."""
+    try:
+        # Recarrega o circuito do doc para ter estado atualizado
+        fresh = doc.GetElement(circuit.Id)
+        if fresh and fresh.Elements:
+            for member in fresh.Elements:
+                if member.Id == elem_id:
+                    return True
+    except:
+        pass
+    return False
+
+
+def try_remove(circuit, el):
+    """
+    Tenta remover elemento do circuito com múltiplos métodos.
+    Deve ser chamada DENTRO de uma transação aberta.
+    Retorna True se removido com sucesso.
+    """
+    # Verifica se o elemento a ser removido é o Quadro (Panel) do circuito
+    try:
+        if circuit.BaseEquipment and circuit.BaseEquipment.Id == el.Id:
+            circuit.SelectPanel(None)
+            doc.Regenerate()
+            return True
+    except:
+        pass
+
+    single_set = ElementSet()
+    single_set.Insert(el)
+
+    # Método 1: RemoveFromCircuit padrão
+    try:
+        circuit.RemoveFromCircuit(single_set)
+        doc.Regenerate()  # Força o Revit a atualizar a lista circuit.Elements
+    except:
+        pass
+
+    # Verifica se foi removido de verdade
+    still_in = False
+    try:
+        fresh_circuit = doc.GetElement(circuit.Id)
+        for member in fresh_circuit.Elements:
+            if member.Id == el.Id:
+                still_in = True
+                break
+    except:
+        pass
+
+    if not still_in:
+        return True
+
+    # Método 3: Desconectar via conectores
+    try:
+        cm = None
+        mep = getattr(el, 'MEPModel', None)
+        if mep:
+            cm = getattr(mep, 'ConnectorManager', None)
+        if cm is None:
+            cm = getattr(el, 'ConnectorManager', None)
+        if cm:
+            for conn in cm.Connectors:
+                if conn.Domain != Domain.DomainElectrical or not conn.IsConnected:
+                    continue
+                to_disconnect = []
+                for ref in conn.AllRefs:
+                    if isinstance(ref.Owner, ElectricalSystem) and ref.Owner.Id == circuit.Id:
+                        to_disconnect.append(ref)
+                for ref in to_disconnect:
+                    try:
+                        conn.DisconnectFrom(ref)
+                    except:
+                        pass
+        # Verifica
+        for member in circuit.Elements:
+            if member.Id == el.Id:
+                return False
+        return True
+    except:
+        pass
+
+    return False
 
 
 def manage_circuit():
@@ -149,7 +251,7 @@ def manage_circuit():
     selected_ids = list(uidoc.Selection.GetElementIds())
     if selected_ids:
         elem = doc.GetElement(selected_ids[0])
-        
+
     if not elem:
         try:
             ref = uidoc.Selection.PickObject(
@@ -171,35 +273,29 @@ def manage_circuit():
 
     try:
         while True:
-            # Atualiza a lista de membros a cada iteração
-            member_ids = []
-            try:
-                for el in circuit.Elements:
-                    member_ids.append(el.Id)
-            except:
-                break
+            member_ids = get_member_ids(circuit)
 
-            # Aplica/Atualiza o destaque vermelho
             with Transaction(doc, "Highlight Circuito") as t:
                 t.Start()
-                # Limpa destaque apenas de quem SAÍU do circuito (comparando com a lista anterior)
                 to_clear = [eid for eid in old_member_ids if eid not in member_ids]
                 if to_clear:
                     set_red_override(view, to_clear, apply=False)
-                # Re-aplica no estado atual (garante que todos os membros atuais fiquem vermelhos)
                 set_red_override(view, member_ids, apply=True)
                 t.Commit()
-            
+
             old_member_ids = list(member_ids)
 
             circ_num = "?"
-            try: circ_num = circuit.CircuitNumber
-            except: pass
+            try:
+                circ_num = circuit.CircuitNumber
+            except:
+                pass
 
             action = forms.CommandSwitchWindow.show(
-                ['➕ Adicionar elementos', '➖ Remover elementos', '🗑️ Deletar Circuito', '◀ Sair'],
-                message="Circuito: {} | {} membro(s)".format(circ_num, len(member_ids)),
-                title="Gerenciar Circuito"
+                [u'➕ Adicionar elementos', u'➖ Remover elementos',
+                 u'🗑️ Deletar Circuito', u'◀ Sair'],
+                message=u"Circuito: {} | {} membro(s)".format(circ_num, len(member_ids)),
+                title=u"Gerenciar Circuito"
             )
 
             if not action or 'Sair' in action:
@@ -210,81 +306,118 @@ def manage_circuit():
                     add_refs = uidoc.Selection.PickObjects(
                         ObjectType.Element, "Selecione elementos para ADICIONAR"
                     )
-                    if add_refs:
-                        with Transaction(doc, "Adicionar ao Circuito") as t:
-                            t.Start()
-                            opts = t.GetFailureHandlingOptions()
-                            opts.SetFailuresPreprocessor(WarningSwallower())
-                            t.SetFailureHandlingOptions(opts)
-                            
-                            added = 0
-                            for r in add_refs:
-                                el = doc.GetElement(r.ElementId)
-                                single_set = ElementSet()
-                                single_set.Insert(el)
-                                try:
+                except:
+                    continue
+                if not add_refs:
+                    continue
+
+                added = 0
+                failed = 0
+                with Transaction(doc, "Adicionar ao Circuito") as t:
+                    t.Start()
+                    with_warning_swallower(t)
+                    for r in add_refs:
+                        el = doc.GetElement(r.ElementId)
+                        single_set = ElementSet()
+                        single_set.Insert(el)
+                        ok = False
+                        try:
+                            circuit.AddToCircuit(single_set)
+                            ok = True
+                        except:
+                            pass
+                        if not ok:
+                            # Tenta remover de outro circuito primeiro
+                            try:
+                                ex_circ = find_circuit(el)
+                                if ex_circ and ex_circ.Id != circuit.Id:
+                                    ex_circ.RemoveFromCircuit(single_set)
+                                    doc.Regenerate()
                                     circuit.AddToCircuit(single_set)
-                                    added += 1
-                                except:
-                                    # Fallback: tentar remover de outro circuito primeiro
-                                    try:
-                                        ex_circ = find_circuit(el)
-                                        if ex_circ and ex_circ.Id != circuit.Id:
-                                            ex_circ.RemoveFromCircuit(single_set)
-                                            circuit.AddToCircuit(single_set)
-                                            added += 1
-                                    except: pass
-                            t.Commit()
-                            if added > 0:
-                                forms.toast("✅ {} adicionado(s)".format(added))
-                except: pass
+                                    doc.Regenerate()
+                                    ok = True
+                            except:
+                                pass
+                        if ok:
+                            added += 1
+                        else:
+                            failed += 1
+                    t.Commit()
+
+                if added > 0:
+                    msg = u"✅ {} adicionado(s)".format(added)
+                    if failed > 0:
+                        msg += u" | ⚠️ {} falhou".format(failed)
+                    forms.toast(msg)
+                elif failed > 0:
+                    forms.alert(u"Não foi possível adicionar {} elemento(s).".format(failed))
 
             elif 'Remover' in action:
                 try:
                     rem_refs = uidoc.Selection.PickObjects(
                         ObjectType.Element, "Selecione elementos para REMOVER"
                     )
-                    if rem_refs:
-                        with Transaction(doc, "Remover do Circuito") as t:
-                            t.Start()
-                            removed = 0
-                            for r in rem_refs:
-                                el = doc.GetElement(r.ElementId)
-                                single_set = ElementSet()
-                                single_set.Insert(el)
-                                try:
-                                    circuit.RemoveFromCircuit(single_set)
-                                    removed += 1
-                                except: pass
-                            t.Commit()
-                            if removed > 0:
-                                forms.toast("✅ {} removido(s)".format(removed))
-                except: pass
+                except:
+                    continue
+                if not rem_refs:
+                    continue
+
+                removed = 0
+                failed = 0
+                with Transaction(doc, "Remover do Circuito") as t:
+                    t.Start()
+                    with_warning_swallower(t)
+                    for r in rem_refs:
+                        el = doc.GetElement(r.ElementId)
+                        if try_remove(circuit, el):
+                            removed += 1
+                        else:
+                            failed += 1
+                    t.Commit()
+
+                # Valida novamente fora da transação (estado real do documento)
+                actually_removed = 0
+                still_there = 0
+                for r in rem_refs:
+                    if is_in_circuit(circuit, r.ElementId):
+                        still_there += 1
+                    else:
+                        actually_removed += 1
+
+                if actually_removed > 0:
+                    msg = u"✅ {} removido(s)".format(actually_removed)
+                    if still_there > 0:
+                        msg += u" | ⚠️ {} não removido(s)".format(still_there)
+                    forms.toast(msg)
+                else:
+                    forms.alert(
+                        u"Nenhum elemento foi removido.\n"
+                        u"Verifique se os elementos selecionados pertencem a este circuito."
+                    )
 
             elif 'Deletar' in action:
-                if forms.alert("Deseja realmente deletar o circuito?", yes=True, no=True):
+                if forms.alert(u"Deseja realmente deletar o circuito?", yes=True, no=True):
                     with Transaction(doc, "Deletar Circuito") as t:
                         t.Start()
-                        # Limpa highlight antes de deletar
                         set_red_override(view, member_ids, apply=False)
                         try:
                             doc.Delete(circuit.Id)
-                            forms.toast("✅ Circuito deletado!")
                             t.Commit()
-                            return # Sai da função pois o circuito foi deletado
-                        except:
+                            forms.toast(u"✅ Circuito deletado!")
+                            return
+                        except Exception as ex:
                             t.RollBack()
+                            forms.alert(u"Não foi possível deletar o circuito:\n{}".format(ex))
 
     finally:
-        # Garante que o destaque seja removido ao sair do comando
         try:
             with Transaction(doc, "Limpar Highlight") as t:
                 t.Start()
-                # Limpa tudo que foi destacado durante a sessão (membros atuais e anteriores)
-                all_to_clear = list(set(member_ids + old_member_ids))
-                set_red_override(view, all_to_clear, apply=False)
+                all_ids = list(set(member_ids + old_member_ids))
+                set_red_override(view, all_ids, apply=False)
                 t.Commit()
-        except: pass
+        except:
+            pass
 
 
 if __name__ == "__main__":
