@@ -736,7 +736,10 @@ if shift_pressed or not saved_criteria:
     win.ShowDialog()
 else:
     cat_id  = elem.Category.Id if elem.Category else None
-    matches = filter_similar(tgt_doc, elem, saved_criteria, saved_scope, cat_id)
+    with forms.ProgressBar(title=u"Smart Select Similar...", cancellable=False) as pb:
+        pb.update_progress(0, 1)
+        matches = filter_similar(tgt_doc, elem, saved_criteria, saved_scope, cat_id)
+        pb.update_progress(1, 1)
     if matches:
         if is_linked:
             refs = List[Reference]()

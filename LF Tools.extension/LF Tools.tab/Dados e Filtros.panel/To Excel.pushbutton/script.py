@@ -1658,45 +1658,72 @@ class ExportImportWindow(forms.WPFWindow):
         skipped_names = []
 
         try:
-            self.update_status("Lendo dados...")
+            try:
+                from pyrevit import forms as _pyforms
+                _ProgressBar = _pyforms.ProgressBar
+            except Exception:
+                _ProgressBar = None
 
-            for sch_dict in selected:
-                src     = []
-                params  = []
-                is_panel = sch_dict.get('is_panel', False)
-                name    = sch_dict['display_name']
-                sch     = sch_dict['schedule']
+            total_steps = len(selected) + 1
+            _pb_ctx = _ProgressBar(title=u"Exportando para Excel...", cancellable=False) if _ProgressBar else None
 
-                if is_panel:
-                    rows, headers = get_panel_schedule_data(sch)
-                    class RowObj:
-                        def __init__(self, d):
-                            self.row_data = d
-                    src    = [RowObj(r) for r in rows]
-                    params = [ParamDef(name=h, istype=False, definition=None,
-                                       isreadonly=True, isunit=False,
-                                       storagetype=DB.StorageType.String) for h in headers]
-                else:
-                    src, params = get_schedule_elements_and_params(sch)
+            def _pb_update(step):
+                try:
+                    if _pb_ctx:
+                        _pb_ctx.update_progress(step, total_steps)
+                except Exception:
+                    pass
 
-                if src:
-                    targets.append({'name': name or "Sheet", 'src': src,
-                                    'params': params, 'is_panel': is_panel})
-                else:
-                    skipped_names.append(name)
+            if _pb_ctx:
+                _pb_ctx.__enter__()
+            try:
+                self.update_status("Lendo dados...")
 
-            if not targets:
-                self.update_status("Nada para exportar.")
-                msg = "Nenhuma tabela com dados para exportar."
-                if skipped_names:
-                    msg += "\n\nTabelas vazias ignoradas:\n- " + "\n- ".join(skipped_names)
-                return forms.alert(msg)
+                for i, sch_dict in enumerate(selected):
+                    _pb_update(i)
+                    src     = []
+                    params  = []
+                    is_panel = sch_dict.get('is_panel', False)
+                    name    = sch_dict['display_name']
+                    sch     = sch_dict['schedule']
 
-            formatted = bool(self.CheckBox_KeepFormat.IsChecked)
+                    if is_panel:
+                        rows, headers = get_panel_schedule_data(sch)
+                        class RowObj:
+                            def __init__(self, d):
+                                self.row_data = d
+                        src    = [RowObj(r) for r in rows]
+                        params = [ParamDef(name=h, istype=False, definition=None,
+                                           isreadonly=True, isunit=False,
+                                           storagetype=DB.StorageType.String) for h in headers]
+                    else:
+                        src, params = get_schedule_elements_and_params(sch)
 
-            self.update_status("Gerando Excel ({} abas)...".format(len(targets)))
-            export_xls(targets, self.export_path, formatted=formatted)
-            self.update_status("Concluído!")
+                    if src:
+                        targets.append({'name': name or "Sheet", 'src': src,
+                                        'params': params, 'is_panel': is_panel})
+                    else:
+                        skipped_names.append(name)
+
+                if not targets:
+                    self.update_status("Nada para exportar.")
+                    msg = "Nenhuma tabela com dados para exportar."
+                    if skipped_names:
+                        msg += "\n\nTabelas vazias ignoradas:\n- " + "\n- ".join(skipped_names)
+                    return forms.alert(msg)
+
+                formatted = bool(self.CheckBox_KeepFormat.IsChecked)
+
+                _pb_update(len(selected))
+                self.update_status("Gerando Excel ({} abas)...".format(len(targets)))
+                export_xls(targets, self.export_path, formatted=formatted)
+                self.update_status("Concluído!")
+            finally:
+                if _pb_ctx:
+                    try:
+                        _pb_ctx.__exit__(None, None, None)
+                    except Exception:
+                        pass
 
             report = "Exportação finalizada!\n{} abas criadas.".format(len(targets))
             if skipped_names:

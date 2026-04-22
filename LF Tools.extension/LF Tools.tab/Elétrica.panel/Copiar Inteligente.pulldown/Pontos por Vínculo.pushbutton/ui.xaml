@@ -1,8 +1,8 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Pontos por Vínculo"
-        Height="820" Width="1140"
-        MinHeight="600" MinWidth="920"
+        Title="Pontos por Vínculo  |  LF Tools"
+        Height="860" Width="1160"
+        MinHeight="620" MinWidth="940"
         WindowStartupLocation="CenterScreen"
         ResizeMode="CanResizeWithGrip"
         Background="#F2F2F2"
@@ -13,7 +13,7 @@
 
     <Window.Resources>
 
-        <!-- PALETA -->
+        <!-- ── Paleta ─────────────────────────────────────────────────── -->
         <SolidColorBrush x:Key="AppBackground"     Color="#F2F2F2"/>
         <SolidColorBrush x:Key="PanelColor"        Color="#FFFFFF"/>
         <SolidColorBrush x:Key="InputColor"        Color="#FFFFFF"/>
@@ -31,7 +31,54 @@
         <SolidColorBrush x:Key="TextMuted"         Color="#999999"/>
         <SolidColorBrush x:Key="TextOnAccent"      Color="#FFFFFF"/>
 
-        <!-- TEXTBLOCK -->
+        <!-- ── TabControl / TabItem ────────────────────────────────────── -->
+        <Style TargetType="TabControl">
+            <Setter Property="Background"      Value="{StaticResource AppBackground}"/>
+            <Setter Property="BorderBrush"     Value="{StaticResource BorderColor}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding"         Value="0"/>
+        </Style>
+
+        <Style TargetType="TabItem">
+            <Setter Property="FontSize"   Value="13"/>
+            <Setter Property="Padding"    Value="16,8"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="TabBorder"
+                                Background="{StaticResource SubtleSurface}"
+                                BorderBrush="{StaticResource BorderColor}"
+                                BorderThickness="1,1,1,0"
+                                CornerRadius="5,5,0,0"
+                                Padding="{TemplateBinding Padding}"
+                                Margin="0,0,4,0"
+                                Cursor="Hand">
+                            <ContentPresenter ContentSource="Header"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsMouseOver" Value="True"/>
+                                    <Condition Property="IsSelected"  Value="False"/>
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="TabBorder" Property="Background" Value="{StaticResource HoverBg}"/>
+                            </MultiTrigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="TabBorder" Property="Background"    Value="{StaticResource PanelColor}"/>
+                                <Setter TargetName="TabBorder" Property="BorderBrush"   Value="{StaticResource AccentBlue}"/>
+                                <Setter Property="Foreground"                           Value="{StaticResource AccentBlue}"/>
+                                <Setter Property="FontWeight"                           Value="SemiBold"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ── TextBlock ──────────────────────────────────────────────── -->
         <Style TargetType="TextBlock">
             <Setter Property="FontFamily" Value="Segoe UI"/>
             <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
@@ -63,7 +110,7 @@
             <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
 
-        <!-- SEPARATOR -->
+        <!-- ── Separator ──────────────────────────────────────────────── -->
         <Style TargetType="Separator">
             <Setter Property="Background"      Value="{StaticResource DividerColor}"/>
             <Setter Property="Height"          Value="1"/>
@@ -71,7 +118,7 @@
             <Setter Property="BorderThickness" Value="0"/>
         </Style>
 
-        <!-- TEXTBOX -->
+        <!-- ── TextBox ────────────────────────────────────────────────── -->
         <Style TargetType="TextBox">
             <Setter Property="Background"               Value="{StaticResource InputColor}"/>
             <Setter Property="Foreground"               Value="{StaticResource TextPrimary}"/>
@@ -104,7 +151,7 @@
             </Setter>
         </Style>
 
-        <!-- COMBOBOX -->
+        <!-- ── ComboBox ───────────────────────────────────────────────── -->
         <Style TargetType="ComboBox">
             <Setter Property="Height"                   Value="30"/>
             <Setter Property="Background"               Value="{StaticResource InputColor}"/>
@@ -182,7 +229,7 @@
             </Setter>
         </Style>
 
-        <!-- COMBOBOX ITEM -->
+        <!-- ── ComboBoxItem ───────────────────────────────────────────── -->
         <Style TargetType="ComboBoxItem">
             <Setter Property="Padding"    Value="8,6"/>
             <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
@@ -208,7 +255,7 @@
             </Setter>
         </Style>
 
-        <!-- CHECKBOX -->
+        <!-- ── CheckBox ───────────────────────────────────────────────── -->
         <Style x:Key="ModernCheckBox" TargetType="CheckBox">
             <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
             <Setter Property="FontSize"   Value="13"/>
@@ -216,7 +263,7 @@
             <Setter Property="Cursor"     Value="Hand"/>
         </Style>
 
-        <!-- BOTÃO PRIMÁRIO -->
+        <!-- ── Botão Primário ─────────────────────────────────────────── -->
         <Style x:Key="PrimaryActionButton" TargetType="Button">
             <Setter Property="Background"      Value="{StaticResource AccentBlue}"/>
             <Setter Property="Foreground"      Value="{StaticResource TextOnAccent}"/>
@@ -249,7 +296,7 @@
             </Setter>
         </Style>
 
-        <!-- BOTÃO SECUNDÁRIO -->
+        <!-- ── Botão Secundário ───────────────────────────────────────── -->
         <Style x:Key="SecondaryActionButton" TargetType="Button">
             <Setter Property="Background"      Value="#E0E0E0"/>
             <Setter Property="Foreground"      Value="{StaticResource TextPrimary}"/>
@@ -281,7 +328,7 @@
             </Setter>
         </Style>
 
-        <!-- PANEL BORDER -->
+        <!-- ── Panel Border ───────────────────────────────────────────── -->
         <Style x:Key="PanelBorder" TargetType="Border">
             <Setter Property="Background"      Value="{StaticResource PanelColor}"/>
             <Setter Property="BorderBrush"     Value="{StaticResource BorderColor}"/>
@@ -291,22 +338,16 @@
 
     </Window.Resources>
 
-    <Grid Margin="24,18,24,18">
+    <Grid Margin="24,18,24,14">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>   <!-- 0: Título + status -->
-            <RowDefinition Height="14"/>     <!-- 1: spacer -->
-            <RowDefinition Height="Auto"/>   <!-- 2: Painel de configuração -->
+            <RowDefinition Height="12"/>     <!-- 1: spacer -->
+            <RowDefinition Height="*"/>      <!-- 2: TabControl -->
             <RowDefinition Height="10"/>     <!-- 3: spacer -->
-            <RowDefinition Height="Auto"/>   <!-- 4: Mapeamento de níveis -->
-            <RowDefinition Height="10"/>     <!-- 5: spacer -->
-            <RowDefinition Height="*"/>      <!-- 6: Tabela (cabeçalho + lista) -->
-            <RowDefinition Height="10"/>     <!-- 7: spacer -->
-            <RowDefinition Height="Auto"/>   <!-- 8: Nível padrão fallback -->
-            <RowDefinition Height="12"/>     <!-- 9: spacer -->
-            <RowDefinition Height="Auto"/>   <!-- 10: Botões de ação -->
+            <RowDefinition Height="Auto"/>   <!-- 4: Footer compartilhado (Debug + Cancelar) -->
         </Grid.RowDefinitions>
 
-        <!-- ── CABEÇALHO ── -->
+        <!-- ── Cabeçalho ─────────────────────────────────────────────── -->
         <Grid Grid.Row="0">
             <StackPanel>
                 <TextBlock Text="Pontos por Vínculo"
@@ -319,212 +360,395 @@
             </StackPanel>
         </Grid>
 
-        <!-- ── CONFIGURAÇÃO ── -->
-        <Border Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="16,12">
-            <StackPanel>
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>   <!-- label Vínculo -->
-                    <ColumnDefinition Width="*"/>      <!-- combobox -->
-                    <ColumnDefinition Width="10"/>
-                    <ColumnDefinition Width="Auto"/>   <!-- btn Escanear -->
-                    <ColumnDefinition Width="15"/>
-                    <ColumnDefinition Width="Auto"/>   <!-- label Fase -->
-                    <ColumnDefinition Width="130"/>    <!-- cb Fase -->
-                    <ColumnDefinition Width="20"/>
-                    <ColumnDefinition Width="Auto"/>   <!-- chk FilterNonElec -->
-                </Grid.ColumnDefinitions>
+        <!-- ── TabControl ────────────────────────────────────────────── -->
+        <TabControl Grid.Row="2" x:Name="MainTabs">
 
-                <TextBlock Grid.Column="0"
-                           Text="Vínculo:" FontWeight="SemiBold"
-                           VerticalAlignment="Center" Margin="0,0,10,0"/>
-                <ComboBox x:Name="cb_Link" Grid.Column="1"
-                          IsEditable="True" StaysOpenOnEdit="True"/>
-                <Button x:Name="btn_Scan" Grid.Column="3"
-                        Content="Escanear" Width="100"
-                        Style="{StaticResource PrimaryActionButton}"/>
-                        
-                <TextBlock Grid.Column="5"
-                           Text="Fase alvo:" FontWeight="SemiBold"
-                           VerticalAlignment="Center" Margin="0,0,6,0"/>
-                <ComboBox x:Name="cb_Phase" Grid.Column="6"
-                          IsEditable="True" StaysOpenOnEdit="True" />
-                          
-                <CheckBox x:Name="chk_FilterNonElec" Grid.Column="8"
-                          Content="Ocultar não-elétricas"
-                          Style="{StaticResource ModernCheckBox}"
-                          VerticalAlignment="Center" IsChecked="True"/>
-            </Grid>
+            <!-- ╔══════════════════════════════════════════════════╗ -->
+            <!-- ║             Tab 1: Pontos por Vínculo            ║ -->
+            <!-- ╚══════════════════════════════════════════════════╝ -->
+            <TabItem Header="  📍 Pontos por Vínculo  ">
+                <Grid Margin="0,10,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>  <!-- Config -->
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>  <!-- Níveis -->
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="*"/>     <!-- Tabela -->
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>  <!-- Nível fallback -->
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>  <!-- Botões PpV -->
+                    </Grid.RowDefinitions>
 
-            <Separator Margin="0,10,0,8"/>
+                    <!-- Config -->
+                    <Border Grid.Row="0" Style="{StaticResource PanelBorder}" Padding="16,12">
+                        <StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="10"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="15"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="130"/>
+                                    <ColumnDefinition Width="20"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Vínculo:" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                <ComboBox x:Name="cb_Link" Grid.Column="1"
+                                          IsEditable="True" StaysOpenOnEdit="True"/>
+                                <Button x:Name="btn_Scan" Grid.Column="3"
+                                        Content="Escanear" Width="100"
+                                        Style="{StaticResource PrimaryActionButton}"/>
+                                <TextBlock Grid.Column="5" Text="Fase alvo:" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <ComboBox x:Name="cb_Phase" Grid.Column="6"
+                                          IsEditable="True" StaysOpenOnEdit="True"/>
+                                <CheckBox x:Name="chk_FilterNonElec" Grid.Column="8"
+                                          Content="Ocultar não-elétricas"
+                                          Style="{StaticResource ModernCheckBox}"
+                                          VerticalAlignment="Center" IsChecked="True"/>
+                            </Grid>
 
-            <!-- Linha de Perfil -->
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="8"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="8"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="8"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
+                            <Separator Margin="0,10,0,8"/>
 
-                <TextBlock Grid.Column="0"
-                           Text="Perfil:" FontWeight="SemiBold"
-                           VerticalAlignment="Center" Margin="0,0,10,0"/>
-                <ComboBox x:Name="cb_Profile" Grid.Column="1" Height="30"/>
-                <Button x:Name="btn_LoadProfile" Grid.Column="3"
-                        Content="Carregar Perfil"
-                        Style="{StaticResource SecondaryActionButton}" Width="120"/>
-                <Button x:Name="btn_SaveProfile" Grid.Column="5"
-                        Content="Salvar Perfil"
-                        Style="{StaticResource SecondaryActionButton}" Width="110"/>
-                <Button x:Name="btn_ReadProject" Grid.Column="7"
-                        Content="&#128366; Ler Projeto"
-                        Style="{StaticResource SecondaryActionButton}" Width="120"
-                        ToolTip="Lê elementos elétricos do projeto atual e gera um perfil automaticamente"/>
-            </Grid>
-            </StackPanel>
-        </Border>
-
-        <!-- ── MAPEAMENTO DE NÍVEIS ── -->
-        <Border Grid.Row="4" Style="{StaticResource PanelBorder}" Padding="16,10">
-            <StackPanel>
-                <TextBlock Text="Mapeamento de Níveis"
-                           Style="{StaticResource SectionHeader}"/>
-                <ScrollViewer MaxHeight="90" VerticalScrollBarVisibility="Auto">
-                    <StackPanel x:Name="sp_Levels">
-                        <TextBlock Text="Escaneie o vínculo para ver os níveis."
-                                   Style="{StaticResource HintText}" Margin="0"/>
-                    </StackPanel>
-                </ScrollViewer>
-            </StackPanel>
-        </Border>
-
-        <!-- ── TABELA ── -->
-        <Border Grid.Row="6" Style="{StaticResource PanelBorder}" Padding="0">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>   <!-- cabeçalho das colunas -->
-                    <RowDefinition Height="*"/>      <!-- lista de famílias -->
-                </Grid.RowDefinitions>
-
-                <!-- Cabeçalho das colunas -->
-                <Border Grid.Row="0"
-                        Background="{StaticResource SubtleSurface}"
-                        BorderBrush="{StaticResource DividerColor}"
-                        BorderThickness="0,0,0,1"
-                        CornerRadius="6,6,0,0" Padding="8,9">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="28"/>
-                            <ColumnDefinition Width="160"/>
-                            <ColumnDefinition Width="36"/>
-                            <ColumnDefinition Width="90"/>
-                            <ColumnDefinition Width="2*"/>
-                            <ColumnDefinition Width="2*"/>
-                            <ColumnDefinition Width="72"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="1" Text="Família (Vínculo)"
-                                   Style="{StaticResource ColHeader}"/>
-                        <TextBlock Grid.Column="2" Text="Qtd"
-                                   Style="{StaticResource ColHeader}"
-                                   HorizontalAlignment="Center"/>
-                        <TextBlock Grid.Column="3" Text="Classif. Carga"
-                                   Style="{StaticResource ColHeader}" Margin="4,0,0,0"/>
-                        <TextBlock Grid.Column="4" Text="Ponto Elétrico"
-                                   Style="{StaticResource ColHeader}" Margin="4,0,0,0"/>
-                        <TextBlock Grid.Column="5" Text="Ponto de Dados"
-                                   Style="{StaticResource ColHeader}" Margin="4,0,0,0"/>
-                        <TextBlock Grid.Column="6" Text="Pot. (VA)"
-                                   Style="{StaticResource ColHeader}" Margin="4,0,0,0"/>
-                    </Grid>
-                </Border>
-
-                <!-- Lista dinâmica de famílias (gerada em Python) -->
-                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                    <StackPanel x:Name="sp_Families" Margin="4,2,4,4"/>
-                </ScrollViewer>
-            </Grid>
-        </Border>
-
-        <!-- ── NÍVEL PADRÃO (fallback) ── -->
-        <Border Grid.Row="8" Style="{StaticResource PanelBorder}" Padding="16,10">
-            <StackPanel>
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="200"/>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="80"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0"
-                               Text="Nível padrão (famílias sem correspondência):"
-                               FontSize="12" Foreground="{StaticResource TextSecondary}"
-                               VerticalAlignment="Center" Margin="0,0,10,0"/>
-                    <ComboBox x:Name="cb_DefaultLevel" Grid.Column="1"
-                              IsEditable="True" StaysOpenOnEdit="True"/>
-                    <TextBlock Grid.Column="2"
-                               Text="Altura:" FontSize="12"
-                               Foreground="{StaticResource TextSecondary}"
-                               VerticalAlignment="Center" Margin="12,0,8,0"/>
-                    <TextBox x:Name="tb_DefaultHeight" Grid.Column="3"
-                             Text="0,00" TextAlignment="Right"/>
-                    <TextBlock Grid.Column="4" Text="m"
-                               FontSize="12" Foreground="{StaticResource TextSecondary}"
-                               VerticalAlignment="Center" Margin="6,0,0,0"/>
-                </Grid>
-
-                <Separator Margin="0,8,0,6"/>
-
-                <!-- Opção: posicionar na face da parede -->
-                <CheckBox x:Name="chk_FacePlacement"
-                          Style="{StaticResource ModernCheckBox}"
-                          Margin="0,0,0,2">
-                    <CheckBox.Content>
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="Posicionar na face da parede"
-                                       VerticalAlignment="Center"/>
-                            <TextBlock Text="  (luminárias mantêm posicionamento normal)"
-                                       FontSize="11"
-                                       Foreground="{StaticResource TextMuted}"
-                                       VerticalAlignment="Center"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="8"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="8"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="8"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Perfil:" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                <ComboBox x:Name="cb_Profile" Grid.Column="1" Height="30"
+                                          IsEditable="True" StaysOpenOnEdit="True"/>
+                                <Button x:Name="btn_LoadProfile" Grid.Column="3"
+                                        Content="Carregar Perfil"
+                                        Style="{StaticResource SecondaryActionButton}" Width="120"/>
+                                <Button x:Name="btn_SaveProfile" Grid.Column="5"
+                                        Content="Salvar Perfil"
+                                        Style="{StaticResource SecondaryActionButton}" Width="110"/>
+                                <Button x:Name="btn_ReadProject" Grid.Column="7"
+                                        Content="&#128366; Ler Projeto"
+                                        Style="{StaticResource SecondaryActionButton}" Width="120"
+                                        ToolTip="Lê elementos elétricos do projeto atual e gera um perfil automaticamente"/>
+                            </Grid>
                         </StackPanel>
-                    </CheckBox.Content>
-                </CheckBox>
+                    </Border>
 
-            </StackPanel>
-        </Border>
+                    <!-- Mapeamento de Níveis -->
+                    <Border Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="16,10">
+                        <StackPanel>
+                            <TextBlock Text="Mapeamento de Níveis"
+                                       Style="{StaticResource SectionHeader}"/>
+                            <ScrollViewer MaxHeight="90" VerticalScrollBarVisibility="Auto">
+                                <StackPanel x:Name="sp_Levels">
+                                    <TextBlock Text="Escaneie o vínculo para ver os níveis."
+                                               Style="{StaticResource HintText}" Margin="0"/>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </StackPanel>
+                    </Border>
 
-        <!-- ── BOTÕES ── -->
-        <Grid Grid.Row="10">
+                    <!-- Tabela de Famílias -->
+                    <Border Grid.Row="4" Style="{StaticResource PanelBorder}" Padding="0">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <Border Grid.Row="0"
+                                    Background="{StaticResource SubtleSurface}"
+                                    BorderBrush="{StaticResource DividerColor}"
+                                    BorderThickness="0,0,0,1"
+                                    CornerRadius="6,6,0,0" Padding="8,9">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="28"/>
+                                        <ColumnDefinition Width="220"/>
+                                        <ColumnDefinition Width="40"/>
+                                        <ColumnDefinition Width="2*"/>
+                                        <ColumnDefinition Width="2*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="1" Text="Família (Vínculo)"
+                                               Style="{StaticResource ColHeader}"/>
+                                    <TextBlock Grid.Column="2" Text="Qtd"
+                                               Style="{StaticResource ColHeader}"
+                                               HorizontalAlignment="Center"/>
+                                    <TextBlock Grid.Column="3" Text="Ponto Elétrico"
+                                               Style="{StaticResource ColHeader}" Margin="4,0,0,0"/>
+                                    <TextBlock Grid.Column="4" Text="Ponto de Dados"
+                                               Style="{StaticResource ColHeader}" Margin="4,0,0,0"/>
+                                </Grid>
+                            </Border>
+                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                                <StackPanel x:Name="sp_Families" Margin="4,2,4,4"/>
+                            </ScrollViewer>
+                        </Grid>
+                    </Border>
+
+                    <!-- Nível padrão (fallback) -->
+                    <Border Grid.Row="6" Style="{StaticResource PanelBorder}" Padding="16,10">
+                        <StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="200"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="80"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0"
+                                           Text="Nível padrão (famílias sem correspondência):"
+                                           FontSize="12" Foreground="{StaticResource TextSecondary}"
+                                           VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                <ComboBox x:Name="cb_DefaultLevel" Grid.Column="1"
+                                          IsEditable="True" StaysOpenOnEdit="True"/>
+                                <TextBlock Grid.Column="2" Text="Altura:"
+                                           FontSize="12" Foreground="{StaticResource TextSecondary}"
+                                           VerticalAlignment="Center" Margin="12,0,8,0"/>
+                                <TextBox x:Name="tb_DefaultHeight" Grid.Column="3"
+                                         Text="0,00" TextAlignment="Right"/>
+                                <TextBlock Grid.Column="4" Text="m"
+                                           FontSize="12" Foreground="{StaticResource TextSecondary}"
+                                           VerticalAlignment="Center" Margin="6,0,0,0"/>
+                            </Grid>
+                            <Separator Margin="0,8,0,6"/>
+                            <CheckBox x:Name="chk_FacePlacement"
+                                      Style="{StaticResource ModernCheckBox}"
+                                      Margin="0,0,0,2">
+                                <CheckBox.Content>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="Posicionar na face da parede"
+                                                   VerticalAlignment="Center"/>
+                                        <TextBlock Text="  (luminárias mantêm posicionamento normal)"
+                                                   FontSize="11"
+                                                   Foreground="{StaticResource TextMuted}"
+                                                   VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </CheckBox.Content>
+                            </CheckBox>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Botões da Tab 1 -->
+                    <Grid Grid.Row="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal" Grid.Column="0" VerticalAlignment="Center">
+                            <Button x:Name="btn_SelectAll"  Content="Selecionar Todos"
+                                    Style="{StaticResource SecondaryActionButton}" Margin="0,0,6,0"/>
+                            <Button x:Name="btn_SelectNone" Content="Nenhum"
+                                    Style="{StaticResource SecondaryActionButton}"/>
+                        </StackPanel>
+                        <Button x:Name="btn_Place" Grid.Column="1"
+                                Content="Colocar Pontos"
+                                Style="{StaticResource PrimaryActionButton}"
+                                Width="160"/>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <!-- ╔══════════════════════════════════════════════════╗ -->
+            <!-- ║           Tab 2: Auto-Elétrica                   ║ -->
+            <!-- ╚══════════════════════════════════════════════════╝ -->
+            <TabItem Header="  ⚡ Auto-Elétrica  ">
+                <Grid Margin="0,10,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>     <!-- Conteúdo rolável -->
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>  <!-- Botões AE -->
+                    </Grid.RowDefinitions>
+
+                    <!-- Conteúdo rolável -->
+                    <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+
+                            <!-- Card: Seleção -->
+                            <Border Style="{StaticResource PanelBorder}"
+                                    Padding="16,12" Margin="0,0,0,10">
+                                <StackPanel>
+                                    <TextBlock Text="SELEÇÃO DE ORIGEM"
+                                               Style="{StaticResource SectionHeader}"/>
+                                    <TextBlock x:Name="ae_TxtSelecao"
+                                               FontSize="12"
+                                               Foreground="{StaticResource TextSecondary}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,0,0,8"/>
+                                    <Button x:Name="ae_BtnBuscarPendentes"
+                                            Content="Buscar pontos pendentes (LF_StatusIntegracao)"
+                                            Style="{StaticResource SecondaryActionButton}"
+                                            HorizontalAlignment="Left"
+                                            Visibility="Collapsed"/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Card: Perfil AE -->
+                            <Border Style="{StaticResource PanelBorder}"
+                                    Padding="16,12" Margin="0,0,0,10">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="8"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="8"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Perfil AE:" FontWeight="SemiBold"
+                                               VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                    <ComboBox x:Name="ae_CmbProfile" Grid.Column="1" Height="30"
+                                              IsEditable="True" StaysOpenOnEdit="True"/>
+                                    <Button x:Name="ae_BtnLoadProfile" Grid.Column="3"
+                                            Content="Carregar Perfil"
+                                            Style="{StaticResource SecondaryActionButton}" Width="120"/>
+                                    <Button x:Name="ae_BtnSaveProfile" Grid.Column="5"
+                                            Content="Salvar Perfil"
+                                            Style="{StaticResource SecondaryActionButton}" Width="110"/>
+                                </Grid>
+                            </Border>
+
+                            <!-- Cards por família (gerados em Python) -->
+                            <StackPanel x:Name="ae_PanelGroups"/>
+
+                            <!-- Card: Quadro -->
+                            <Border Style="{StaticResource PanelBorder}"
+                                    Padding="16,12" Margin="0,0,0,4">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0"
+                                               Text="Quadro de distribuição:"
+                                               FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextSecondary}"
+                                               VerticalAlignment="Center"
+                                               Margin="0,0,12,0"/>
+                                    <ComboBox x:Name="ae_CmbQuadro" Grid.Column="1"
+                                              IsEditable="True" StaysOpenOnEdit="True"/>
+                                </Grid>
+                            </Border>
+
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Botões da Tab 2 -->
+                    <Grid Grid.Row="2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="ae_TxtStatus"
+                                   Grid.Column="0"
+                                   FontSize="11"
+                                   Foreground="{StaticResource TextMuted}"
+                                   VerticalAlignment="Center"/>
+                        <Button x:Name="ae_BtnExecutar"
+                                Grid.Column="1"
+                                Content="Executar Parametrização"
+                                Style="{StaticResource PrimaryActionButton}"
+                                Width="200"/>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <!-- ╔══════════════════════════════════════════════════╗ -->
+            <!-- ║         Tab 3: Gerenciar Perfis                   ║ -->
+            <!-- ╚══════════════════════════════════════════════════╝ -->
+            <TabItem Header="  ⚙ Gerenciar Perfis  ">
+                <Grid Margin="0,10,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>   <!-- Toolbar -->
+                        <RowDefinition Height="8"/>
+                        <RowDefinition Height="Auto"/>   <!-- Status -->
+                        <RowDefinition Height="8"/>
+                        <RowDefinition Height="*"/>      <!-- Entradas -->
+                    </Grid.RowDefinitions>
+
+                    <!-- Toolbar -->
+                    <Border Grid.Row="0" Style="{StaticResource PanelBorder}" Padding="12,10">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="8"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="4"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="4"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="12"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="4"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="4"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Perfil:" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <ComboBox x:Name="gp_CmbProfile" Grid.Column="1" Height="30"
+                                      IsEditable="True" StaysOpenOnEdit="True"/>
+                            <Button x:Name="gp_BtnNovo"     Grid.Column="3"  Content="+ Novo"
+                                    Style="{StaticResource SecondaryActionButton}" Width="80"/>
+                            <Button x:Name="gp_BtnRenomear" Grid.Column="5"  Content="Renomear"
+                                    Style="{StaticResource SecondaryActionButton}" Width="90"/>
+                            <Button x:Name="gp_BtnExcluir"  Grid.Column="7"  Content="Excluir"
+                                    Style="{StaticResource SecondaryActionButton}" Width="80"/>
+                            <Button x:Name="gp_BtnAddEntry" Grid.Column="9"  Content="+ Entrada"
+                                    Style="{StaticResource SecondaryActionButton}" Width="90"/>
+                            <Button x:Name="gp_BtnSalvar"   Grid.Column="11" Content="Salvar Alterações"
+                                    Style="{StaticResource PrimaryActionButton}"  Width="130"/>
+                            <Button x:Name="gp_BtnCarregar" Grid.Column="13" Content="Carregar nas Abas"
+                                    Style="{StaticResource SecondaryActionButton}" Width="130"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- Status -->
+                    <TextBlock x:Name="gp_TxtStatus" Grid.Row="2"
+                               FontSize="11" Foreground="{StaticResource TextMuted}"
+                               TextWrapping="Wrap" VerticalAlignment="Center"/>
+
+                    <!-- Painel de entradas -->
+                    <Border Grid.Row="4" Style="{StaticResource PanelBorder}" Padding="8">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel x:Name="gp_PanelEntries"/>
+                        </ScrollViewer>
+                    </Border>
+
+                </Grid>
+            </TabItem>
+
+        </TabControl>
+
+        <!-- ── Footer compartilhado ──────────────────────────────────── -->
+        <Grid Grid.Row="4">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
 
-            <StackPanel Orientation="Horizontal" Grid.Column="0" VerticalAlignment="Center">
-                <Button x:Name="btn_SelectAll"  Content="Selecionar Todos"
-                        Style="{StaticResource SecondaryActionButton}" Margin="0,0,6,0"/>
-                <Button x:Name="btn_SelectNone" Content="Nenhum"
-                        Style="{StaticResource SecondaryActionButton}"/>
-                <CheckBox x:Name="chk_Debug" Content="Debug"
-                          Style="{StaticResource ModernCheckBox}"
-                          VerticalAlignment="Center" Margin="20,0,0,0"
-                          Foreground="{StaticResource TextMuted}"/>
-            </StackPanel>
+            <CheckBox x:Name="chk_Debug"
+                      Grid.Column="0"
+                      Content="Debug"
+                      Style="{StaticResource ModernCheckBox}"
+                      VerticalAlignment="Center"
+                      Foreground="{StaticResource TextMuted}"/>
 
-            <StackPanel Orientation="Horizontal" Grid.Column="1">
-                <Button x:Name="btn_Cancel" Content="Cancelar"
-                        Style="{StaticResource SecondaryActionButton}"
-                        Width="100" Margin="0,0,8,0"/>
-                <Button x:Name="btn_Place" Content="Colocar Pontos"
-                        Style="{StaticResource PrimaryActionButton}"
-                        Width="160"/>
-            </StackPanel>
+            <Button x:Name="btn_Cancel"
+                    Grid.Column="1"
+                    Content="Fechar"
+                    Style="{StaticResource SecondaryActionButton}"
+                    Width="100"/>
         </Grid>
 
     </Grid>

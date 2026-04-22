@@ -589,24 +589,53 @@ def _connect_endpoint(doc, conduit, pt_near, target_conn, label="endpoint"):
             label, best_dist))
         return
 
-    # Tenta elbow (cria curva física + liga logicamente)
-    try:
-        len_p = conduit.get_Parameter(BuiltInParameter.CURVE_ELEM_LENGTH)
-        length = len_p.AsDouble() if len_p else 1.0
-        needs_elbow = c_near.Origin.DistanceTo(target_conn.Origin) >= 0.01
-        if length >= 0.15 and needs_elbow:
-            doc.Create.NewElbowFitting(c_near, target_conn)
-            dbg.result(True, "{}: elbow criado".format(label))
-            return
-    except Exception as e:
-        dbg.debug("{}: elbow falhou ({}) — tentando ConnectTo".format(label, e))
+    # ── FALLBACKS DE CONEXÃO ──
+    # O Revit frequentemente falha ao criar conectores por falta de espaço (raio muito longo).
+    # Vamos tentar uma cascata de 5 métodos diferentes para garantir a conexão.
+    
+    dist_conn = c_near.Origin.DistanceTo(target_conn.Origin)
 
-    # Fallback: conexão lógica sem curva física
+    # Método 1: Estão grudados (distância < 0.01) - Conexão Lógica Direta
+    if dist_conn < 0.01:
+        try:
+            c_near.ConnectTo(target_conn)
+            dbg.result(True, "{}: ConnectTo direto OK (mesma coordenada)".format(label))
+            return
+        except Exception:
+            pass
+
+    # Método 2: NewElbowFitting (O padrão correto para curvas 90/45)
+    try:
+        doc.Create.NewElbowFitting(c_near, target_conn)
+        dbg.result(True, "{}: Elbow criado com sucesso".format(label))
+        return
+    except Exception as e:
+        dbg.debug("{}: Falha no Elbow: {}".format(label, e))
+
+    # Método 3: NewUnionFitting (Usado quando o ângulo é quase 0°/180° e o Elbow falha)
+    try:
+        doc.Create.NewUnionFitting(c_near, target_conn)
+        dbg.result(True, "{}: Union criado com sucesso".format(label))
+        return
+    except Exception as e:
+        dbg.debug("{}: Falha no Union: {}".format(label, e))
+
+    # Método 4: NewTransitionFitting (Caso haja diferença sutil de diâmetro que impossibilita Elbow/Union)
+    try:
+        doc.Create.NewTransitionFitting(c_near, target_conn)
+        dbg.result(True, "{}: Transition criado com sucesso".format(label))
+        return
+    except Exception as e:
+        dbg.debug("{}: Falha no Transition: {}".format(label, e))
+
+    # Método 5: ConnectTo forçado (Conexão Lógica Pura)
+    # Garante o circuito elétrico mesmo se a geometria de curva não couber no espaço.
     try:
         c_near.ConnectTo(target_conn)
-        dbg.result(True, "{}: ConnectTo OK".format(label))
+        dbg.result(True, "{}: ConnectTo forçado (Conexão Lógica) OK".format(label))
+        return
     except Exception as e:
-        dbg.debug("{}: ConnectTo falhou — {}".format(label, e))
+        dbg.debug("{}: Falha Fatal, nenhuma conexão possível: {}".format(label, e))
 
 
 def draw_conduit_and_connect(doc, conduit_type_id, p_start, p_end, level_id, diameter,

@@ -27,14 +27,14 @@ if __name__ == '__main__':
     else:
         # Modo Ação (Salvar Agora)
         if config.get("enabled", True):
-            from pyrevit import HOST_APP
+            from pyrevit import HOST_APP, forms
             manager = AutoSaveManager(HOST_APP.uiapp)
             if manager.is_paused:
-                from pyrevit import forms
-                forms.alert("Timer Pausado. Clique com o botão direito para gerenciar, mas vamos forçar o save:", warn_icon=False)
-            
-            # Força salvamento manual pelo evento externo de interface
-            manager.trigger_save_now()
+                forms.alert(u"Timer Pausado. Clique com o botão direito para gerenciar, mas vamos forçar o save:", warn_icon=False)
+            with forms.ProgressBar(title=u"AutoSave: Salvando...", cancellable=False) as pb:
+                pb.update_progress(0, 1)
+                manager.trigger_save_now()
+                pb.update_progress(1, 1)
         else:
             from pyrevit import forms
-            forms.alert("O AutoSave está desativado.\nSegure Shift e clique no botão para abrir as configurações e ativá-lo.", warn_icon=False)
+            forms.alert(u"O AutoSave está desativado.\nSegure Shift e clique no botão para abrir as configurações e ativá-lo.", warn_icon=False)

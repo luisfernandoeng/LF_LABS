@@ -205,7 +205,8 @@ def transfer_extra_params(src_elem, dst_elem, logs):
 
 def get_physical_connections(elem):
     """
-    Retorna lista com os conectores conectados fisicamente (conduítes, eletrocalhas).
+    Retorna lista descrevendo as conexões físicas (conduítes, eletrocalhas) do elemento.
+    Armazena IDs e posições — não mantém refs vivos que ficam inválidos após Delete.
     """
     connections = []
     try:
@@ -214,28 +215,31 @@ def get_physical_connections(elem):
             cm = elem.MEPModel.ConnectorManager
         elif hasattr(elem, 'ConnectorManager'):
             cm = elem.ConnectorManager
-            
-        if cm:
-            for conn in cm.Connectors:
-                if conn.IsConnected:
-                    refs = []
-                    for ref in conn.AllRefs:
-                        try:
-                            # Ignora conexão lógica (circuitos) ou do próprio elemento
-                            if ref.ConnectorType == ConnectorType.Logical:
-                                continue
-                            if ref.Owner.Id != elem.Id:
-                                refs.append(ref)
-                        except Exception:
+
+        if not cm:
+            return connections
+
+        for conn in cm.Connectors:
+            if not conn.IsConnected:
+                continue
+            try:
+                for ref in conn.AllRefs:
+                    try:
+                        if ref.ConnectorType == ConnectorType.Logical:
                             continue
-                    
-                    if refs:
+                        owner = ref.Owner
+                        if owner.Id == elem.Id:
+                            continue
                         connections.append({
-                            'old_conn': conn,
-                            'domain': conn.Domain,
-                            'origin': conn.Origin,
-                            'refs': refs
+                            'mep_elem_id':        owner.Id,
+                            'mep_conn_origin':     XYZ(ref.Origin.X, ref.Origin.Y, ref.Origin.Z),
+                            'device_conn_origin':  XYZ(conn.Origin.X, conn.Origin.Y, conn.Origin.Z),
+                            'domain':              conn.Domain,
                         })
+                    except Exception:
+                        continue
+            except Exception:
+                continue
     except Exception as e:
         dbg.warn("Erro ao coletar conexões físicas: {}".format(e))
     return connections
@@ -243,54 +247,75 @@ def get_physical_connections(elem):
 
 def restore_physical_connections(new_elem, connections, logs):
     """
-    Tenta reconectar os conduítes e eletrocalhas ao novo elemento.
+    Reconecta conduítes/eletrocalhas ao novo elemento.
+    Deve ser chamada APÓS doc.Delete(src_id) para que os conectores MEP estejam livres.
+    Usa IDs + posições salvas — não depende de refs capturados antes do Delete.
     """
     if not connections:
         return
-        
+
     try:
         cm = None
         if hasattr(new_elem, 'MEPModel') and new_elem.MEPModel:
             cm = new_elem.MEPModel.ConnectorManager
         elif hasattr(new_elem, 'ConnectorManager'):
             cm = new_elem.ConnectorManager
-            
+
         if not cm:
             return
-            
-        # Converter ConnectorSet para lista Python
-        new_conns = []
-        for c in cm.Connectors:
-            new_conns.append(c)
-        
-        for old_c in connections:
-            best_match = None
-            min_dist = float('inf')
-            
-            # Encontra o conector mais próximo do novo elemento que tenha o mesmo domínio
+
+        new_conns = list(cm.Connectors)
+
+        for entry in connections:
+            mep_elem = doc.GetElement(entry['mep_elem_id'])
+            if not mep_elem:
+                logs.append("  ⚠️ Elemento MEP ID {} não encontrado (vínculo?)".format(
+                    entry['mep_elem_id'].IntegerValue))
+                continue
+
+            # Conector do conduíte/eletrocalha — encontra pelo ponto salvo
+            mep_cm = None
+            if hasattr(mep_elem, 'ConnectorManager'):
+                mep_cm = mep_elem.ConnectorManager
+            elif hasattr(mep_elem, 'MEPModel') and mep_elem.MEPModel:
+                mep_cm = mep_elem.MEPModel.ConnectorManager
+            if not mep_cm:
+                continue
+
+            best_mep_conn = None
+            min_dist = 0.5  # ~150 mm de tolerância (em pés)
+            for cc in mep_cm.Connectors:
+                d = cc.Origin.DistanceTo(entry['mep_conn_origin'])
+                if d < min_dist:
+                    min_dist = d
+                    best_mep_conn = cc
+
+            if not best_mep_conn:
+                logs.append("  ⚠️ Conector do conduíte não encontrado pela posição")
+                continue
+
+            # Conector do novo dispositivo — mesmo domínio + posição mais próxima
+            best_dev_conn = None
+            min_dev_dist = float('inf')
             for nc in new_conns:
-                if nc.Domain == old_c['domain']:
-                    dist = nc.Origin.DistanceTo(old_c['origin'])
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_match = nc
-                        
-            if best_match:
-                new_conns.remove(best_match)
-                
-                # Desconecta os antigos e conecta ao novo
-                for ref in old_c['refs']:
-                    try:
-                        # Tenta desconectar o antigo primeiro para liberar o ref
-                        try:
-                            old_c['old_conn'].DisconnectFrom(ref)
-                        except Exception:
-                            pass
-                            
-                        best_match.ConnectTo(ref)
-                        logs.append("  🔗 Conexão com conduíte/eletrocalha restaurada")
-                    except Exception as e:
-                        logs.append("  ⚠️ Falha ao reconectar conduíte/eletrocalha: {}".format(e))
+                if nc.Domain != entry['domain']:
+                    continue
+                d = nc.Origin.DistanceTo(entry['device_conn_origin'])
+                if d < min_dev_dist:
+                    min_dev_dist = d
+                    best_dev_conn = nc
+
+            if not best_dev_conn:
+                logs.append("  ⚠️ Novo elemento sem conector compatível (domínio/posição)")
+                continue
+
+            try:
+                best_dev_conn.ConnectTo(best_mep_conn)
+                new_conns.remove(best_dev_conn)
+                logs.append("  🔗 Conduíte/eletrocalha reconectado")
+            except Exception as e:
+                logs.append("  ⚠️ Falha ao reconectar: {}".format(e))
+
     except Exception as e:
         logs.append("  ⚠️ Erro ao restaurar conexões físicas: {}".format(e))
 
@@ -533,12 +558,7 @@ def replace_element(src_elem, new_symbol, logs):
     # Parâmetros extras
     transfer_extra_params(src_elem, new_inst, logs)
 
-    # Fase B.5: Restaurar conexões físicas
-    if phys_conns:
-        dbg.step("Restaurando conexões físicas")
-        restore_physical_connections(new_inst, phys_conns, logs)
-
-    # Fase C: Reconexão ao circuito
+    # Fase C: Reconexão ao circuito (antes de deletar — circuito ainda válido)
     if circuit:
         dbg.step("Restaurando circuito {}".format(circuit.Id))
         ok = add_to_circuit(circuit, new_inst)
@@ -549,11 +569,17 @@ def replace_element(src_elem, new_symbol, logs):
             logs.append("⚠️ Não foi possível adicionar ao circuito automaticamente")
             dbg.fail("Falha reintegração ao circuito")
 
-    # Deleta o elemento original
+    # Deleta o elemento original — libera os conectores dos conduítes
     src_id = src_elem.Id
     dbg.step("Deletando instância antiga {}".format(src_id))
     doc.Delete(src_id)
+    doc.Regenerate()
     logs.append("🗑️ Elemento original ({}) deletado".format(src_id.IntegerValue))
+
+    # Fase D: Reconectar conduítes/eletrocalhas APÓS delete (conectores agora livres)
+    if phys_conns:
+        dbg.step("Restaurando conexões físicas")
+        restore_physical_connections(new_inst, phys_conns, logs)
 
     return True, new_inst.Id
 

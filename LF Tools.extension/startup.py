@@ -36,11 +36,17 @@ except Exception:
 # ── Ocultar abas do Revit ──────────────────────────────────────────────────
 try:
     from pyrevit import script as _script
-    from pyrevit.runtime import types as _types
-
     _cfg = _script.get_config('lf_hidden_tabs')
     _hidden = _cfg.get_option('hidden_tabs', [])
     if _hidden:
-        _types.RibbonTabVisibilityUtils.StartHidingTabs(_hidden)
+        import clr
+        clr.AddReference('AdWindows')
+        import Autodesk.Windows as _adWin
+        _rib = _adWin.ComponentManager.Ribbon
+        for _tab in _rib.Tabs:
+            _title = _tab.Title or u""
+            if "LF Tools" in _title:
+                continue
+            _tab.IsVisible = _title not in _hidden
 except Exception:
     pass

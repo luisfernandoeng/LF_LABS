@@ -979,12 +979,19 @@ class LuisExporterWindow(forms.WPFWindow):
                 dwg_opts = self.create_dwg_options_compatible()
             dwg_opts.MergedViews = True
 
-        for idx, item in enumerate(selected_items):
+        _ops = (1 if do_dwg else 0) + (1 if do_pdf else 0)
+        _pb_total = max(total_items * _ops, 1)
+        _pb_step  = [0]
+
+        with forms.ProgressBar(title=u"Gerando Folhas...", cancellable=True) as pb:
+         for idx, item in enumerate(selected_items):
             loop_start = time.time()
             self.dbg.sub("Processando Folha: {}".format(item.Number))
             self.dbg.debug("ElementId: {}".format(item.Element.Id))
-            
-            if self.is_cancelled: 
+
+            if pb.cancelled:
+                self.is_cancelled = True
+            if self.is_cancelled:
                 self.dbg.warn("Exportação cancelada pelo usuário.")
                 break
             
@@ -1040,6 +1047,8 @@ class LuisExporterWindow(forms.WPFWindow):
                         self.add_export_item(item.Number, "Erro DWG", "error", "")
                         self.log_message("  > ERRO DWG: " + str(e))
                         self.update_counters(success_count, error_count)
+                    _pb_step[0] += 1
+                    pb.update_progress(_pb_step[0], _pb_total)
 
                 # --- PDF ---
                 if do_pdf:
@@ -1092,7 +1101,9 @@ class LuisExporterWindow(forms.WPFWindow):
                             self.log_message("  > ERRO PDF: " + str(e))
                             self.add_export_item(item.Number, "Erro PDF", "error", "")
                             self.update_counters(success_count, error_count)
-            
+                    _pb_step[0] += 1
+                    pb.update_progress(_pb_step[0], _pb_total)
+
             except Exception as ex:
                 error_count += 1
                 self.add_export_item(item.Number, "Erro: {}".format(str(ex)[:30]), "error", "")

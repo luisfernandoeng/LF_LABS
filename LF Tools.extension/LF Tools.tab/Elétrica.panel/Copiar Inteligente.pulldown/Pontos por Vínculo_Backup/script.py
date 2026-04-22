@@ -45,8 +45,6 @@ from Autodesk.Revit.DB.Structure import StructuralType
 
 from pyrevit import forms, script
 from lf_utils import DebugLogger, get_script_config, save_script_config
-import auto_eletrica
-import profile_manager
 
 _debug_cfg = get_script_config(__file__, {'debug': DEBUG_MODE})
 dbg = DebugLogger(_debug_cfg.get('debug', DEBUG_MODE))
@@ -193,6 +191,261 @@ def get_link_instances():
             pass
     return sorted(result, key=lambda x: x["display"])
 
+
+def _collect_load_classifications(doc, extra_docs=None):
+    """Retorna lista ordenada de {name, id, is_native} das Classificações de Carga.
+    Tenta LoadClassification nativa; se vazia, coleta valores distintos do
+    parâmetro de texto 'Tipo de Carga' no projeto e nos vínculos."""
+    result = []
+    lc_class = None
+    try:
+        from Autodesk.Revit.DB.Electrical import LoadClassification
+        lc_class = LoadClassification
+    except:
+        pass
+    if lc_class is None:
+        try:
+            from Autodesk.Revit.DB import LoadClassification
+            lc_class = LoadClassification
+        except:
+            pass
+    if lc_class is not None:
+        try:
+            for lc in FilteredElementCollector(doc).OfCategory(BuiltInCategory.OST_ElectricalLoadClassifications).ToElements():
+                try:
+                    lc_name = ""
+                    try:
+                        lc_name = lc.Name
+                    except:
+                        pass
+                    if not lc_name:
+                        try:
+                            p = lc.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+                            if p and p.HasValue: lc_name = p.AsString()
+                        except: pass
+                    if not lc_name:
+                        lc_name = "ID " + str(lc.Id)
+
+                    result.append({"name": lc_name, "id": lc.Id, "is_native": True})
+                except Exception as e:
+                    dbg.error("Erro lendo LoadClassification: {}".format(e))
+            result.sort(key=lambda x: x["name"])
+        except Exception as e:
+            dbg.error("Erro iterando LoadClassifications nativas: {}".format(e))
+        if result:
+            return result
+
+    # Fallback: coletar valores distintos do parâmetro texto "Tipo de Carga"
+    TEXT_SCAN_CATS = [
+        BuiltInCategory.OST_ConduitFitting,
+        BuiltInCategory.OST_ElectricalFixtures,
+        BuiltInCategory.OST_LightingFixtures,
+        BuiltInCategory.OST_MechanicalEquipment,
+        BuiltInCategory.OST_SpecialityEquipment,
+    ]
+    seen = set()
+    all_docs = [doc] + (list(extra_docs) if extra_docs else [])
+    for d in all_docs:
+        if not d:
+            continue
+        for bic in TEXT_SCAN_CATS:
+            try:
+                for el in FilteredElementCollector(d).OfCategory(bic).WhereElementIsNotElementType():
+                    try:
+                        p = el.LookupParameter("Tipo de Carga")
+                        if p and p.HasValue:
+                            val = (p.AsString() or "").strip()
+                            if val and val not in seen:
+                                seen.add(val)
+                                result.append({"name": val, "id": None, "is_native": False})
+                    except:
+                        pass
+            except:
+                pass
+    result.sort(key=lambda x: x["name"])
+    return result
+
+
+def _set_load_classification(element, lc_info):
+    """Atribui Classificação de Carga ao elemento.
+    lc_info: {"name": str, "id": ElementId|None, "is_native": bool}"""
+    if not lc_info:
+        return False
+    from Autodesk.Revit.DB import StorageType
+    # Abordagem nativa: via ElementId no conector ou BuiltInParameter
+    if lc_info.get("is_native") and lc_info.get("id"):
+        lc_id = lc_info["id"]
+        try:
+            from Autodesk.Revit.DB import Domain
+            if hasattr(element, 'MEPModel') and element.MEPModel:
+                cm = element.MEPModel.ConnectorManager
+                if cm:
+                    for conn in cm.Connectors:
+                        if conn.Domain == Domain.DomainElectrical:
+                            try:
+                                conn.LoadClassificationId = lc_id
+                                return True
+                            except:
+                                pass
+        except:
+            pass
+        try:
+            p = element.get_Parameter(BuiltInParameter.RBS_ELEC_LOAD_CLASSIFICATION)
+            if p and not p.IsReadOnly:
+                p.Set(lc_id)
+                return True
+        except:
+            pass
+            
+        try:
+            p = element.LookupParameter("Tipo de Carga")
+            if p and not p.IsReadOnly:
+                if p.StorageType == StorageType.ElementId:
+                    p.Set(lc_id)
+                    return True
+        except:
+            pass
+
+    # Abordagem texto: setar parâmetro "Tipo de Carga" por nome
+    text_val = lc_info.get("name", "")
+    if text_val:
+        try:
+            p = element.LookupParameter("Tipo de Carga")
+            if p and not p.IsReadOnly and p.StorageType == StorageType.String:
+                p.Set(text_val)
+                return True
+        except:
+            pass
+    return False
+
+
+# ── Nomes conhecidos do parâmetro de potência nas famílias do projeto ──
+_POWER_PARAM_NAMES = [
+    "Potência Ativa (W)",
+    "Potência Ativa",
+    "Potência Aparente (VA)",
+    "Potência Aparente",
+    "Apparent Load",
+    "Potência",
+    "Power",
+    "Wattage",
+    "Potencia Aparente",
+    "Potencia",
+    "Carga Aparente",
+]
+
+# GUID real do shared parameter "Potência Aparente (VA)" das famílias LF
+_POWER_GUID_STR = "44b19786-a579-4490-bcfe-f9ee378c8811"
+
+
+def _try_set_value(p, val_float, val_str):
+    """Tenta setar um parâmetro numérico. Tenta SetValueString e Set(double)."""
+    if not p or p.IsReadOnly:
+        return False
+    from Autodesk.Revit.DB import StorageType
+    if p.StorageType == StorageType.Double:
+        # Tenta SetValueString (Revit converte unidades)
+        try:
+            p.SetValueString(str(val_str))
+            return True
+        except:
+            pass
+        # Fallback: valor bruto (unidades internas = pés, mas VA não tem conversão)
+        try:
+            p.Set(val_float)
+            return True
+        except:
+            pass
+    elif p.StorageType == StorageType.Integer:
+        try:
+            p.Set(int(val_float))
+            return True
+        except:
+            pass
+    return False
+
+
+def _set_power(element, pow_str):
+    """Seta a potência aparente no elemento usando múltiplas estratégias:
+    1. LookupParameter por nomes conhecidos (instância)
+    2. GUID do shared parameter
+    3. BuiltInParameter RBS_ELEC_APPARENT_LOAD
+    4. LookupParameter por nomes conhecidos (tipo)
+    5. Conector elétrico MEPModel
+    """
+    import re
+    from System import Guid
+
+    pow_str = str(pow_str).strip().replace(',', '.')
+    if not pow_str:
+        return
+    match = re.search(r"[-+]?[0-9]*\.?[0-9]+", pow_str)
+    if not match:
+        return
+    val = float(match.group())
+
+    # ── 1. LookupParameter por nome (instância) ──
+    for pname in _POWER_PARAM_NAMES:
+        try:
+            p = element.LookupParameter(pname)
+            if p and p.HasValue is not None:
+                if _try_set_value(p, val, pow_str):
+                    return
+        except:
+            pass
+
+    # ── 2. GUID do shared parameter ──
+    try:
+        guid = Guid(_POWER_GUID_STR)
+        p = element.get_Parameter(guid)
+        if p:
+            if _try_set_value(p, val, pow_str):
+                return
+    except:
+        pass
+
+    # ── 3. BuiltInParameter RBS_ELEC_APPARENT_LOAD ──
+    try:
+        p = element.get_Parameter(BuiltInParameter.RBS_ELEC_APPARENT_LOAD)
+        if _try_set_value(p, val, pow_str):
+            return
+    except:
+        pass
+
+    # ── 4. LookupParameter por nome (tipo da família) ──
+    try:
+        elem_type = element.Document.GetElement(element.GetTypeId())
+        if elem_type:
+            for pname in _POWER_PARAM_NAMES:
+                try:
+                    p = elem_type.LookupParameter(pname)
+                    if p:
+                        if _try_set_value(p, val, pow_str):
+                            return
+                except:
+                    continue
+    except:
+        pass
+
+    # ── 5. Conector elétrico (MEPModel) — última tentativa ──
+    try:
+        from Autodesk.Revit.DB.Electrical import ElectricalSystemType
+        if hasattr(element, 'MEPModel') and element.MEPModel:
+            cm = element.MEPModel.ConnectorManager
+            if cm:
+                from Autodesk.Revit.DB import Domain
+                for c in cm.Connectors:
+                    if c.Domain == Domain.DomainElectrical:
+                        # Tenta setar a carga via propriedade do conector
+                        try:
+                            c.ElectricalApparentLoad = val
+                            return
+                        except:
+                            pass
+    except:
+        pass
+
+
 # ==================== Face Placement Helpers ====================
 
 def _get_3d_view(doc):
@@ -214,6 +467,156 @@ def _is_luminaire_sym(symbol):
         return False
 
 
+# ==================== Leitura de Circuito ====================
+
+def _read_circuit_info(el, _doc=None, cache=None):
+    """
+    Retorna dict com info do circuito do elemento:
+      nome              — número/identificador (ex: "Q1-3")
+      descricao         — descrição/nome do circuito (ex: "Tomadas Sala")
+      potencia_individual — VA por elemento (total ÷ qtd no circuito)
+    Retorna None se não encontrar circuito.
+    cache: dict opcional {circuit_id_int → info_dict} para evitar recalcular.
+    """
+    if cache is None:
+        cache = {}
+
+    circuit = None
+
+    # Método 1: MEPModel
+    try:
+        mep = getattr(el, 'MEPModel', None)
+        if mep:
+            for attr in ['GetElectricalSystems', 'GetAssignedElectricalSystems']:
+                if hasattr(mep, attr):
+                    try:
+                        result = getattr(mep, attr)()
+                        if result:
+                            for sys in result:
+                                circuit = sys
+                                break
+                    except:
+                        pass
+                if circuit:
+                    break
+        if not circuit and hasattr(el, 'ElectricalSystems'):
+            for sys in el.ElectricalSystems:
+                circuit = sys
+                break
+    except:
+        pass
+
+    # Método 2: Conectores
+    if not circuit:
+        try:
+            cm = None
+            mep = getattr(el, 'MEPModel', None)
+            if mep:
+                cm = getattr(mep, 'ConnectorManager', None)
+            if cm is None:
+                cm = getattr(el, 'ConnectorManager', None)
+            if cm:
+                for conn in cm.Connectors:
+                    if conn.Domain != Domain.DomainElectrical:
+                        continue
+                    sys = getattr(conn, 'MEPSystem', None)
+                    if isinstance(sys, ElectricalSystem):
+                        circuit = sys
+                        break
+                    if conn.IsConnected:
+                        for ref in conn.AllRefs:
+                            if isinstance(ref.Owner, ElectricalSystem):
+                                circuit = ref.Owner
+                                break
+                    if circuit:
+                        break
+        except:
+            pass
+
+    if not circuit:
+        return None
+
+    # Verifica cache
+    try:
+        cid = circuit.Id.IntegerValue
+        if cid in cache:
+            return cache[cid]
+    except:
+        cid = None
+
+    info = {
+        "nome":                u"",
+        "descricao":           u"",
+        "potencia_individual": 0.0,
+    }
+
+    # Nome do circuito (número)
+    try:
+        info["nome"] = circuit.CircuitNumber or u""
+    except:
+        pass
+
+    # Descrição: tenta vários parâmetros
+    _DESC_PARAMS = [
+        BuiltInParameter.RBS_ELEC_CIRCUIT_NAME,
+        BuiltInParameter.RBS_ELEC_CIRCUIT_LOAD_NAME,
+    ]
+    for bip in _DESC_PARAMS:
+        try:
+            p = circuit.get_Parameter(bip)
+            if p and p.HasValue:
+                val = (p.AsString() or u"").strip()
+                if val:
+                    info["descricao"] = val
+                    break
+        except:
+            pass
+    if not info["descricao"]:
+        for pname in [u"Descrição", u"Description", u"Load Name", u"Nome da Carga"]:
+            try:
+                p = circuit.LookupParameter(pname)
+                if p and p.HasValue:
+                    val = (p.AsString() or u"").strip()
+                    if val:
+                        info["descricao"] = val
+                        break
+            except:
+                pass
+
+    # Potência individual = carga total do circuito ÷ qtd de elementos
+    try:
+        total_va = 0.0
+        count    = 0
+
+        # Carga aparente total do circuito
+        for bip in [BuiltInParameter.RBS_ELEC_APPARENT_LOAD,
+                    BuiltInParameter.RBS_ELEC_TRUE_LOAD]:
+            try:
+                p = circuit.get_Parameter(bip)
+                if p and p.HasValue:
+                    total_va = p.AsDouble()  # unidades internas (VA)
+                    if total_va > 0:
+                        break
+            except:
+                pass
+
+        # Conta elementos no circuito
+        try:
+            for _ in circuit.Elements:
+                count += 1
+        except:
+            pass
+
+        if total_va > 0 and count > 0:
+            info["potencia_individual"] = total_va / count
+    except:
+        pass
+
+    if cid is not None:
+        cache[cid] = info
+    return info
+
+
 # ==================== UI ====================
 
 class PontosVinculoWindow(forms.WPFWindow):
@@ -229,30 +632,13 @@ class PontosVinculoWindow(forms.WPFWindow):
         self._data_symbols = self._collect_symbols(DATA_CATS)
         self._elec_face_symbols = [s for s in self._elec_symbols if s.get('is_face')]
         self._data_face_symbols = [s for s in self._data_symbols if s.get('is_face')]
+        link_docs = [l["link_doc"] for l in self._links if l.get("link_doc")]
+        self._load_classifications = _collect_load_classifications(self._doc, link_docs)
         self._family_rows = []
         self._filter_non_electric = True
         self._filter_only_new = True
         self._profile = {}
-        self._syncing_profile = False
         self._init_ui()
-        self._ae = auto_eletrica.AutoEletricaController(
-            win=self,
-            doc=self._doc,
-            uidoc=__revit__.ActiveUIDocument,
-            dbg=dbg,
-            profiles_dir=PROFILES_DIR,
-        )
-        load_types = []
-        try:
-            load_types = auto_eletrica._get_load_types(self._doc)
-        except Exception:
-            pass
-        self._gp = profile_manager.ProfileManagerController(
-            win=self,
-            dbg=dbg,
-            profiles_dir=PROFILES_DIR,
-            load_types=load_types,
-        )
 
     def _collect_symbols(self, categories):
         result = []
@@ -354,10 +740,9 @@ class PontosVinculoWindow(forms.WPFWindow):
         self.btn_SelectNone.Click += lambda s, a: self._set_all_checked(False)
 
         self._refresh_profiles()
-        self.btn_LoadProfile.Click      += self._on_load_profile
-        self.btn_SaveProfile.Click      += self._on_save_profile
-        self.btn_ReadProject.Click      += self._on_read_project
-        self.cb_Profile.SelectionChanged += self._on_ppv_profile_combo_changed
+        self.btn_LoadProfile.Click  += self._on_load_profile
+        self.btn_SaveProfile.Click  += self._on_save_profile
+        self.btn_ReadProject.Click  += self._on_read_project
 
         self.chk_Debug.IsChecked = dbg.enabled
         self.chk_Debug.Checked   += self._on_debug_toggle
@@ -531,62 +916,14 @@ class PontosVinculoWindow(forms.WPFWindow):
 
     # ── Perfis ──────────────────────────────────────────────────────────
 
-    def _on_ppv_profile_combo_changed(self, sender, args):
-        if self._syncing_profile:
-            return
-        self._syncing_profile = True
-        try:
-            idx = self.cb_Profile.SelectedIndex
-            for combo in [self.ae_CmbProfile, self.gp_CmbProfile]:
-                try:
-                    if combo.SelectedIndex != idx:
-                        combo.SelectedIndex = idx
-                except Exception:
-                    pass
-        finally:
-            self._syncing_profile = False
-
-    def _refresh_profiles(self, select_name=None):
+    def _refresh_profiles(self):
         names = _list_profiles()
         net = List[System.Object]()
         net.Add(u"— Selecionar perfil —")
         for n in names:
             net.Add(n)
-        self._syncing_profile = True
-        try:
-            self.cb_Profile.ItemsSource = net
-            idx = 0
-            if select_name:
-                try:
-                    idx = names.index(select_name) + 1
-                except ValueError:
-                    idx = 0
-            self.cb_Profile.SelectedIndex = idx
-        finally:
-            self._syncing_profile = False
-
-    def _refresh_all_profiles(self, select_name=None):
-        """Re-popula os 3 combos de perfil e seleciona select_name."""
-        self._refresh_profiles(select_name)
-        try:
-            self._ae._refresh_ae_profiles(select_name)
-        except Exception:
-            pass
-        try:
-            self._gp._refresh_combo()
-            if select_name:
-                names = _list_profiles()
-                try:
-                    idx = names.index(select_name) + 1
-                except ValueError:
-                    idx = 0
-                self._syncing_profile = True
-                try:
-                    self.gp_CmbProfile.SelectedIndex = idx
-                finally:
-                    self._syncing_profile = False
-        except Exception:
-            pass
+        self.cb_Profile.ItemsSource = net
+        self.cb_Profile.SelectedIndex = 0
 
     def _on_load_profile(self, sender, args):
         idx = self.cb_Profile.SelectedIndex
@@ -602,19 +939,6 @@ class PontosVinculoWindow(forms.WPFWindow):
             forms.alert(u"Perfil '{}' está vazio ou corrompido.".format(name), title=u"Perfil")
             return
         self._apply_profile_to_rows()
-        # Aplica também na aba AE
-        try:
-            if hasattr(self, '_ae') and self._ae:
-                for w in self._ae._widgets:
-                    entry = self._find_profile_entry(w.family_name)
-                    if entry:
-                        w.apply_profile(entry)
-                for i in range(self.ae_CmbProfile.Items.Count):
-                    if str(self.ae_CmbProfile.Items[i]) == name:
-                        self.ae_CmbProfile.SelectedIndex = i
-                        break
-        except Exception:
-            pass
         self.lbl_Status.Text = u"Perfil '{}' carregado ({} entrada(s)).".format(
             name, len(self._profile))
 
@@ -636,6 +960,13 @@ class PontosVinculoWindow(forms.WPFWindow):
             display = row.get("display", u"")
             if not display:
                 continue
+
+            # tipo_carga
+            tc = u""
+            try:
+                tc = (row["c_load"].Text or u"").strip()
+            except:
+                pass
 
             # ponto_eletrico — prefere display name do símbolo selecionado
             pe = u""
@@ -665,32 +996,27 @@ class PontosVinculoWindow(forms.WPFWindow):
             except:
                 pass
 
+            # potencia
+            pot = u""
+            try:
+                pot = (row["t_pow"].Text or u"").strip()
+            except:
+                pass
+
             data[display] = {
+                "tipo_carga":     tc,
                 "ponto_eletrico": pe,
                 "ponto_dados":    pd_val,
-                "checked":        bool(row.get("cb") and row["cb"].IsChecked),
+                "potencia":       pot,
             }
 
-        # Mescla dados AE (altura, carga_va, tensao, prefixo, tipo_carga)
-        try:
-            if hasattr(self, '_ae') and self._ae and self._ae._widgets:
-                for w in self._ae._widgets:
-                    ae_vals = w.get_values()
-                    fam_lower = w.family_name.lower()
-                    matched_key = None
-                    for k in data:
-                        if k.split(u' : ')[0].strip().lower() == fam_lower:
-                            matched_key = k
-                            break
-                    if matched_key is None:
-                        matched_key = w.family_name
-                        data[matched_key] = {}
-                    data[matched_key].update(ae_vals)
-        except Exception:
-            pass
-
         if _save_profile(name, data):
-            self._refresh_all_profiles(name)
+            self._refresh_profiles()
+            # Seleciona o perfil recém-salvo
+            for i in range(self.cb_Profile.Items.Count):
+                if str(self.cb_Profile.Items[i]) == name:
+                    self.cb_Profile.SelectedIndex = i
+                    break
             forms.toast(u"Perfil '{}' salvo com {} elemento(s)!".format(name, len(data)))
         else:
             forms.alert(u"Erro ao salvar o perfil.", title=u"Perfil")
@@ -835,8 +1161,14 @@ class PontosVinculoWindow(forms.WPFWindow):
         name = _safe_filename(name)
 
         if _save_profile(name, profile_data):
-            self._refresh_all_profiles(name)
-            forms.toast(u"Perfil '{}' gerado com {} tipo(s)!".format(name, total))
+            self._refresh_profiles()
+            for i in range(self.cb_Profile.Items.Count):
+                if str(self.cb_Profile.Items[i]) == name:
+                    self.cb_Profile.SelectedIndex = i
+                    break
+            forms.toast(
+                u"Perfil '{}' gerado com {} tipo(s)!".format(name, total)
+            )
         else:
             forms.alert(u"Erro ao salvar o perfil.", title=u"Ler Projeto")
 
@@ -859,6 +1191,19 @@ class PontosVinculoWindow(forms.WPFWindow):
                 self._apply_entry_to_row(row, entry)
 
     def _apply_entry_to_row(self, row, entry):
+        # tipo_carga
+        tc = entry.get("tipo_carga", u"")
+        if tc:
+            items = list(row["c_load"].ItemsSource or [])
+            matched = False
+            for i, item in enumerate(items):
+                if str(item).lower() == tc.lower():
+                    row["c_load"].SelectedIndex = i
+                    matched = True
+                    break
+            if not matched:
+                row["c_load"].Text = tc
+
         # ponto_eletrico
         pe = entry.get("ponto_eletrico", u"")
         if pe:
@@ -887,9 +1232,10 @@ class PontosVinculoWindow(forms.WPFWindow):
             if not matched:
                 row["c_dados"].Text = pd_val
 
-        # checkbox — se a chave existir no perfil, restaura; senão mantém True
-        if u"checked" in entry:
-            row["cb"].IsChecked = bool(entry[u"checked"])
+        # potencia
+        pot = entry.get("potencia", u"")
+        if pot:
+            row["t_pow"].Text = pot
 
     # ── Scan ────────────────────────────────────────────────────────────
 
@@ -960,6 +1306,20 @@ class PontosVinculoWindow(forms.WPFWindow):
                 dbg.debug("Categoria {}: {} instâncias".format(str(bic).split('.')[-1], count_cat))
             except:
                 pass
+
+        # Atualizar classificações de carga com valores encontrados no vínculo
+        lc_from_scan = {}
+        for key, fam_data in mapa.items():
+            lt = fam_data.get("load_type", "")
+            if lt and lt not in lc_from_scan:
+                lc_from_scan[lt] = {"name": lt, "id": None, "is_native": False}
+        if lc_from_scan:
+            # Mescla com classificações nativas (se houver); scan tem prioridade para novos valores
+            existing_names = set(lc["name"] for lc in self._load_classifications)
+            for name, lc_obj in lc_from_scan.items():
+                if name not in existing_names:
+                    self._load_classifications.append(lc_obj)
+            self._load_classifications.sort(key=lambda x: x["name"])
 
         for key in sorted(mapa.keys()):
             row = self._build_row(mapa[key])
@@ -1043,7 +1403,7 @@ class PontosVinculoWindow(forms.WPFWindow):
         grid.Margin = Thickness(0, 1, 0, 1)
         grid.MinHeight = 34
 
-        widths = [(28, 0), (220, 0), (40, 0), (0, 2), (0, 2)]
+        widths = [(28, 0), (160, 0), (36, 0), (90, 0), (0, 2), (0, 2), (72, 0)]
         for w, star in widths:
             cd = ColumnDefinition()
             cd.Width = GridLength(star, GridUnitType.Star) if star > 0 else GridLength(w)
@@ -1077,26 +1437,74 @@ class PontosVinculoWindow(forms.WPFWindow):
         tb_qty.Foreground = SolidColorBrush(Color.FromRgb(0x77, 0x77, 0x77))
         Grid.SetColumn(tb_qty, 2)
 
+        # ComboBox — Tipo de Carga
+        INPUT_BG   = SolidColorBrush(Color.FromRgb(0xFF, 0xFF, 0xFF))
+        BORDER_CLR = SolidColorBrush(Color.FromRgb(0xC8, 0xC8, 0xC8))
+        FG_CLR     = SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33))
+        c_load = ComboBox()
+        c_load.IsEditable = True
+        c_load.StaysOpenOnEdit = True
+        c_load.KeyUp += self._on_cb_keyup
+        c_load.Height = 28
+        c_load.Margin = Thickness(2, 2, 2, 2)
+        c_load.Padding = Thickness(6, 0, 0, 0)
+        c_load.VerticalContentAlignment = VerticalAlignment.Center
+        c_load.Background  = INPUT_BG
+        c_load.Foreground  = FG_CLR
+        c_load.BorderBrush = BORDER_CLR
+        c_load.BorderThickness = Thickness(1)
+        load_items = List[System.Object]()
+        load_items.Add("")
+        for lc in self._load_classifications:
+            load_items.Add(lc["name"])
+        c_load.ItemsSource = load_items
+        # Pré-seleciona o valor lido da instância no vínculo
+        fam_load = fam.get("load_type", "")
+        load_default = 0
+        if fam_load:
+            for i, lc in enumerate(self._load_classifications):
+                if lc["name"] == fam_load:
+                    load_default = i + 1
+                    break
+            if load_default == 0:
+                c_load.Text = fam_load
+        c_load.SelectedIndex = load_default
+        Grid.SetColumn(c_load, 3)
+
         # ComboBox — Ponto Elétrico
         use_face_now = (self.chk_FacePlacement.IsChecked == True)
         active_elec  = self._elec_face_symbols if use_face_now else self._elec_symbols
         active_data  = self._data_face_symbols if use_face_now else self._data_symbols
         elec_default = self._find_match_idx(fam["display"], active_elec)
         c_elec = self._make_editable_combo(active_elec, elec_default)
-        Grid.SetColumn(c_elec, 3)
+        Grid.SetColumn(c_elec, 4)
 
         # ComboBox — Ponto de Dados
         c_dados = self._make_editable_combo(active_data, 0)
-        Grid.SetColumn(c_dados, 4)
+        Grid.SetColumn(c_dados, 5)
 
-        for child in [cb, tb_name, tb_qty, c_elec, c_dados]:
+        # TextBox — Potência (VA)
+        t_pow = TextBox()
+        t_pow.Height = 26
+        t_pow.Margin = Thickness(2)
+        t_pow.VerticalContentAlignment = VerticalAlignment.Center
+        t_pow.Background   = INPUT_BG
+        t_pow.Foreground   = FG_CLR
+        t_pow.BorderBrush  = BORDER_CLR
+        t_pow.BorderThickness = Thickness(1)
+        t_pow.Padding = Thickness(4, 0, 4, 0)
+        Grid.SetColumn(t_pow, 6)
+
+        for child in [cb, tb_name, tb_qty, c_load, c_elec, c_dados, t_pow]:
             grid.Children.Add(child)
 
         return {
             "grid": grid,
             "cb": cb,
+            "c_load": c_load,
             "c_elec": c_elec,
             "c_dados": c_dados,
+            "t_pow": t_pow,
             "instances": fam["instances"],
             "display": fam["display"],
             "is_non_electric": _is_non_electric_smart(fam["display"], fam.get("std_cat", "")),
@@ -1113,10 +1521,16 @@ class PontosVinculoWindow(forms.WPFWindow):
             dados_sym = self._get_symbol_from_combo(r["c_dados"], r.get("dados_sym_list", self._data_symbols))
             if not elec_sym and not dados_sym:
                 continue
+            lc_idx = r["c_load"].SelectedIndex
+            lc_obj = None
+            if lc_idx > 0 and lc_idx - 1 < len(self._load_classifications):
+                lc_obj = self._load_classifications[lc_idx - 1]
             to_place.append({
                 "instances": r["instances"],
                 "elec_sym":  elec_sym,
                 "dados_sym": dados_sym,
+                "pow":       r["t_pow"].Text.strip() or None,
+                "load_classification": lc_obj,
             })
 
         if not to_place:
@@ -1125,6 +1539,8 @@ class PontosVinculoWindow(forms.WPFWindow):
 
         dbg.section("Pontos por Vínculo — Colocação")
         dbg.info("Famílias a processar: {}".format(len(to_place)))
+
+        self.Close()
 
         _doc = self._doc
         t = Transaction(_doc, "Pontos por Vínculo")
@@ -1153,220 +1569,173 @@ class PontosVinculoWindow(forms.WPFWindow):
             # Ativar todos os símbolos necessários e regenerar UMA VEZ antes de criar instâncias.
             # Revit exige Regenerate() após Activate() — sem isso NewFamilyInstance falha silenciosamente.
             any_activated = False
-            total_inst = sum(len(x["instances"]) for x in to_place)
-            processed_inst = 0
-            with forms.ProgressBar(title="Colocando Pontos...", cancellable=True) as pb:
-                for item in to_place:
-                    if pb.cancelled: break
-                    for sym in [item["elec_sym"], item["dados_sym"]]:
-                        if sym and not sym.IsActive:
-                            sym.Activate()
-                            any_activated = True
-                if any_activated:
-                    _doc.Regenerate()
-                    dbg.debug("Regenerate() após Activate().")
+            for item in to_place:
+                for sym in [item["elec_sym"], item["dados_sym"]]:
+                    if sym and not sym.IsActive:
+                        sym.Activate()
+                        any_activated = True
+            if any_activated:
+                _doc.Regenerate()
+                dbg.debug("Regenerate() após Activate().")
 
-                transform = getattr(self, '_link_transform', None)
+            transform = getattr(self, '_link_transform', None)
 
-                # Offset do ponto de dados em relação ao elétrico:
-                #   -0.10 m em Z (10 cm abaixo)  →  em pés: -0.10 / 0.3048
-                #   +0.15 m em X (15 cm lateral) →  em pés: +0.15 / 0.3048
-                DADOS_OFFSET_Z = -0.10 / 0.3048
-                DADOS_OFFSET_X = +0.15 / 0.3048
+            # Offset do ponto de dados em relação ao elétrico:
+            #   -0.10 m em Z (10 cm abaixo)  →  em pés: -0.10 / 0.3048
+            #   +0.15 m em X (15 cm lateral) →  em pés: +0.15 / 0.3048
+            DADOS_OFFSET_Z = -0.10 / 0.3048
+            DADOS_OFFSET_X = +0.15 / 0.3048
 
-                placed_count = 0
-                skip_count = 0
-                created_element_ids = []
+            placed_count = 0
+            power_ok = 0
+            power_fail = 0
+            skip_count = 0
+            power_elements = []  # acumular (elemento, valor) para setar potência em lote
 
-                for item in to_place:
-                    if pb.cancelled: break
-                    elec_name  = _get_safe_name(item["elec_sym"]) if item["elec_sym"]  else "—"
-                    dados_name = _get_safe_name(item["dados_sym"]) if item["dados_sym"] else "—"
+            for item in to_place:
+                elec_name  = _get_safe_name(item["elec_sym"]) if item["elec_sym"]  else "—"
+                dados_name = _get_safe_name(item["dados_sym"]) if item["dados_sym"] else "—"
                 
-                    fam_name = "?"
-                    if item["instances"]:
+                fam_name = "?"
+                if item["instances"]:
+                    try:
+                        fam_name = item["instances"][0].Symbol.FamilyName
+                    except:
                         try:
-                            fam_name = item["instances"][0].Symbol.FamilyName
+                            fam_name = item["instances"][0].Symbol.Family.Name
                         except:
+                            pass
+
+                dbg.sub("{} ({} inst.) → elec:{} dados:{} pot:{}".format(
+                    fam_name,
+                    len(item["instances"]), elec_name, dados_name, item["pow"] or "—"
+                ))
+                for inst in item["instances"]:
+                    # ── Coordenadas ──
+                    try:
+                        pt_local = inst.Location.Point
+                        pt = transform.OfPoint(pt_local) if transform else pt_local
+                        lvl = min(levels, key=lambda l: abs(l.Elevation - pt.Z))
+                    except:
+                        skip_count += 1
+                        dbg.warn("  inst.Id={} — sem localização, pulado.".format(inst.Id))
+                        continue
+
+                    # ── Ponto Elétrico ──
+                    new_elec = None
+                    if item["elec_sym"]:
+                        placed   = False
+                        face_ref = None
+                        face_pt  = None
+                        face_dir = None
+
+                        if use_face and ri and not _is_luminaire_sym(item["elec_sym"]):
                             try:
-                                fam_name = item["instances"][0].Symbol.Family.Name
+                                face_ref, face_pt, face_dir = self._find_nearest_wall_face(ri, pt)
                             except:
                                 pass
 
-                    dbg.sub("{} ({} inst.) → elec:{} dados:{}".format(
-                        fam_name,
-                        len(item["instances"]), elec_name, dados_name
-                    ))
-                    for inst in item["instances"]:
-                        if pb.cancelled: break
-                        processed_inst += 1
-                        pb.update_progress(processed_inst, total_inst)
-                        # ── Coordenadas ──
-                        try:
-                            pt_local = inst.Location.Point
-                            pt = transform.OfPoint(pt_local) if transform else pt_local
-                            lvl = min(levels, key=lambda l: abs(l.Elevation - pt.Z))
-                        except:
-                            skip_count += 1
-                            dbg.warn("  inst.Id={} — sem localização, pulado.".format(inst.Id))
-                            continue
-
-                        # ── Ponto Elétrico ──
-                        new_elec = None
-                        if item["elec_sym"]:
-                            placed   = False
-                            face_ref = None
-                            face_pt  = None
-                            face_dir = None
-
-                            if use_face and ri and not _is_luminaire_sym(item["elec_sym"]):
-                                try:
-                                    face_ref, face_pt, face_dir = self._find_nearest_wall_face(ri, pt)
-                                except:
-                                    pass
-
-                                if face_ref and face_pt:
-                                    # Camada 1: face hosting oficial
-                                    try:
-                                        new_elec = _doc.Create.NewFamilyInstance(
-                                            face_ref, face_pt, XYZ(0, 0, 1), item["elec_sym"]
-                                        )
-                                        placed = True
-                                        dbg.debug("  [L1-face] inst.Id={}".format(inst.Id))
-                                    except Exception as ex:
-                                        dbg.debug("  [L1] falhou: {} — tentando L2".format(ex))
-
-                                    # Camada 2: posição na face + rotação (sem face hosting)
-                                    if not placed:
-                                        try:
-                                            new_elec = _doc.Create.NewFamilyInstance(
-                                                face_pt, item["elec_sym"], lvl, StructuralType.NonStructural
-                                            )
-                                            placed = True
-                                            dbg.debug("  [L2-pos] inst.Id={}".format(inst.Id))
-                                            if face_dir:
-                                                try:
-                                                    _doc.Regenerate()
-                                                    outward = XYZ(-face_dir.X, -face_dir.Y, 0)
-                                                    facing  = new_elec.FacingOrientation
-                                                    if facing and facing.GetLength() > 1e-6:
-                                                        import math as _math
-                                                        angle = facing.AngleTo(outward)
-                                                        cross = facing.CrossProduct(outward)
-                                                        if cross.Z < 0:
-                                                            angle = -angle
-                                                        if abs(angle) > 1e-6:
-                                                            axis = Line.CreateBound(
-                                                                face_pt,
-                                                                XYZ(face_pt.X, face_pt.Y, face_pt.Z + 1)
-                                                            )
-                                                            ElementTransformUtils.RotateElement(
-                                                                _doc, new_elec.Id, axis, angle
-                                                            )
-                                                            dbg.debug("  rot {:.1f}°".format(
-                                                                _math.degrees(abs(angle))
-                                                            ))
-                                                except Exception as rot_ex:
-                                                    dbg.debug("  rotação falhou: {}".format(rot_ex))
-                                        except Exception as ex:
-                                            dbg.warn("  [L2] falhou inst.Id={}: {}".format(inst.Id, ex))
-                                else:
-                                    dbg.debug("  sem parede próxima inst.Id={}".format(inst.Id))
-
-                            # Camada 3: placement normal (luminária, sem face ou tudo falhou)
-                            if not placed:
+                            if face_ref and face_pt:
+                                # Camada 1: face hosting oficial
                                 try:
                                     new_elec = _doc.Create.NewFamilyInstance(
-                                        pt, item["elec_sym"], lvl, StructuralType.NonStructural
+                                        face_ref, face_pt, XYZ(0, 0, 1), item["elec_sym"]
                                     )
                                     placed = True
+                                    dbg.debug("  [L1-face] inst.Id={}".format(inst.Id))
                                 except Exception as ex:
-                                    dbg.warn("  [L3] falhou inst.Id={}: {}".format(inst.Id, ex))
+                                    dbg.debug("  [L1] falhou: {} — tentando L2".format(ex))
 
-                            if placed:
-                                placed_count += 1
-                            if new_elec:
-                                created_element_ids.append(new_elec.Id)
-                                try:
-                                    _p = new_elec.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)
-                                    if _p and not _p.IsReadOnly:
-                                        _p.Set(u'PpV: {}'.format(fam_name))
-                                except: pass
-
-                        # ── Ponto de Dados (independente do elétrico) ──
-                        if item["dados_sym"]:
-                            try:
-                                pt_dados = XYZ(
-                                    pt.X + DADOS_OFFSET_X,
-                                    pt.Y,
-                                    pt.Z + DADOS_OFFSET_Z
-                                )
-                                new_dados = _doc.Create.NewFamilyInstance(
-                                    pt_dados, item["dados_sym"], lvl, StructuralType.NonStructural
-                                )
-                                placed_count += 1
-                                if new_dados:
-                                    created_element_ids.append(new_dados.Id)
+                                # Camada 2: posição na face + rotação (sem face hosting)
+                                if not placed:
                                     try:
-                                        _p = new_dados.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)
-                                        if _p and not _p.IsReadOnly:
-                                            _p.Set(u'PpV: {}'.format(fam_name))
-                                    except: pass
-                            except Exception as ex:
-                                dbg.warn("  dados falhou inst.Id={}: {}".format(inst.Id, ex))
+                                        new_elec = _doc.Create.NewFamilyInstance(
+                                            face_pt, item["elec_sym"], lvl, StructuralType.NonStructural
+                                        )
+                                        placed = True
+                                        dbg.debug("  [L2-pos] inst.Id={}".format(inst.Id))
+                                        if face_dir:
+                                            try:
+                                                _doc.Regenerate()
+                                                outward = XYZ(-face_dir.X, -face_dir.Y, 0)
+                                                facing  = new_elec.FacingOrientation
+                                                if facing and facing.GetLength() > 1e-6:
+                                                    import math as _math
+                                                    angle = facing.AngleTo(outward)
+                                                    cross = facing.CrossProduct(outward)
+                                                    if cross.Z < 0:
+                                                        angle = -angle
+                                                    if abs(angle) > 1e-6:
+                                                        axis = Line.CreateBound(
+                                                            face_pt,
+                                                            XYZ(face_pt.X, face_pt.Y, face_pt.Z + 1)
+                                                        )
+                                                        ElementTransformUtils.RotateElement(
+                                                            _doc, new_elec.Id, axis, angle
+                                                        )
+                                                        dbg.debug("  rot {:.1f}°".format(
+                                                            _math.degrees(abs(angle))
+                                                        ))
+                                            except Exception as rot_ex:
+                                                dbg.debug("  rotação falhou: {}".format(rot_ex))
+                                    except Exception as ex:
+                                        dbg.warn("  [L2] falhou inst.Id={}: {}".format(inst.Id, ex))
+                            else:
+                                dbg.debug("  sem parede próxima inst.Id={}".format(inst.Id))
 
-            # Carimbar para handshake com Auto-Elétrica (silencioso se parâmetro não existir)
-            for eid in created_element_ids:
-                try:
-                    el = _doc.GetElement(eid)
-                    if el:
-                        p = el.LookupParameter('LF_StatusIntegracao')
-                        if p and not p.IsReadOnly:
-                            p.Set('Aguardando_Eletrica')
-                except Exception:
-                    pass
+                        # Camada 3: placement normal (luminária, sem face ou tudo falhou)
+                        if not placed:
+                            try:
+                                new_elec = _doc.Create.NewFamilyInstance(
+                                    pt, item["elec_sym"], lvl, StructuralType.NonStructural
+                                )
+                                placed = True
+                            except Exception as ex:
+                                dbg.warn("  [L3] falhou inst.Id={}: {}".format(inst.Id, ex))
+
+                        if placed:
+                            placed_count += 1
+                        if new_elec:
+                            if item["pow"]:
+                                power_elements.append((new_elec, item["pow"]))
+                            if item.get("load_classification"):
+                                _set_load_classification(new_elec, item["load_classification"])
+
+                    # ── Ponto de Dados (independente do elétrico) ──
+                    if item["dados_sym"]:
+                        try:
+                            pt_dados = XYZ(
+                                pt.X + DADOS_OFFSET_X,
+                                pt.Y,
+                                pt.Z + DADOS_OFFSET_Z
+                            )
+                            _doc.Create.NewFamilyInstance(
+                                pt_dados, item["dados_sym"], lvl, StructuralType.NonStructural
+                            )
+                            placed_count += 1
+                        except Exception as ex:
+                            dbg.warn("  dados falhou inst.Id={}: {}".format(inst.Id, ex))
+
+            # ── Potência em lote: um único Regenerate() para todos ──
+            if power_elements:
+                _doc.Regenerate()
+                for new_elec, pow_str in power_elements:
+                    try:
+                        _set_power(new_elec, pow_str)
+                        power_ok += 1
+                    except Exception as ex:
+                        power_fail += 1
+                        dbg.warn("  potência falhou Id={}: {}".format(new_elec.Id, ex))
 
             t.Commit()
-
-            # Seleciona os elementos criados
-            if created_element_ids:
-                from System.Collections.Generic import List
-                from Autodesk.Revit.DB import ElementId
-                id_list = List[ElementId](created_element_ids)
-                try:
-                    __revit__.ActiveUIDocument.Selection.SetElementIds(id_list)
-                except:
-                    pass
-
-            # Passa para a aba Auto-Elétrica com os elementos já selecionados
-            try:
-                self.MainTabs.SelectedIndex = 1
-                self._ae.refresh_from_selection()
-            except Exception:
-                pass
-
             dbg.section("Resultado")
             dbg.info("Pontos criados:  {}".format(placed_count))
+            dbg.info("Potência OK:     {}".format(power_ok))
+            if power_fail:
+                dbg.warn("Potência falhou: {}".format(power_fail))
             if skip_count:
                 dbg.warn("Instâncias puladas (sem localização): {}".format(skip_count))
-
-            # Feedback sem fechar a janela
-            _msg = u"{} ponto(s) colocado(s)!".format(placed_count)
-            if skip_count:
-                _msg += u"  ({} pulado(s))".format(skip_count)
-            self.lbl_Status.Text = _msg
-            self.lbl_Status.Foreground = SolidColorBrush(Color.FromRgb(0x10, 0x7C, 0x10))
-            try:
-                forms.toast(_msg, title=u"Pontos por Vínculo")
-            except Exception:
-                pass
-
-            # Troca para aba Auto-Elétrica com os elementos já carregados
-            try:
-                self.MainTabs.SelectedIndex = 1
-                self._ae.refresh_from_selection(placed_ids=created_element_ids)
-            except Exception:
-                pass
+            forms.alert("Pontos colocados com sucesso!", title="Pontos por Vínculo")
 
         except Exception as e:
             try:
@@ -1375,8 +1744,7 @@ class PontosVinculoWindow(forms.WPFWindow):
             except:
                 pass
             dbg.error("Exceção em _on_place: {}".format(e))
-            self.lbl_Status.Text = u"Erro: {}".format(str(e)[:140])
-            self.lbl_Status.Foreground = SolidColorBrush(Color.FromRgb(0xC4, 0x2B, 0x1A))
+            forms.alert("Erro ao colocar pontos:\n" + str(e), title="Pontos por Vínculo")
 
 
 if __name__ == "__main__":

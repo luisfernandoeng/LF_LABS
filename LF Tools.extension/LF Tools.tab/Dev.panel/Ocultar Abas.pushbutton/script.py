@@ -53,12 +53,17 @@ def main():
     new_hidden = [t.name for t in selected if t]
     _save_config(new_hidden)
 
-    # Aplica imediatamente na sessão atual
+    # Aplica imediatamente na sessão atual via Autodesk.Windows ribbon
     try:
-        from pyrevit.runtime import types
-        types.RibbonTabVisibilityUtils.StopHidingTabs()
-        if new_hidden:
-            types.RibbonTabVisibilityUtils.StartHidingTabs(new_hidden)
+        import clr
+        clr.AddReference('AdWindows')
+        import Autodesk.Windows as adWin
+        rib = adWin.ComponentManager.Ribbon
+        for tab in rib.Tabs:
+            title = tab.Title or u""
+            if this_ext in title:
+                continue  # nunca oculta a própria aba LF Tools
+            tab.IsVisible = title not in new_hidden
         forms.toast(
             u'{} aba(s) oculta(s). Persistirá nas próximas sessões.'.format(len(new_hidden))
             if new_hidden else u'Todas as abas visíveis.'
