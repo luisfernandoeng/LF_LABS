@@ -214,6 +214,63 @@ def _is_luminaire_sym(symbol):
         return False
 
 
+# ==================== Circuit helper ====================
+
+def _read_circuit_info(el, _doc, circuit_cache):
+    """
+    Lê potência individual, descrição e número do circuito de um elemento.
+    Usa circuit_cache {circuit_id → info} para evitar reprocessar o mesmo circuito.
+    Retorna dict ou None se o elemento não tiver circuito.
+    """
+    try:
+        systems = list(el.MEPModel.ElectricalSystems)
+    except Exception:
+        return None
+    if not systems:
+        return None
+
+    for sys in systems:
+        try:
+            sid = sys.Id
+            if sid in circuit_cache:
+                return circuit_cache[sid]
+
+            info = {"potencia_individual": 0.0, "descricao": u"", "nome": u""}
+
+            try:
+                info["nome"] = sys.CircuitNumber or u""
+            except Exception:
+                pass
+            for dname in [u"Descrição", u"Descricao", u"Description"]:
+                try:
+                    p = sys.LookupParameter(dname)
+                    if p and p.HasValue:
+                        info["descricao"] = (p.AsString() or u"").strip()
+                        if info["descricao"]:
+                            break
+                except Exception:
+                    pass
+
+            # Potência individual: carga aparente total / nº de elementos no circuito
+            try:
+                elems = sys.Elements
+                count = elems.Size if elems else 0
+                if count > 0:
+                    try:
+                        total_va = sys.ApparentLoad
+                        info["potencia_individual"] = total_va / count
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            circuit_cache[sid] = info
+            return info
+        except Exception:
+            pass
+    return None
+
+
 # ==================== UI ====================
 
 class PontosVinculoWindow(forms.WPFWindow):
@@ -665,10 +722,22 @@ class PontosVinculoWindow(forms.WPFWindow):
             except:
                 pass
 
+            qty_pts = 1
+            try:
+                qty_pts = max(1, int(str(row["tb_pts"].Text).strip() or u"1"))
+            except Exception:
+                qty_pts = 1
+            qty_dados_pts = 1
+            try:
+                qty_dados_pts = max(1, int(str(row["tb_dados_pts"].Text).strip() or u"1"))
+            except Exception:
+                qty_dados_pts = 1
             data[display] = {
-                "ponto_eletrico": pe,
-                "ponto_dados":    pd_val,
-                "checked":        bool(row.get("cb") and row["cb"].IsChecked),
+                "ponto_eletrico":   pe,
+                "ponto_dados":      pd_val,
+                "checked":          bool(row.get("cb") and row["cb"].IsChecked),
+                "qty_per_inst":     qty_pts,
+                "qty_dados_per_inst": qty_dados_pts,
             }
 
         # Mescla dados AE (altura, carga_va, tensao, prefixo, tipo_carga)
@@ -697,9 +766,12 @@ class PontosVinculoWindow(forms.WPFWindow):
 
     def _on_read_project(self, _sender, _args):
         """
-        Varre os elementos elétricos já colocados no projeto atual,
-        lê tipo de carga, potência individual (total do circuito / qtd elementos),
-        descrição e nome do circuito, e salva tudo como perfil JSON.
+        Lê elementos elétricos já colocados no projeto.
+
+        Se um vínculo estiver selecionado em cb_Link, usa-o como fonte de arquitetura:
+        para cada família do vínculo, procura elementos de projeto próximos (≤ 50 cm)
+        e lê seus parâmetros elétricos (tipo_carga, potência, tensão, altura).
+        Caso contrário, varre diretamente os elementos do projeto.
         """
         READ_CATS = [
             BuiltInCategory.OST_LightingFixtures,
@@ -711,119 +783,209 @@ class PontosVinculoWindow(forms.WPFWindow):
             BuiltInCategory.OST_SpecialityEquipment,
         ]
 
-        # ── 1. Varrer elementos ──────────────────────────────────────────
-        mapa = {}  # display_name → acumulador
-        for bic in READ_CATS:
+        levels = list(FilteredElementCollector(self._doc).OfClass(Level))
+
+        def _read_elec_params(el):
+            """Lê tipo_carga, tensão, altura (m) e display do símbolo de um elemento."""
+            result = {"tipo_carga": u"", "tensao": u"", "altura_m": u"", "sym_display": u""}
             try:
-                for el in FilteredElementCollector(self._doc).OfCategory(bic).WhereElementIsNotElementType():
-                    try:
-                        sym = el.Symbol
-                        fam_name  = u""
-                        type_name = u""
+                p = el.LookupParameter(u"Tipo de Carga")
+                if p and p.HasValue:
+                    result["tipo_carga"] = (p.AsString() or u"").strip()
+            except: pass
+            for vname in [u"Tensão", u"Tensao", u"Voltage", u"Voltagem"]:
+                try:
+                    p = el.LookupParameter(vname)
+                    if p and p.HasValue:
+                        v = p.AsValueString() or p.AsString() or u""
+                        if v:
+                            result["tensao"] = v.strip()
+                            break
+                except: pass
+            try:
+                pt = el.Location.Point
+                if levels:
+                    lvl = min(levels, key=lambda l: abs(l.Elevation - pt.Z))
+                    offset_m = (pt.Z - lvl.Elevation) * 0.3048
+                    result["altura_m"] = u"{:.2f}".format(offset_m)
+            except: pass
+            try:
+                sym = el.Symbol
+                fam = sym.Family.Name
+                typ = sym.Name
+                result["sym_display"] = u"{} : {}".format(fam, typ) if typ else fam
+            except: pass
+            return result
+
+        # ── Modo 1: vínculo de arquitetura selecionado ───────────────────
+        link_idx = self.cb_Link.SelectedIndex
+        use_arch = (link_idx >= 0 and len(self._links) > 0)
+
+        if use_arch:
+            arch      = self._links[link_idx]
+            link_doc  = arch["link_doc"]
+            transform = arch["link_inst"].GetTotalTransform()
+            TOLE_FT   = 0.50 / 0.3048  # 50 cm
+
+            # Coleta espacial de todos os elementos elétricos do projeto
+            proj_elec = []
+            for bic in READ_CATS:
+                try:
+                    for el in FilteredElementCollector(self._doc).OfCategory(bic).WhereElementIsNotElementType():
                         try:
-                            fam_name = sym.Family.Name
-                        except:
-                            pass
+                            proj_elec.append({"el": el, "pt": el.Location.Point})
+                        except: pass
+                except: pass
+
+            mapa = {}  # display_name_arch → acumulador
+            for bic in SCAN_CATS:
+                try:
+                    for el in FilteredElementCollector(link_doc).OfCategory(bic).WhereElementIsNotElementType():
                         try:
-                            type_name = sym.Name
-                        except:
-                            pass
-                        if not fam_name:
-                            try:
-                                fam_name = el.Name
-                            except:
-                                fam_name = u"ID_{}".format(el.Id.IntegerValue)
+                            sym = el.Symbol
+                            fam, typ = sym.Family.Name, sym.Name
+                            display = u"{} : {}".format(fam, typ) if typ else fam
 
-                        display = u"{} : {}".format(fam_name, type_name) if type_name else fam_name
+                            pt_local = el.Location.Point
+                            pt_world = transform.OfPoint(pt_local)
 
-                        if display not in mapa:
-                            mapa[display] = {
-                                "instances":     [],
-                                "tipo_carga":    u"",
-                                "potencia_soma": 0.0,
-                                "potencia_count": 0,
-                            }
-                        mapa[display]["instances"].append(el)
+                            # Elemento de projeto mais próximo dentro da tolerância
+                            best_el   = None
+                            best_dist = TOLE_FT
+                            for pe in proj_elec:
+                                d = pt_world.DistanceTo(pe["pt"])
+                                if d < best_dist:
+                                    best_dist = d
+                                    best_el   = pe["el"]
 
-                        # Tipo de carga (pega do primeiro que tiver)
-                        if not mapa[display]["tipo_carga"]:
-                            try:
-                                p = el.LookupParameter(u"Tipo de Carga")
-                                if p and p.HasValue:
-                                    mapa[display]["tipo_carga"] = (p.AsString() or u"").strip()
-                            except:
-                                pass
-                    except:
-                        pass
-            except:
-                pass
+                            if display not in mapa:
+                                mapa[display] = {
+                                    "arch_instances":  [],
+                                    "proj_instances":  [],
+                                    "tipo_carga": u"", "tensao": u"",
+                                    "altura_m": u"", "sym_display": u"",
+                                    "potencia_media": 0.0,
+                                    "circuito_descricao": u"", "circuito_nome": u"",
+                                }
+                            mapa[display]["arch_instances"].append(el)
+                            if best_el:
+                                mapa[display]["proj_instances"].append(best_el)
+                                ep = _read_elec_params(best_el)
+                                for k in ["tipo_carga", "tensao", "altura_m", "sym_display"]:
+                                    if not mapa[display][k] and ep[k]:
+                                        mapa[display][k] = ep[k]
+                        except: pass
+                except: pass
+
+            # Enriquecer com dados de circuito
+            circuit_cache = {}
+            from collections import Counter as _Counter
+            for display, entry in mapa.items():
+                infos = []
+                for el in entry["proj_instances"]:
+                    ci = _read_circuit_info(el, self._doc, circuit_cache)
+                    if ci: infos.append(ci)
+                if infos:
+                    pots = [c["potencia_individual"] for c in infos if c["potencia_individual"] > 0]
+                    entry["potencia_media"] = sum(pots) / len(pots) if pots else 0.0
+                    descs = [c["descricao"] for c in infos if c["descricao"]]
+                    nomes = [c["nome"]      for c in infos if c["nome"]]
+                    entry["circuito_descricao"] = _Counter(descs).most_common(1)[0][0] if descs else u""
+                    entry["circuito_nome"]      = _Counter(nomes).most_common(1)[0][0] if nomes else u""
+
+            com_matched = sum(1 for v in mapa.values() if v["proj_instances"])
+            msg = (
+                u"Leitura concluída! (modo vínculo de arquitetura)\n\n"
+                u"  Tipos no vínculo:            {}\n"
+                u"  Com ponto já aplicado:       {}\n\n"
+                u"Deseja salvar como perfil?"
+            ).format(len(mapa), com_matched)
+
+        else:
+            # ── Modo 2: varrer projeto diretamente ───────────────────────
+            mapa = {}
+            for bic in READ_CATS:
+                try:
+                    for el in FilteredElementCollector(self._doc).OfCategory(bic).WhereElementIsNotElementType():
+                        try:
+                            sym = el.Symbol
+                            fam, typ = u"", u""
+                            try: fam = sym.Family.Name
+                            except: pass
+                            try: typ = sym.Name
+                            except: pass
+                            if not fam:
+                                try: fam = el.Name
+                                except: fam = u"ID_{}".format(el.Id.IntegerValue)
+                            display = u"{} : {}".format(fam, typ) if typ else fam
+
+                            if display not in mapa:
+                                mapa[display] = {
+                                    "proj_instances": [],
+                                    "arch_instances": [],
+                                    "tipo_carga": u"", "tensao": u"",
+                                    "altura_m": u"", "sym_display": display,
+                                    "potencia_media": 0.0,
+                                    "circuito_descricao": u"", "circuito_nome": u"",
+                                }
+                            mapa[display]["proj_instances"].append(el)
+                            ep = _read_elec_params(el)
+                            for k in ["tipo_carga", "tensao", "altura_m"]:
+                                if not mapa[display][k] and ep[k]:
+                                    mapa[display][k] = ep[k]
+                        except: pass
+                except: pass
+
+            if not mapa:
+                forms.alert(u"Nenhum elemento elétrico encontrado no projeto.", title=u"Ler Projeto")
+                return
+
+            circuit_cache = {}
+            from collections import Counter as _Counter
+            for display, entry in mapa.items():
+                infos = []
+                for el in entry["proj_instances"]:
+                    ci = _read_circuit_info(el, self._doc, circuit_cache)
+                    if ci: infos.append(ci)
+                if infos:
+                    pots = [c["potencia_individual"] for c in infos if c["potencia_individual"] > 0]
+                    entry["potencia_media"] = sum(pots) / len(pots) if pots else 0.0
+                    descs = [c["descricao"] for c in infos if c["descricao"]]
+                    nomes = [c["nome"]      for c in infos if c["nome"]]
+                    entry["circuito_descricao"] = _Counter(descs).most_common(1)[0][0] if descs else u""
+                    entry["circuito_nome"]      = _Counter(nomes).most_common(1)[0][0] if nomes else u""
+
+            com_pot  = sum(1 for v in mapa.values() if v["potencia_media"] > 0)
+            msg = (
+                u"Leitura concluída!\n\n"
+                u"  Tipos encontrados:        {}\n"
+                u"  Com potência calculada:   {}\n\n"
+                u"Deseja salvar como perfil?"
+            ).format(len(mapa), com_pot)
 
         if not mapa:
-            forms.alert(
-                u"Nenhum elemento elétrico encontrado no projeto atual.",
-                title=u"Ler Projeto"
-            )
+            forms.alert(u"Nenhum elemento encontrado.", title=u"Ler Projeto")
             return
-
-        # ── 2. Enriquecer com dados de circuito ──────────────────────────
-        # Cache de circuitos já processados {circuit.Id → info_dict}
-        circuit_cache = {}
-
-        for display, entry in mapa.items():
-            circuit_infos = []  # pode ter vários circuitos para a mesma família
-
-            for el in entry["instances"]:
-                ci = _read_circuit_info(el, self._doc, circuit_cache)
-                if ci:
-                    circuit_infos.append(ci)
-
-            if not circuit_infos:
-                continue
-
-            # Potência individual: média das potências calculadas por circuito
-            pots = [c["potencia_individual"] for c in circuit_infos if c["potencia_individual"] > 0]
-            if pots:
-                entry["potencia_media"] = sum(pots) / len(pots)
-            else:
-                entry["potencia_media"] = 0.0
-
-            # Descrição e nome de circuito: usa o mais frequente
-            from collections import Counter as _Counter
-            descs = [c["descricao"] for c in circuit_infos if c["descricao"]]
-            nomes = [c["nome"]     for c in circuit_infos if c["nome"]]
-            entry["circuito_descricao"] = _Counter(descs).most_common(1)[0][0] if descs else u""
-            entry["circuito_nome"]      = _Counter(nomes).most_common(1)[0][0] if nomes else u""
-
-        # ── 3. Montar profile dict ───────────────────────────────────────
-        profile_data = {}
-        for display, entry in sorted(mapa.items()):
-            pot = entry.get("potencia_media", 0.0)
-            pot_str = u"{:.0f}".format(pot) if pot > 0 else u""
-            profile_data[display] = {
-                "tipo_carga":          entry.get("tipo_carga", u""),
-                "ponto_eletrico":      display,
-                "ponto_dados":         u"",
-                "potencia":            pot_str,
-                "circuito_descricao":  entry.get("circuito_descricao", u""),
-                "circuito_nome":       entry.get("circuito_nome", u""),
-                "qtd_encontrados":     len(entry["instances"]),
-            }
-
-        # ── 4. Resumo e salvar ───────────────────────────────────────────
-        total = len(profile_data)
-        com_pot = sum(1 for v in profile_data.values() if v["potencia"])
-        com_circ = sum(1 for v in profile_data.values() if v["circuito_descricao"])
-
-        msg = (
-            u"Leitura concluída!\n\n"
-            u"  Tipos encontrados:       {}\n"
-            u"  Com potência calculada:  {}\n"
-            u"  Com descrição de circuito: {}\n\n"
-            u"Deseja salvar como perfil?"
-        ).format(total, com_pot, com_circ)
 
         if not forms.alert(msg, title=u"Ler Projeto", yes=True, no=True):
             return
+
+        # ── Montar profile dict ──────────────────────────────────────────
+        profile_data = {}
+        for display, entry in sorted(mapa.items()):
+            pot = entry.get("potencia_media", 0.0)
+            sym_disp = entry.get("sym_display") or display
+            profile_data[display] = {
+                "tipo_carga":         entry.get("tipo_carga", u""),
+                "tensao":             entry.get("tensao", u""),
+                "altura":             entry.get("altura_m", u""),
+                "ponto_eletrico":     sym_disp,
+                "ponto_dados":        u"",
+                "potencia":           u"{:.0f}".format(pot) if pot > 0 else u"",
+                "circuito_descricao": entry.get("circuito_descricao", u""),
+                "circuito_nome":      entry.get("circuito_nome", u""),
+                "qtd_encontrados":    len(entry["proj_instances"]),
+            }
 
         name = forms.ask_for_string(
             prompt=u"Nome do perfil:",
@@ -836,7 +998,7 @@ class PontosVinculoWindow(forms.WPFWindow):
 
         if _save_profile(name, profile_data):
             self._refresh_all_profiles(name)
-            forms.toast(u"Perfil '{}' gerado com {} tipo(s)!".format(name, total))
+            forms.toast(u"Perfil '{}' gerado com {} tipo(s)!".format(name, len(profile_data)))
         else:
             forms.alert(u"Erro ao salvar o perfil.", title=u"Ler Projeto")
 
@@ -887,9 +1049,20 @@ class PontosVinculoWindow(forms.WPFWindow):
             if not matched:
                 row["c_dados"].Text = pd_val
 
-        # checkbox — se a chave existir no perfil, restaura; senão mantém True
         if u"checked" in entry:
             row["cb"].IsChecked = bool(entry[u"checked"])
+
+        qty = entry.get(u"qty_per_inst", 1)
+        try:
+            row["tb_pts"].Text = str(max(1, int(qty)))
+        except Exception:
+            pass
+
+        qty_dados = entry.get(u"qty_dados_per_inst", 1)
+        try:
+            row["tb_dados_pts"].Text = str(max(1, int(qty_dados)))
+        except Exception:
+            pass
 
     # ── Scan ────────────────────────────────────────────────────────────
 
@@ -1038,18 +1211,17 @@ class PontosVinculoWindow(forms.WPFWindow):
     # ------------------------------------------------------------------
 
     def _build_row(self, fam):
-        # Container com borda suave entre linhas
         grid = Grid()
         grid.Margin = Thickness(0, 1, 0, 1)
         grid.MinHeight = 34
 
-        widths = [(28, 0), (220, 0), (40, 0), (0, 2), (0, 2)]
+        # cols: [check:28] [name:220] [qty-link:40] [qty-el:46] [elec:2*] [qty-dados:46] [dados:2*]
+        widths = [(28, 0), (220, 0), (40, 0), (46, 0), (0, 2), (46, 0), (0, 2)]
         for w, star in widths:
             cd = ColumnDefinition()
             cd.Width = GridLength(star, GridUnitType.Star) if star > 0 else GridLength(w)
             grid.ColumnDefinitions.Add(cd)
 
-        # CheckBox de seleção
         cb = CheckBox()
         cb.IsChecked = True
         cb.VerticalAlignment = VerticalAlignment.Center
@@ -1057,7 +1229,6 @@ class PontosVinculoWindow(forms.WPFWindow):
         cb.Foreground = SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33))
         Grid.SetColumn(cb, 0)
 
-        # Nome da família
         tb_name = TextBlock()
         tb_name.Text = fam["display"]
         tb_name.Margin = Thickness(5, 0, 5, 0)
@@ -1069,39 +1240,70 @@ class PontosVinculoWindow(forms.WPFWindow):
         tb_name.Foreground = SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33))
         Grid.SetColumn(tb_name, 1)
 
-        # Quantidade
-        tb_qty = TextBlock()
-        tb_qty.Text = str(len(fam["instances"]))
-        tb_qty.VerticalAlignment = VerticalAlignment.Center
-        tb_qty.HorizontalAlignment = HorizontalAlignment.Center
-        tb_qty.Foreground = SolidColorBrush(Color.FromRgb(0x77, 0x77, 0x77))
-        Grid.SetColumn(tb_qty, 2)
+        tb_qty_link = TextBlock()
+        tb_qty_link.Text = str(len(fam["instances"]))
+        tb_qty_link.VerticalAlignment = VerticalAlignment.Center
+        tb_qty_link.HorizontalAlignment = HorizontalAlignment.Center
+        tb_qty_link.Foreground = SolidColorBrush(Color.FromRgb(0x77, 0x77, 0x77))
+        Grid.SetColumn(tb_qty_link, 2)
 
-        # ComboBox — Ponto Elétrico
+        # TextBox para quantidade de pontos por instância
+        from System.Windows.Controls import TextBox as _TB
+        tb_pts = _TB()
+        tb_pts.Text = u"1"
+        tb_pts.Width = 36
+        tb_pts.Height = 24
+        tb_pts.TextAlignment = System.Windows.TextAlignment.Center
+        tb_pts.VerticalAlignment = VerticalAlignment.Center
+        tb_pts.HorizontalAlignment = HorizontalAlignment.Center
+        tb_pts.Margin = Thickness(2, 0, 2, 0)
+        tb_pts.ToolTip = u"Pontos elétricos por instância (deslocamento 5 cm)"
+        tb_pts.Background = SolidColorBrush(Color.FromRgb(0xFF, 0xFF, 0xFF))
+        tb_pts.Foreground = SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33))
+        tb_pts.BorderBrush = SolidColorBrush(Color.FromRgb(0xC8, 0xC8, 0xC8))
+        tb_pts.BorderThickness = Thickness(1)
+        Grid.SetColumn(tb_pts, 3)
+
         use_face_now = (self.chk_FacePlacement.IsChecked == True)
         active_elec  = self._elec_face_symbols if use_face_now else self._elec_symbols
         active_data  = self._data_face_symbols if use_face_now else self._data_symbols
         elec_default = self._find_match_idx(fam["display"], active_elec)
         c_elec = self._make_editable_combo(active_elec, elec_default)
-        Grid.SetColumn(c_elec, 3)
+        Grid.SetColumn(c_elec, 4)
 
-        # ComboBox — Ponto de Dados
+        tb_dados_pts = _TB()
+        tb_dados_pts.Text = u"1"
+        tb_dados_pts.Width = 36
+        tb_dados_pts.Height = 24
+        tb_dados_pts.TextAlignment = System.Windows.TextAlignment.Center
+        tb_dados_pts.VerticalAlignment = VerticalAlignment.Center
+        tb_dados_pts.HorizontalAlignment = HorizontalAlignment.Center
+        tb_dados_pts.Margin = Thickness(2, 0, 2, 0)
+        tb_dados_pts.ToolTip = u"Pontos de dados por instância (deslocamento 5 cm)"
+        tb_dados_pts.Background = SolidColorBrush(Color.FromRgb(0xFF, 0xFF, 0xFF))
+        tb_dados_pts.Foreground = SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33))
+        tb_dados_pts.BorderBrush = SolidColorBrush(Color.FromRgb(0xC8, 0xC8, 0xC8))
+        tb_dados_pts.BorderThickness = Thickness(1)
+        Grid.SetColumn(tb_dados_pts, 5)
+
         c_dados = self._make_editable_combo(active_data, 0)
-        Grid.SetColumn(c_dados, 4)
+        Grid.SetColumn(c_dados, 6)
 
-        for child in [cb, tb_name, tb_qty, c_elec, c_dados]:
+        for child in [cb, tb_name, tb_qty_link, tb_pts, c_elec, tb_dados_pts, c_dados]:
             grid.Children.Add(child)
 
         return {
-            "grid": grid,
-            "cb": cb,
-            "c_elec": c_elec,
-            "c_dados": c_dados,
-            "instances": fam["instances"],
-            "display": fam["display"],
-            "is_non_electric": _is_non_electric_smart(fam["display"], fam.get("std_cat", "")),
-            "elec_sym_list":   active_elec,
-            "dados_sym_list":  active_data,
+            "grid":          grid,
+            "cb":            cb,
+            "tb_pts":        tb_pts,
+            "tb_dados_pts":  tb_dados_pts,
+            "c_elec":        c_elec,
+            "c_dados":       c_dados,
+            "instances":        fam["instances"],
+            "display":          fam["display"],
+            "is_non_electric":  _is_non_electric_smart(fam["display"], fam.get("std_cat", "")),
+            "elec_sym_list":    active_elec,
+            "dados_sym_list":   active_data,
         }
 
     def _on_place(self, sender, args):
@@ -1113,10 +1315,22 @@ class PontosVinculoWindow(forms.WPFWindow):
             dados_sym = self._get_symbol_from_combo(r["c_dados"], r.get("dados_sym_list", self._data_symbols))
             if not elec_sym and not dados_sym:
                 continue
+            qty = 1
+            try:
+                qty = max(1, int(str(r["tb_pts"].Text).strip() or u"1"))
+            except Exception:
+                qty = 1
+            qty_dados = 1
+            try:
+                qty_dados = max(1, int(str(r["tb_dados_pts"].Text).strip() or u"1"))
+            except Exception:
+                qty_dados = 1
             to_place.append({
                 "instances": r["instances"],
                 "elec_sym":  elec_sym,
                 "dados_sym": dados_sym,
+                "qty":       qty,
+                "qty_dados": qty_dados,
             })
 
         if not to_place:
@@ -1197,123 +1411,128 @@ class PontosVinculoWindow(forms.WPFWindow):
                         fam_name,
                         len(item["instances"]), elec_name, dados_name
                     ))
+                    LATERAL_FT = 0.05 / 0.3048  # 5 cm em pés
+                    qty_item   = item.get("qty", 1)
+
                     for inst in item["instances"]:
                         if pb.cancelled: break
                         processed_inst += 1
                         pb.update_progress(processed_inst, total_inst)
-                        # ── Coordenadas ──
+                        # ── Coordenadas base ──
                         try:
                             pt_local = inst.Location.Point
-                            pt = transform.OfPoint(pt_local) if transform else pt_local
-                            lvl = min(levels, key=lambda l: abs(l.Elevation - pt.Z))
+                            pt_base  = transform.OfPoint(pt_local) if transform else pt_local
+                            lvl      = min(levels, key=lambda l: abs(l.Elevation - pt_base.Z))
                         except:
                             skip_count += 1
                             dbg.warn("  inst.Id={} — sem localização, pulado.".format(inst.Id))
                             continue
 
-                        # ── Ponto Elétrico ──
-                        new_elec = None
-                        if item["elec_sym"]:
-                            placed   = False
-                            face_ref = None
-                            face_pt  = None
-                            face_dir = None
+                        # ── Pontos Elétricos ──
+                        for q in range(qty_item):
+                            if pb.cancelled: break
+                            # Desloca lateralmente em X: 0 cm no primeiro, +5 cm por cópia adicional
+                            pt = XYZ(pt_base.X + q * LATERAL_FT, pt_base.Y, pt_base.Z)
 
-                            if use_face and ri and not _is_luminaire_sym(item["elec_sym"]):
-                                try:
-                                    face_ref, face_pt, face_dir = self._find_nearest_wall_face(ri, pt)
-                                except:
-                                    pass
+                            new_elec = None
+                            if item["elec_sym"]:
+                                placed   = False
+                                face_ref = None
+                                face_pt  = None
+                                face_dir = None
 
-                                if face_ref and face_pt:
-                                    # Camada 1: face hosting oficial
+                                if use_face and ri and not _is_luminaire_sym(item["elec_sym"]):
                                     try:
-                                        new_elec = _doc.Create.NewFamilyInstance(
-                                            face_ref, face_pt, XYZ(0, 0, 1), item["elec_sym"]
-                                        )
-                                        placed = True
-                                        dbg.debug("  [L1-face] inst.Id={}".format(inst.Id))
-                                    except Exception as ex:
-                                        dbg.debug("  [L1] falhou: {} — tentando L2".format(ex))
+                                        face_ref, face_pt, face_dir = self._find_nearest_wall_face(ri, pt)
+                                    except:
+                                        pass
 
-                                    # Camada 2: posição na face + rotação (sem face hosting)
-                                    if not placed:
+                                    if face_ref and face_pt:
                                         try:
                                             new_elec = _doc.Create.NewFamilyInstance(
-                                                face_pt, item["elec_sym"], lvl, StructuralType.NonStructural
+                                                face_ref, face_pt, XYZ(0, 0, 1), item["elec_sym"]
                                             )
                                             placed = True
-                                            dbg.debug("  [L2-pos] inst.Id={}".format(inst.Id))
-                                            if face_dir:
-                                                try:
-                                                    _doc.Regenerate()
-                                                    outward = XYZ(-face_dir.X, -face_dir.Y, 0)
-                                                    facing  = new_elec.FacingOrientation
-                                                    if facing and facing.GetLength() > 1e-6:
-                                                        import math as _math
-                                                        angle = facing.AngleTo(outward)
-                                                        cross = facing.CrossProduct(outward)
-                                                        if cross.Z < 0:
-                                                            angle = -angle
-                                                        if abs(angle) > 1e-6:
-                                                            axis = Line.CreateBound(
-                                                                face_pt,
-                                                                XYZ(face_pt.X, face_pt.Y, face_pt.Z + 1)
-                                                            )
-                                                            ElementTransformUtils.RotateElement(
-                                                                _doc, new_elec.Id, axis, angle
-                                                            )
-                                                            dbg.debug("  rot {:.1f}°".format(
-                                                                _math.degrees(abs(angle))
-                                                            ))
-                                                except Exception as rot_ex:
-                                                    dbg.debug("  rotação falhou: {}".format(rot_ex))
+                                            dbg.debug("  [L1-face] inst.Id={} q={}".format(inst.Id, q))
                                         except Exception as ex:
-                                            dbg.warn("  [L2] falhou inst.Id={}: {}".format(inst.Id, ex))
-                                else:
-                                    dbg.debug("  sem parede próxima inst.Id={}".format(inst.Id))
+                                            dbg.debug("  [L1] falhou: {} — tentando L2".format(ex))
 
-                            # Camada 3: placement normal (luminária, sem face ou tudo falhou)
-                            if not placed:
-                                try:
-                                    new_elec = _doc.Create.NewFamilyInstance(
-                                        pt, item["elec_sym"], lvl, StructuralType.NonStructural
-                                    )
-                                    placed = True
-                                except Exception as ex:
-                                    dbg.warn("  [L3] falhou inst.Id={}: {}".format(inst.Id, ex))
+                                        if not placed:
+                                            try:
+                                                new_elec = _doc.Create.NewFamilyInstance(
+                                                    face_pt, item["elec_sym"], lvl, StructuralType.NonStructural
+                                                )
+                                                placed = True
+                                                dbg.debug("  [L2-pos] inst.Id={} q={}".format(inst.Id, q))
+                                                if face_dir:
+                                                    try:
+                                                        _doc.Regenerate()
+                                                        outward = XYZ(-face_dir.X, -face_dir.Y, 0)
+                                                        facing  = new_elec.FacingOrientation
+                                                        if facing and facing.GetLength() > 1e-6:
+                                                            import math as _math
+                                                            angle = facing.AngleTo(outward)
+                                                            cross = facing.CrossProduct(outward)
+                                                            if cross.Z < 0:
+                                                                angle = -angle
+                                                            if abs(angle) > 1e-6:
+                                                                axis = Line.CreateBound(
+                                                                    face_pt,
+                                                                    XYZ(face_pt.X, face_pt.Y, face_pt.Z + 1)
+                                                                )
+                                                                ElementTransformUtils.RotateElement(
+                                                                    _doc, new_elec.Id, axis, angle
+                                                                )
+                                                    except Exception as rot_ex:
+                                                        dbg.debug("  rotação falhou: {}".format(rot_ex))
+                                            except Exception as ex:
+                                                dbg.warn("  [L2] falhou inst.Id={}: {}".format(inst.Id, ex))
+                                    else:
+                                        dbg.debug("  sem parede próxima inst.Id={}".format(inst.Id))
 
-                            if placed:
-                                placed_count += 1
-                            if new_elec:
-                                created_element_ids.append(new_elec.Id)
-                                try:
-                                    _p = new_elec.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)
-                                    if _p and not _p.IsReadOnly:
-                                        _p.Set(u'PpV: {}'.format(fam_name))
-                                except: pass
-
-                        # ── Ponto de Dados (independente do elétrico) ──
-                        if item["dados_sym"]:
-                            try:
-                                pt_dados = XYZ(
-                                    pt.X + DADOS_OFFSET_X,
-                                    pt.Y,
-                                    pt.Z + DADOS_OFFSET_Z
-                                )
-                                new_dados = _doc.Create.NewFamilyInstance(
-                                    pt_dados, item["dados_sym"], lvl, StructuralType.NonStructural
-                                )
-                                placed_count += 1
-                                if new_dados:
-                                    created_element_ids.append(new_dados.Id)
+                                if not placed:
                                     try:
-                                        _p = new_dados.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)
+                                        new_elec = _doc.Create.NewFamilyInstance(
+                                            pt, item["elec_sym"], lvl, StructuralType.NonStructural
+                                        )
+                                        placed = True
+                                    except Exception as ex:
+                                        dbg.warn("  [L3] falhou inst.Id={}: {}".format(inst.Id, ex))
+
+                                if placed:
+                                    placed_count += 1
+                                if new_elec:
+                                    created_element_ids.append(new_elec.Id)
+                                    try:
+                                        _p = new_elec.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)
                                         if _p and not _p.IsReadOnly:
                                             _p.Set(u'PpV: {}'.format(fam_name))
                                     except: pass
-                            except Exception as ex:
-                                dbg.warn("  dados falhou inst.Id={}: {}".format(inst.Id, ex))
+
+                        # ── Pontos de Dados (loop independente) ──
+                        qty_dados = item.get("qty_dados", 1)
+                        for q in range(qty_dados):
+                            if pb.cancelled: break
+                            if item["dados_sym"]:
+                                try:
+                                    pt_dados = XYZ(
+                                        pt_base.X + q * LATERAL_FT + DADOS_OFFSET_X,
+                                        pt_base.Y,
+                                        pt_base.Z + DADOS_OFFSET_Z
+                                    )
+                                    new_dados = _doc.Create.NewFamilyInstance(
+                                        pt_dados, item["dados_sym"], lvl, StructuralType.NonStructural
+                                    )
+                                    placed_count += 1
+                                    if new_dados:
+                                        created_element_ids.append(new_dados.Id)
+                                        try:
+                                            _p = new_dados.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)
+                                            if _p and not _p.IsReadOnly:
+                                                _p.Set(u'PpV: {}'.format(fam_name))
+                                        except: pass
+                                except Exception as ex:
+                                    dbg.warn("  dados falhou inst.Id={} q={}: {}".format(inst.Id, q, ex))
 
             # Carimbar para handshake com Auto-Elétrica (silencioso se parâmetro não existir)
             for eid in created_element_ids:

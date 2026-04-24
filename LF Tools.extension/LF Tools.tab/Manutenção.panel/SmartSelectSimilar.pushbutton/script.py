@@ -398,15 +398,16 @@ def filter_similar(target_doc, ref_elem, criteria, scope, ref_cat_id=None):
 class SmartSelectSimilarWindow(forms.WPFWindow):
     def __init__(self, xaml_file, ref_elem, is_linked, target_doc, link_inst):
         forms.WPFWindow.__init__(self, xaml_file)
-        self._ref_elem   = ref_elem
-        self._is_linked  = is_linked
-        self._target_doc = target_doc
-        self._link_inst  = link_inst
-        self._cat_id     = ref_elem.Category.Id if ref_elem.Category else None
-        self._params     = get_element_parameters(ref_elem)
-        self._criteria   = []
-        self._matches    = []
-        self._highlighted = []
+        self._ref_elem          = ref_elem
+        self._is_linked         = is_linked
+        self._target_doc        = target_doc
+        self._link_inst         = link_inst
+        self._cat_id            = ref_elem.Category.Id if ref_elem.Category else None
+        self._params            = get_element_parameters(ref_elem)
+        self._criteria          = []
+        self._matches           = []
+        self._highlighted       = []
+        self._custom_param_names = set()
 
         prefix = u'[VÍNCULO] ' if is_linked else u''
         self.ElementNameLabel.Text = u'Objeto: ' + prefix + getattr(ref_elem, 'Name', u'?')
@@ -420,6 +421,8 @@ class SmartSelectSimilarWindow(forms.WPFWindow):
         self._update_preview()
 
         self.SearchBox.TextChanged          += self._on_search
+        self.SearchBox.GotFocus             += self._on_search_focus
+        self.SearchBox.LostFocus            += self._on_search_focus
         self.RadioActiveView.Checked        += self._on_scope
         self.RadioProject.Checked           += self._on_scope
         self.BtnPresetFamilyType.Click      += self._preset_family_type
@@ -454,6 +457,7 @@ class SmartSelectSimilarWindow(forms.WPFWindow):
     # ── Parâmetros ─────────────────────────────────────────────────────────
 
     def _populate_params(self):
+        self._custom_param_names = set()
         self.ParametersPanel.Children.Clear()
         groups = {
             u'Básicas':      ['Category', 'Family', 'Type', 'Level'],
@@ -466,13 +470,14 @@ class SmartSelectSimilarWindow(forms.WPFWindow):
             if k not in base:
                 groups[u'Customizados'].append(k)
 
-        TEAL  = SolidColorBrush(Color.FromRgb(0x5E, 0xEA, 0xD4))
-        WHITE = SolidColorBrush(Color.FromRgb(0xF8, 0xFA, 0xFC))
+        ACCENT  = SolidColorBrush(Color.FromRgb(0x00, 0x78, 0xD7))
+        MUTED   = SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA))
 
         for group_name in [u'Básicas', u'Identidade', u'Projeto', u'Customizados']:
             params = groups[group_name]
             if not params:
                 continue
+            is_custom = (group_name == u'Customizados')
             header_added = False
             for p_name in params:
                 if any(b in p_name for b in _BLACKLIST):
@@ -480,35 +485,76 @@ class SmartSelectSimilarWindow(forms.WPFWindow):
                 if p_name not in self._params:
                     continue
                 if not header_added:
-                    hdr = TextBlock()
-                    hdr.Text       = u'─── {} ───'.format(group_name.upper())
-                    hdr.Foreground = TEAL
+                    hdr            = TextBlock()
+                    hdr.Text       = group_name.upper()
+                    hdr.Foreground = ACCENT
                     hdr.FontWeight = FontWeights.SemiBold
                     hdr.Margin     = Thickness(0, 14, 0, 4)
+                    hdr.FontSize   = 10
+                    if is_custom:
+                        hdr.Tag        = u'custom_header'
+                        hdr.Visibility = Visibility.Collapsed
                     self.ParametersPanel.Children.Add(hdr)
                     header_added = True
 
                 val     = self._params.get(p_name, u'')
                 display = val if (val and str(val).strip()) else u'<vazio>'
-                cb          = CheckBox()
-                cb.Content  = u'{} : {}'.format(p_name, display)
-                cb.Tag      = p_name
+                cb           = CheckBox()
+                cb.Content   = u'{} : {}'.format(p_name, display)
+                cb.Tag       = p_name
                 cb.IsChecked = p_name in ('Category', 'Family')
                 cb.Checked   += self._on_criteria
                 cb.Unchecked += self._on_criteria
+                if is_custom:
+                    self._custom_param_names.add(p_name)
+                    cb.Visibility = Visibility.Collapsed
                 self.ParametersPanel.Children.Add(cb)
+
+        # Nota sobre parâmetros customizados (só aparece quando não está buscando)
+        custom_count = sum(
+            1 for k in groups[u'Customizados']
+            if k in self._params and not any(b in k for b in _BLACKLIST)
+        )
+        if custom_count > 0:
+            hint = TextBlock()
+            hint.Tag        = u'custom_hint'
+            hint.Text       = u'⋯  {} parâmetro(s) adicional(is) — use a busca acima'.format(custom_count)
+            hint.Foreground = MUTED
+            hint.FontSize   = 10
+            hint.FontStyle  = System.Windows.FontStyles.Italic
+            hint.Margin     = Thickness(0, 10, 0, 2)
+            self.ParametersPanel.Children.Add(hint)
 
         # Popula critérios iniciais (Category + Family já marcados)
         self._on_criteria(None, None)
 
     # ── Eventos ────────────────────────────────────────────────────────────
 
+    def _on_search_focus(self, s, a):
+        txt = str(self.SearchBox.Text or u'')
+        focused = self.SearchBox.IsKeyboardFocused
+        self.SearchHint.Visibility = Visibility.Collapsed if (txt or focused) else Visibility.Visible
+
     def _on_search(self, s, a):
-        txt = str(self.SearchBox.Text or u'').lower()
+        txt       = str(self.SearchBox.Text or u'').lower()
+        searching = bool(txt)
+        self.SearchHint.Visibility = Visibility.Collapsed if searching else Visibility.Visible
         for child in self.ParametersPanel.Children:
             if isinstance(child, CheckBox):
-                visible = (not txt) or txt in str(child.Content or u'').lower()
+                tag       = str(child.Tag or u'')
+                is_custom = tag in self._custom_param_names
+                if is_custom:
+                    # Parâmetros customizados: visíveis apenas ao buscar
+                    visible = searching and (txt in str(child.Content or u'').lower())
+                else:
+                    visible = (not txt) or (txt in str(child.Content or u'').lower())
                 child.Visibility = Visibility.Visible if visible else Visibility.Collapsed
+            elif isinstance(child, TextBlock):
+                tag = str(child.Tag or u'')
+                if tag == u'custom_header':
+                    child.Visibility = Visibility.Visible if searching else Visibility.Collapsed
+                elif tag == u'custom_hint':
+                    child.Visibility = Visibility.Collapsed if searching else Visibility.Visible
 
     def _on_scope(self, s, a):
         self._update_preview()
@@ -549,9 +595,23 @@ class SmartSelectSimilarWindow(forms.WPFWindow):
                         pass
 
     def _batch_checks(self, tags):
+        tags_set = set(tags)
+        has_custom_checked = False
         for c in self.ParametersPanel.Children:
             if isinstance(c, CheckBox):
-                c.IsChecked = str(c.Tag) in tags
+                tag = str(c.Tag or u'')
+                c.IsChecked = tag in tags_set
+                # Custom param marcado deve ficar visível
+                if tag in self._custom_param_names:
+                    if tag in tags_set:
+                        c.Visibility = Visibility.Visible
+                        has_custom_checked = True
+                    else:
+                        c.Visibility = Visibility.Collapsed
+            elif isinstance(c, TextBlock):
+                tag = str(c.Tag or u'')
+                if tag == u'custom_header':
+                    c.Visibility = Visibility.Visible if has_custom_checked else Visibility.Collapsed
         self._on_criteria(None, None)
 
     def _preset_family_type(self, s, a):

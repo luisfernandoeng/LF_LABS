@@ -177,10 +177,13 @@ class _WPFWindowCPy(object):
     def Close(self):
         self._window.Close()
 
-forms.WPFWindow      = _WPFWindowCPy
-forms.alert          = _alert
-forms.ask_for_string = _ask_for_string
-forms.SelectFromList = _SelectFromListHelper
+class _FormsLocal(object):
+    WPFWindow = _WPFWindowCPy
+    alert = staticmethod(_alert)
+    ask_for_string = staticmethod(_ask_for_string)
+    SelectFromList = _SelectFromListHelper
+
+forms = _FormsLocal()
 # ==================== FIM CPYTHON COMPAT ====================
 
 # ==================== LOGICA DE HISTORICO ====================
@@ -396,14 +399,14 @@ def smart_parameter_compare(param, condition, user_text, text_compare_func):
     return text_compare_func(param_txt, condition, user_text)
 
 
-class FiltroAvancadoWindow(forms.WPFWindow):
+class FiltroAvancadoWindow(_WPFWindowCPy):
     def __init__(self):
         try:
             xaml_file = script.get_bundle_file('FiltroAvancado.xaml')
             if xaml_file and os.path.exists(xaml_file):
-                forms.WPFWindow.__init__(self, xaml_file)
+                _WPFWindowCPy.__init__(self, xaml_file)
             else:
-                forms.WPFWindow.__init__(self, self.get_fallback_xaml())
+                _WPFWindowCPy.__init__(self, self.get_fallback_xaml())
             
             # Cache de parâmetros para evitar recalcular
             self._parametros_cache = {}

@@ -33,20 +33,43 @@ except Exception:
     # Nunca deixa o startup quebrar o carregamento da extensão
     pass
 
-# ── Ocultar abas do Revit ──────────────────────────────────────────────────
+# ── Ocultar abas do Revit (diferido para após a ribbon estar pronta) ────────
 try:
-    from pyrevit import script as _script
+    from pyrevit import script as _script, HOST_APP
     _cfg = _script.get_config('lf_hidden_tabs')
-    _hidden = _cfg.get_option('hidden_tabs', [])
+    _hidden = set(_cfg.get_option('hidden_tabs', []))
     if _hidden:
         import clr
         clr.AddReference('AdWindows')
         import Autodesk.Windows as _adWin
-        _rib = _adWin.ComponentManager.Ribbon
-        for _tab in _rib.Tabs:
-            _title = _tab.Title or u""
-            if "LF Tools" in _title:
-                continue
-            _tab.IsVisible = _title not in _hidden
+
+        def _apply_hidden_tabs():
+            for _tab in _adWin.ComponentManager.Ribbon.Tabs:
+                _title  = _tab.Title or u""
+                _tab_id = _tab.Id   or u""
+                if "LF Tools" in _title:
+                    continue
+                if "Modify" in _tab_id:
+                    continue
+                try:
+                    if _tab.IsContextualTab:
+                        continue
+                except Exception:
+                    continue
+                if _title in _hidden:
+                    _tab.IsVisible = False
+
+        def _on_view_activated(_sender, _args):
+            # One-shot: aplica uma vez e remove o handler
+            try:
+                HOST_APP.uiapp.ViewActivated -= _on_view_activated  # noqa
+            except Exception:
+                pass
+            try:
+                _apply_hidden_tabs()
+            except Exception:
+                pass
+
+        HOST_APP.uiapp.ViewActivated += _on_view_activated
 except Exception:
     pass

@@ -753,7 +753,7 @@ def _split_cabletray(doc, cable_tray, split_pt, fallback_level_id=None):
     Retorna (conn_near_ct1, conn_near_ct2) para conectar ao fitting,
     ou (None, None) se o split não foi possível.
     """
-    from Autodesk.Revit.DB import SubTransaction
+    from Autodesk.Revit.DB import SubTransaction, StorageType
 
     sub = SubTransaction(doc)
     sub.Start()
@@ -779,10 +779,48 @@ def _split_cabletray(doc, cable_tray, split_pt, fallback_level_id=None):
             except Exception:
                 continue
 
-        w_p = cable_tray.get_Parameter(BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM)
-        h_p = cable_tray.get_Parameter(BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
-        w   = w_p.AsDouble() if w_p else None
-        h   = h_p.AsDouble() if h_p else None
+        # Salva todos os parâmetros não-readonly (inclui parâmetros de filtro)
+        params_to_copy = []
+        for p in cable_tray.Parameters:
+            try:
+                if p.IsReadOnly:
+                    continue
+                st = p.StorageType
+                if st == StorageType.Double:
+                    params_to_copy.append((p.Id, st, p.AsDouble()))
+                elif st == StorageType.Integer:
+                    params_to_copy.append((p.Id, st, p.AsInteger()))
+                elif st == StorageType.String:
+                    s = p.AsString()
+                    if s is not None:
+                        params_to_copy.append((p.Id, st, s))
+                elif st == StorageType.ElementId:
+                    params_to_copy.append((p.Id, st, p.AsElementId()))
+            except Exception:
+                continue
+
+        # Salva vizinhos conectados em p0 e p1 para reconectar após o split
+        p0_neighbors = []
+        p1_neighbors = []
+        try:
+            for c in cable_tray.ConnectorManager.Connectors:
+                near_p0 = c.Origin.DistanceTo(p0) < c.Origin.DistanceTo(p1)
+                try:
+                    for ref in c.AllRefs:
+                        try:
+                            if ref.Owner.Id == cable_tray.Id:
+                                continue
+                            info = (ref.Owner.Id, ref.Origin)
+                            if near_p0:
+                                p0_neighbors.append(info)
+                            else:
+                                p1_neighbors.append(info)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         doc.Delete(cable_tray.Id)
         doc.Regenerate()
@@ -791,14 +829,22 @@ def _split_cabletray(doc, cable_tray, split_pt, fallback_level_id=None):
             if pa.DistanceTo(pb) < 0.1:
                 return None
             ct = CableTray.Create(doc, ct_type_id, pa, pb, level_id)
-            if ct and w:
-                p = ct.get_Parameter(BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM)
-                if p and not p.IsReadOnly:
-                    p.Set(w)
-            if ct and h:
-                p = ct.get_Parameter(BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
-                if p and not p.IsReadOnly:
-                    p.Set(h)
+            if ct:
+                for (pid, st, val) in params_to_copy:
+                    try:
+                        p = ct.get_Parameter(pid)
+                        if p is None or p.IsReadOnly:
+                            continue
+                        if st == StorageType.Double:
+                            p.Set(val)
+                        elif st == StorageType.Integer:
+                            p.Set(val)
+                        elif st == StorageType.String:
+                            p.Set(val)
+                        elif st == StorageType.ElementId:
+                            p.Set(val)
+                    except Exception:
+                        pass
             return ct
 
         ct1 = _make_ct(p0, s_pt)
@@ -823,6 +869,44 @@ def _split_cabletray(doc, cable_tray, split_pt, fallback_level_id=None):
             except Exception:
                 pass
             return best
+
+        # Reconecta os endpoints externos ao network original
+        def _reconnect_endpoint(ct_seg, neighbor_infos, endpoint_pt):
+            if ct_seg is None or not neighbor_infos:
+                return
+            seg_conn = _conn_near(ct_seg, endpoint_pt)
+            if seg_conn is None:
+                return
+            for (el_id, ref_origin) in neighbor_infos:
+                try:
+                    el = doc.GetElement(el_id)
+                    if el is None:
+                        continue
+                    cm_neighbor = None
+                    try:
+                        cm_neighbor = el.ConnectorManager
+                    except Exception:
+                        try:
+                            cm_neighbor = el.MEPModel.ConnectorManager
+                        except Exception:
+                            pass
+                    if cm_neighbor is None:
+                        continue
+                    best_nc, best_d = None, float('inf')
+                    for nc in cm_neighbor.Connectors:
+                        d = nc.Origin.DistanceTo(ref_origin)
+                        if d < best_d:
+                            best_d, best_nc = d, nc
+                    if best_nc and best_d < 0.5:
+                        try:
+                            seg_conn.ConnectTo(best_nc)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+        _reconnect_endpoint(ct1, p0_neighbors, p0)
+        _reconnect_endpoint(ct2, p1_neighbors, p1)
 
         sub.Commit()
         dbg.debug("_split_cabletray: ok")
@@ -1090,7 +1174,8 @@ def _execute_cabletray_connection(doc, settings, cable_tray_el, cable_tray_click
         except Exception:
             pass
         dbg.error(u"_execute_cabletray_connection: {}".format(e))
-        forms.alert(u"Erro ao conectar eletrocalha:\n" + str(e), title="Conectar Eletroduto")
+        if dbg.enabled:
+            forms.alert(u"Erro ao conectar eletrocalha:\n" + str(e), title="Conectar Eletroduto")
 
 
 def _direct_route_compatible(pt1, pt2, conn1, conn2, tolerance=0.15):
@@ -1724,8 +1809,6 @@ def safe_execution():
         boot_dbg.error("CRASH FATAL:\n{}".format(err_tb))
         if is_debug:
             forms.alert("CRASH FATAL (DEBUG):\n\n" + err_tb, title="Conectar Eletroduto — Erro")
-        else:
-            forms.alert("Erro ao conectar eletrodutos:\n" + str(e), title="Aviso")
 
 if __name__ == "__main__":
     safe_execution()

@@ -21,6 +21,7 @@ from Autodesk.Revit.DB import (
     Reference, ReferenceArray, Options,
     Dimension, DimensionType, ViewPlan, ViewSection,
     LocationCurve, LocationPoint,
+    FamilyInstanceReferenceType,
     Grid as RevitGrid
 )
 import Autodesk.Revit.DB as DB

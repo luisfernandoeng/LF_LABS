@@ -660,10 +660,22 @@ class AutoEletricaController(object):
                             pd_val = u''
                 except Exception:
                     pass
+                qty_pts = 1
+                try:
+                    qty_pts = max(1, int(str(row[u'tb_pts'].Text).strip() or u'1'))
+                except Exception:
+                    qty_pts = 1
+                qty_dados_pts = 1
+                try:
+                    qty_dados_pts = max(1, int(str(row[u'tb_dados_pts'].Text).strip() or u'1'))
+                except Exception:
+                    qty_dados_pts = 1
                 data[disp] = {
-                    u'ponto_eletrico': pe,
-                    u'ponto_dados':    pd_val,
-                    u'checked':        bool(row.get(u'cb') and row[u'cb'].IsChecked),
+                    u'ponto_eletrico':    pe,
+                    u'ponto_dados':       pd_val,
+                    u'checked':           bool(row.get(u'cb') and row[u'cb'].IsChecked),
+                    u'qty_per_inst':      qty_pts,
+                    u'qty_dados_per_inst': qty_dados_pts,
                 }
         except Exception:
             pass

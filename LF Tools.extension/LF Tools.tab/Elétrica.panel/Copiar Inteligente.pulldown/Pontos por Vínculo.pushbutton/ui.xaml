@@ -474,17 +474,28 @@
                                         <ColumnDefinition Width="28"/>
                                         <ColumnDefinition Width="220"/>
                                         <ColumnDefinition Width="40"/>
+                                        <ColumnDefinition Width="46"/>
                                         <ColumnDefinition Width="2*"/>
+                                        <ColumnDefinition Width="46"/>
                                         <ColumnDefinition Width="2*"/>
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="1" Text="Família (Vínculo)"
                                                Style="{StaticResource ColHeader}"/>
                                     <TextBlock Grid.Column="2" Text="Qtd"
                                                Style="{StaticResource ColHeader}"
-                                               HorizontalAlignment="Center"/>
-                                    <TextBlock Grid.Column="3" Text="Ponto Elétrico"
+                                               HorizontalAlignment="Center"
+                                               ToolTip="Instâncias no vínculo"/>
+                                    <TextBlock Grid.Column="3" Text="× El"
+                                               Style="{StaticResource ColHeader}"
+                                               HorizontalAlignment="Center"
+                                               ToolTip="Quantos pontos elétricos por instância (deslocamento lateral de 5 cm entre cada um)"/>
+                                    <TextBlock Grid.Column="4" Text="Ponto Elétrico"
                                                Style="{StaticResource ColHeader}" Margin="4,0,0,0"/>
-                                    <TextBlock Grid.Column="4" Text="Ponto de Dados"
+                                    <TextBlock Grid.Column="5" Text="× D"
+                                               Style="{StaticResource ColHeader}"
+                                               HorizontalAlignment="Center"
+                                               ToolTip="Quantos pontos de dados por instância"/>
+                                    <TextBlock Grid.Column="6" Text="Ponto de Dados"
                                                Style="{StaticResource ColHeader}" Margin="4,0,0,0"/>
                                 </Grid>
                             </Border>
