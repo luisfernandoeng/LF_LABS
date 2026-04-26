@@ -98,6 +98,7 @@ ELECTRICAL_CATS = {
     int(BuiltInCategory.OST_NurseCallDevices),
     int(BuiltInCategory.OST_LightingDevices),
     int(BuiltInCategory.OST_TelephoneDevices),
+    int(BuiltInCategory.OST_ConduitFitting),
 }
 
 class ElectricalInstanceFilter(ISelectionFilter):

@@ -14,11 +14,33 @@ clr.AddReference("System")
 from Autodesk.Revit.DB import *
 from Autodesk.Revit.DB.Electrical import *
 from Autodesk.Revit.UI import *
-from Autodesk.Revit.UI.Selection import ObjectType
+from Autodesk.Revit.UI.Selection import ObjectType, ISelectionFilter
 from pyrevit import forms
 
 doc = __revit__.ActiveUIDocument.Document
 uidoc = __revit__.ActiveUIDocument
+
+
+class ElectricalConnectorFilter(ISelectionFilter):
+    """Só aceita elementos que possuem pelo menos um conector elétrico."""
+    def AllowElement(self, elem):
+        try:
+            cm = None
+            mep = getattr(elem, 'MEPModel', None)
+            if mep:
+                cm = getattr(mep, 'ConnectorManager', None)
+            if cm is None:
+                cm = getattr(elem, 'ConnectorManager', None)
+            if cm:
+                for conn in cm.Connectors:
+                    if conn.Domain == Domain.DomainElectrical:
+                        return True
+        except:
+            pass
+        return False
+
+    def AllowReference(self, ref, point):
+        return True
 
 
 class WarningSwallower(IFailuresPreprocessor):
@@ -246,21 +268,36 @@ def try_remove(circuit, el):
     return False
 
 
-def manage_circuit():
-    elem = None
-    selected_ids = list(uidoc.Selection.GetElementIds())
-    if selected_ids:
-        elem = doc.GetElement(selected_ids[0])
-
-    if not elem:
+def _pick_one_by_one(message):
+    """Loop de PickObject — retorna lista de Elements; ESC encerra."""
+    elec_filter = ElectricalConnectorFilter()
+    elements = []
+    while True:
         try:
             ref = uidoc.Selection.PickObject(
                 ObjectType.Element,
-                "Selecione um elemento que pertence a um circuito"
+                elec_filter,
+                u"{} (ESC para finalizar)".format(message)
             )
-            elem = doc.GetElement(ref.ElementId)
+            el = doc.GetElement(ref.ElementId)
+            if el:
+                elements.append(el)
         except:
-            return
+            break
+    return elements
+
+
+def manage_circuit():
+    elec_filter = ElectricalConnectorFilter()
+    try:
+        ref = uidoc.Selection.PickObject(
+            ObjectType.Element,
+            elec_filter,
+            u"Selecione um elemento que pertence a um circuito"
+        )
+        elem = doc.GetElement(ref.ElementId)
+    except:
+        return
 
     circuit = find_circuit(elem)
     if not circuit:
@@ -302,13 +339,8 @@ def manage_circuit():
                 break
 
             if 'Adicionar' in action:
-                try:
-                    add_refs = uidoc.Selection.PickObjects(
-                        ObjectType.Element, "Selecione elementos para ADICIONAR"
-                    )
-                except:
-                    continue
-                if not add_refs:
+                add_elements = _pick_one_by_one(u"Selecione elemento para ADICIONAR")
+                if not add_elements:
                     continue
 
                 added = 0
@@ -316,8 +348,7 @@ def manage_circuit():
                 with Transaction(doc, "Adicionar ao Circuito") as t:
                     t.Start()
                     with_warning_swallower(t)
-                    for r in add_refs:
-                        el = doc.GetElement(r.ElementId)
+                    for el in add_elements:
                         single_set = ElementSet()
                         single_set.Insert(el)
                         ok = False
@@ -353,22 +384,17 @@ def manage_circuit():
                     forms.alert(u"Não foi possível adicionar {} elemento(s).".format(failed))
 
             elif 'Remover' in action:
-                try:
-                    rem_refs = uidoc.Selection.PickObjects(
-                        ObjectType.Element, "Selecione elementos para REMOVER"
-                    )
-                except:
-                    continue
-                if not rem_refs:
+                rem_elements = _pick_one_by_one(u"Selecione elemento para REMOVER")
+                if not rem_elements:
                     continue
 
                 removed = 0
                 failed = 0
+                rem_ids = [el.Id for el in rem_elements]
                 with Transaction(doc, "Remover do Circuito") as t:
                     t.Start()
                     with_warning_swallower(t)
-                    for r in rem_refs:
-                        el = doc.GetElement(r.ElementId)
+                    for el in rem_elements:
                         if try_remove(circuit, el):
                             removed += 1
                         else:
@@ -378,8 +404,8 @@ def manage_circuit():
                 # Valida novamente fora da transação (estado real do documento)
                 actually_removed = 0
                 still_there = 0
-                for r in rem_refs:
-                    if is_in_circuit(circuit, r.ElementId):
+                for eid in rem_ids:
+                    if is_in_circuit(circuit, eid):
                         still_there += 1
                     else:
                         actually_removed += 1

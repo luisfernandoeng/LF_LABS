@@ -149,20 +149,30 @@ class ProfileEntryRow(object):
         self._txt_key.ToolTip    = u'Nome da família — chave do perfil'
         body.Children.Add(self._txt_key)
 
-        # Linha PpV: Ponto Elétrico | Ponto de Dados
+        # Linha PpV: Ponto Elétrico | Qtd. | Ponto de Dados | Qtd.
         row_ppv = Grid()
-        for w in [GridLength(1, GridUnitType.Star), GridLength(10), GridLength(1, GridUnitType.Star)]:
+        for w in [GridLength(1, GridUnitType.Star), GridLength(8), GridLength(70),
+                  GridLength(16), GridLength(1, GridUnitType.Star), GridLength(8), GridLength(70)]:
             cd = ColumnDefinition(); cd.Width = w
             row_ppv.ColumnDefinitions.Add(cd)
 
-        self._txt_pe = _input(entry.get(u'ponto_eletrico', u''))
-        self._txt_pd = _input(entry.get(u'ponto_dados',    u''))
-        f_pe = _field(u'Ponto Elétrico', self._txt_pe)
-        f_pd = _field(u'Ponto de Dados', self._txt_pd)
-        Grid.SetColumn(f_pe, 0)
-        Grid.SetColumn(f_pd, 2)
-        row_ppv.Children.Add(f_pe)
-        row_ppv.Children.Add(f_pd)
+        self._txt_pe     = _input(entry.get(u'ponto_eletrico', u''))
+        self._txt_pd     = _input(entry.get(u'ponto_dados',    u''))
+        self._txt_qty_pe = _input(str(entry.get(u'qty_per_inst',      1)))
+        self._txt_qty_pd = _input(str(entry.get(u'qty_dados_per_inst', 1)))
+
+        f_pe     = _field(u'Ponto Elétrico', self._txt_pe)
+        f_pd     = _field(u'Ponto de Dados', self._txt_pd)
+        f_qty_pe = _field(u'Qtd. Elétrico',  self._txt_qty_pe)
+        f_qty_pd = _field(u'Qtd. Dados',     self._txt_qty_pd)
+
+        Grid.SetColumn(f_pe,     0)
+        Grid.SetColumn(f_qty_pe, 2)
+        Grid.SetColumn(f_pd,     4)
+        Grid.SetColumn(f_qty_pd, 6)
+
+        for w in [f_pe, f_qty_pe, f_pd, f_qty_pd]:
+            row_ppv.Children.Add(w)
         body.Children.Add(row_ppv)
 
         div = Border()
@@ -212,15 +222,25 @@ class ProfileEntryRow(object):
     def get_entry(self):
         tensao = str(self._cmb_tensao.SelectedItem) if self._cmb_tensao.SelectedItem else u'220V'
         tipo   = str(self._cmb_tipo.SelectedItem)   if self._cmb_tipo.SelectedItem   else u''
+        try:
+            qty_pe = max(1, int((self._txt_qty_pe.Text or u'1').strip()))
+        except Exception:
+            qty_pe = 1
+        try:
+            qty_pd = max(1, int((self._txt_qty_pd.Text or u'1').strip()))
+        except Exception:
+            qty_pd = 1
         return {
-            u'ponto_eletrico': (self._txt_pe.Text    or u'').strip(),
-            u'ponto_dados':    (self._txt_pd.Text    or u'').strip(),
-            u'checked':        bool(self._chk.IsChecked),
-            u'altura':         (self._txt_altura.Text.replace(u',', u'.') or u'1.20'),
-            u'carga_va':       (self._txt_carga.Text.replace(u',', u'.') or u'600'),
-            u'tensao':         tensao,
-            u'prefixo':        (self._txt_prefixo.Text or u'').strip(),
-            u'tipo_carga':     tipo,
+            u'ponto_eletrico':      (self._txt_pe.Text    or u'').strip(),
+            u'ponto_dados':         (self._txt_pd.Text    or u'').strip(),
+            u'checked':             bool(self._chk.IsChecked),
+            u'altura':              (self._txt_altura.Text.replace(u',', u'.') or u'1.20'),
+            u'carga_va':            (self._txt_carga.Text.replace(u',', u'.') or u'600'),
+            u'tensao':              tensao,
+            u'prefixo':             (self._txt_prefixo.Text or u'').strip(),
+            u'tipo_carga':          tipo,
+            u'qty_per_inst':        qty_pe,
+            u'qty_dados_per_inst':  qty_pd,
         }
 
 

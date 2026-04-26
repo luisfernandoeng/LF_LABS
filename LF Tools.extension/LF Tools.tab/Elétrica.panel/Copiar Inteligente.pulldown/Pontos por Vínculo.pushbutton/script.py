@@ -838,7 +838,7 @@ class PontosVinculoWindow(forms.WPFWindow):
                 except: pass
 
             mapa = {}  # display_name_arch → acumulador
-            for bic in SCAN_CATS:
+            for bic in READ_CATS:
                 try:
                     for el in FilteredElementCollector(link_doc).OfCategory(bic).WhereElementIsNotElementType():
                         try:

@@ -11,11 +11,12 @@ class ConfigManager:
         
         # Default settings
         self.settings = {
-            "enabled":          True,
-            "interval_minutes": 10,
-            "show_toast":       True,
-            "log_history":      True,
-            "wait_safe_state":  True,
+            "enabled":            True,
+            "interval_minutes":   10,
+            "countdown_seconds":  5,
+            "show_toast":         True,
+            "log_history":        True,
+            "wait_safe_state":    True,
         }
         
         self.load()

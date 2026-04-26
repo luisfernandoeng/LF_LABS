@@ -8,18 +8,16 @@ from System import AppDomain
 clr.AddReference('PresentationFramework')
 clr.AddReference('WindowsBase')
 clr.AddReference('System.Windows.Forms')
-from System.Windows.Threading import DispatcherTimer, DispatcherPriority
+from System.Windows.Threading import DispatcherTimer
 from System import TimeSpan
 from Autodesk.Revit.UI import IExternalEventHandler, ExternalEvent
-from Autodesk.Revit.DB import SaveAsOptions
 
 from SmartAutoSave.config_manager import config
 import SmartAutoSave.toast_notification as toast
-
-from pyrevit import forms
+import SmartAutoSave.countdown_bar as countdown_bar
 
 _APPDOMAIN_TIMER_KEY = "LFTools_AutoSaveTimer"
-_RETRY_DELAY_SECONDS  = 30   # tempo de retry quando Revit está ocupado
+_RETRY_DELAY_SECONDS = 30
 
 
 class AutoSaveManager(object):
@@ -35,10 +33,14 @@ class AutoSaveManager(object):
         if self.initialized:
             return
 
-        self.uiapp        = uiapp
-        self.timer        = None
-        self._retry_timer = None
-        self.is_paused    = False
+        self.uiapp             = uiapp
+        self.timer             = None
+        self._retry_timer      = None
+        self._countdown_timer     = None
+        self._countdown_remaining = 0
+        self._countdown_total     = 5
+        self._countdown_toast     = None
+        self.is_paused         = False
 
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
         self.log_path = os.path.join(desktop, "pyRevit_AutoSave_Log.txt")
@@ -48,20 +50,16 @@ class AutoSaveManager(object):
 
         self.initialized = True
 
-        # BUG 1 — Para o timer anterior que ficou no AppDomain de um
-        # reload anterior ANTES de criar um novo, evitando timers duplicados.
         self._stop_appdomain_timer()
 
         if config.get("enabled"):
             self.start()
 
     # ------------------------------------------------------------------ #
-    # Controle do timer principal                                          #
+    # Timer principal                                                      #
     # ------------------------------------------------------------------ #
 
     def start(self):
-        """Inicia ou reinicia o timer com o intervalo configurado."""
-        # Para qualquer timer anterior (local ou herdado do AppDomain)
         self._stop_appdomain_timer()
         if self.timer:
             self.timer.Stop()
@@ -73,19 +71,19 @@ class AutoSaveManager(object):
         self.timer.Tick    += self.on_timer_tick
         self.timer.Start()
 
-        # Persiste referência no AppDomain para o próximo reload poder pará-lo
         AppDomain.CurrentDomain.SetData(_APPDOMAIN_TIMER_KEY, self.timer)
 
     def stop(self):
-        """Para o autosave completamente."""
         self._stop_appdomain_timer()
         if self.timer:
             self.timer.Stop()
         self._cancel_retry()
+        self._cancel_countdown()
 
     def pause(self):
         self.is_paused = True
         self._cancel_retry()
+        self._cancel_countdown()
 
     def resume(self):
         self.is_paused = False
@@ -93,22 +91,119 @@ class AutoSaveManager(object):
             self.start()
 
     def trigger_save_now(self):
-        """Força salvamento manual imediato."""
+        """Força salvamento imediato (sem countdown)."""
         if self.is_paused:
             return
+        self._cancel_countdown()
         self.save_event.Raise()
 
     def on_timer_tick(self, sender, args):
         if self.is_paused or not config.get("enabled"):
             return
-        self.save_event.Raise()
+        if self._countdown_timer is not None:
+            return  # já está em countdown
+        self._start_countdown()
 
     # ------------------------------------------------------------------ #
-    # BUG 3 — Retry quando Revit está ocupado                             #
+    # Countdown 5-4-3-2-1                                                  #
+    # ------------------------------------------------------------------ #
+
+    def _get_hwnd(self):
+        try:
+            hwnd = int(self.uiapp.MainWindowHandle)
+            return hwnd if hwnd != 0 else None
+        except:
+            return None
+
+    def _start_countdown(self):
+        secs = config.get("countdown_seconds", 5)
+        if secs <= 0:
+            self.save_event.Raise()
+            return
+
+        self._countdown_total     = secs
+        self._countdown_remaining = secs
+        self._show_countdown_ui()
+
+        self._countdown_timer = DispatcherTimer()
+        self._countdown_timer.Interval = TimeSpan.FromSeconds(1)
+        self._countdown_timer.Tick    += self._on_countdown_tick
+        self._countdown_timer.Start()
+
+    def _on_countdown_tick(self, sender, args):
+        self._countdown_remaining -= 1
+        if self._countdown_remaining <= 0:
+            sender.Stop()
+            self._countdown_timer = None
+            self._pre_save_ui()
+            self.save_event.Raise()
+        else:
+            self._update_countdown_ui()
+
+    def _cancel_countdown(self):
+        if self._countdown_timer:
+            try:
+                self._countdown_timer.Stop()
+            except:
+                pass
+            self._countdown_timer = None
+        countdown_bar.hide()
+        if self._countdown_toast:
+            try:
+                self._countdown_toast.Close()
+            except:
+                pass
+            self._countdown_toast = None
+
+    # ------------------------------------------------------------------ #
+    # UI do countdown                                                      #
+    # ------------------------------------------------------------------ #
+
+    def _show_countdown_ui(self):
+        hwnd  = self._get_hwnd()
+        n     = self._countdown_remaining
+        total = self._countdown_total
+
+        if config.get("show_toast", True):
+            self._countdown_toast = toast.show(
+                u"⏱ Salvamento Automático",
+                u"Salvando em {}s...".format(n),
+                u"⏱",
+                duration=total + 60,
+                hwnd=hwnd,
+            )
+
+        if hwnd is not None:
+            countdown_bar.show(hwnd, total)
+
+    def _update_countdown_ui(self):
+        n     = self._countdown_remaining
+        total = self._countdown_total
+
+        if self._countdown_toast:
+            try:
+                self._countdown_toast.ToastMessage.Text = u"Salvando em {}s...".format(n)
+            except:
+                pass
+
+        countdown_bar.update(n, total)
+
+    def _pre_save_ui(self):
+        """Transição: countdown zerou, agora salva de verdade."""
+        countdown_bar.hide()
+        if self._countdown_toast:
+            try:
+                self._countdown_toast.ToastTitle.Text   = u"Salvando projeto..."
+                self._countdown_toast.ToastMessage.Text = u"Aguarde..."
+                self._countdown_toast.ToastIcon.Text    = u"💾"
+            except:
+                pass
+
+    # ------------------------------------------------------------------ #
+    # Retry quando Revit está ocupado                                      #
     # ------------------------------------------------------------------ #
 
     def schedule_retry(self):
-        """Agenda nova tentativa de save em _RETRY_DELAY_SECONDS segundos."""
         self._cancel_retry()
         self._retry_timer = DispatcherTimer()
         self._retry_timer.Interval = TimeSpan.FromSeconds(_RETRY_DELAY_SECONDS)
@@ -130,11 +225,10 @@ class AutoSaveManager(object):
             self._retry_timer = None
 
     # ------------------------------------------------------------------ #
-    # Helpers internos                                                     #
+    # Helpers                                                              #
     # ------------------------------------------------------------------ #
 
     def _stop_appdomain_timer(self):
-        """Para o timer guardado no AppDomain (sobrevive a reloads do engine)."""
         try:
             old = AppDomain.CurrentDomain.GetData(_APPDOMAIN_TIMER_KEY)
             if old is not None:
@@ -160,8 +254,9 @@ class AutoSaveHandler(IExternalEventHandler):
 
     def Execute(self, uiapp):
         start_time = time.time()
+        show_toast = config.get("show_toast", True)
+        toast_inst = None
 
-        # BUG 2 — Guarda contra crash quando não há documento aberto
         uidoc = uiapp.ActiveUIDocument
         if uidoc is None:
             self.manager.log(u"⚠️ Nenhum documento ativo. Salvamento ignorado.")
@@ -175,25 +270,29 @@ class AutoSaveHandler(IExternalEventHandler):
                 self.manager.log(u"⚠️ Projeto ainda não salvo em disco. Salvamento ignorado.")
                 return
 
-            # BUG 3 — Se Revit está ocupado, agenda retry em vez de simplesmente desistir
             if not self._is_safe_to_save(doc):
                 self.manager.log(u"⚠️ Revit ocupado — retry em {}s.".format(_RETRY_DELAY_SECONDS))
                 self.manager.schedule_retry()
                 return
 
-            # Melhoria 4 — Pula salvamento se não houve alterações desde o último save
             if not doc.IsModified:
                 self.manager.log(u"— Sem alterações, salvamento ignorado.")
+                self.manager._countdown_toast = None
                 return
 
-            show_toast = config.get("show_toast", True)
-            is_cloud   = self._is_cloud_model(doc)
-            toast_inst = None
+            is_cloud = self._is_cloud_model(doc)
 
-            if show_toast:
-                msg      = "Salvando na nuvem (pode demorar)..." if is_cloud else "Aguarde..."
+            # Reaproveita o toast do countdown; senão cria um novo (trigger_save_now)
+            toast_inst = self.manager._countdown_toast
+            if show_toast and toast_inst is None:
+                try:
+                    hwnd = int(uiapp.MainWindowHandle)
+                    hwnd = hwnd if hwnd != 0 else None
+                except:
+                    hwnd = None
+                msg      = u"Salvando na nuvem (pode demorar)..." if is_cloud else u"Aguarde..."
                 duration = 30 if is_cloud else 10
-                toast_inst = toast.show("Salvando projeto...", msg, "💾", duration)
+                toast_inst = toast.show(u"Salvando projeto...", msg, u"💾", duration, hwnd=hwnd)
 
             doc.Save()
 
@@ -202,25 +301,33 @@ class AutoSaveHandler(IExternalEventHandler):
             self.manager.log(u"✅ Salvo em {:.1f}s".format(elapsed))
 
             if show_toast and toast_inst:
-                toast_inst.ToastTitle.Text   = "✅ Projeto salvo"
-                toast_inst.ToastMessage.Text = "Salvo às " + time_str
-                toast_inst.ToastIcon.Text    = "✅"
+                try:
+                    toast_inst.ToastTitle.Text   = u"✅ Projeto salvo"
+                    toast_inst.ToastMessage.Text = u"Salvo às " + time_str
+                    toast_inst.ToastIcon.Text    = u"✅"
+                    toast_inst.restart_close_timer(4)
+                except:
+                    pass
 
-            # Reinicia o timer a partir do momento do save bem-sucedido
+            self.manager._countdown_toast = None
             self.manager.start()
 
         except Exception as e:
             self.manager.log(u"❌ Erro ao salvar: " + str(e))
-            if 'toast_inst' in locals() and toast_inst:
-                toast_inst.ToastTitle.Text   = "⚠️ Erro ao salvar"
-                toast_inst.ToastMessage.Text = "Tente novamente mais tarde"
-                toast_inst.ToastIcon.Text    = "⚠️"
+            effective_toast = toast_inst or self.manager._countdown_toast
+            if show_toast and effective_toast:
+                try:
+                    effective_toast.ToastTitle.Text   = u"⚠️ Erro ao salvar"
+                    effective_toast.ToastMessage.Text = u"Tente novamente mais tarde"
+                    effective_toast.ToastIcon.Text    = u"⚠️"
+                    effective_toast.restart_close_timer(5)
+                except:
+                    pass
+            self.manager._countdown_toast = None
 
     def _is_safe_to_save(self, doc):
-        """Seguro salvar = nenhuma transação aberta no documento."""
         if not config.get("wait_safe_state"):
             return True
-        # IsModifiable == True → transação aberta → NÃO é seguro
         return not doc.IsModifiable
 
     def _is_cloud_model(self, doc):

@@ -1570,55 +1570,55 @@ class ExportImportWindow(forms.WPFWindow):
                         break
                     if row[0] is None:
                         continue
+                    try:
+                        eid = int(float(row[0]))
+                        el  = elem_cache.get(eid)
+                        if not el:
+                            el = doc.GetElement(DB.ElementId(eid))
+                            if el:
+                                elem_cache[eid] = el
+                        if not el:
+                            continue
+
                         try:
-                            eid = int(float(row[0]))
-                            el  = elem_cache.get(eid)
-                            if not el:
-                                el = doc.GetElement(DB.ElementId(eid))
-                                if el:
-                                    elem_cache[eid] = el
-                            if not el:
+                            elem_name = el.Name or str(eid)
+                        except:
+                            elem_name = str(eid)
+
+                        for cx, pname in enumerate(pnames):
+                            val = row[cx + 1] if cx + 1 < len(row) else None
+                            if val is None or val == "":
                                 continue
 
-                            try:
-                                elem_name = el.Name or str(eid)
-                            except:
-                                elem_name = str(eid)
-
-                            for cx, pname in enumerate(pnames):
-                                val = row[cx + 1] if cx + 1 < len(row) else None
-                                if val is None or val == "":
-                                    continue
-
-                                param = get_param_robust(el, pname)
-                                if not param:
-                                    status = "Não Encontrado"
-                                    current = ""
-                                elif param.IsReadOnly:
-                                    status  = "Somente Leitura"
-                                    current = get_parameter_value(param)
+                            param = get_param_robust(el, pname)
+                            if not param:
+                                status = "Não Encontrado"
+                                current = ""
+                            elif param.IsReadOnly:
+                                status  = "Somente Leitura"
+                                current = get_parameter_value(param)
+                            else:
+                                current = get_parameter_value(param)
+                                new_str = str(int(val)) if isinstance(val, float) and val == int(val) else str(val)
+                                if str(current) != new_str:
+                                    status = "Modificar"
+                                    modif_count += 1
                                 else:
-                                    current = get_parameter_value(param)
-                                    new_str = str(int(val)) if isinstance(val, float) and val == int(val) else str(val)
-                                    if str(current) != new_str:
-                                        status = "Modificar"
-                                        modif_count += 1
-                                    else:
-                                        status = "Igual"
+                                    status = "Igual"
 
-                                row_dt = dt.NewRow()
-                                row_dt[0] = pname
-                                row_dt[1] = elem_name
-                                row_dt[2] = str(current)
-                                row_dt[3] = str(val)
-                                row_dt[4] = status
-                                dt.Rows.Add(row_dt)
-                                
-                                row_count += 1
-                                if row_count >= MAX_ROWS:
-                                    break
-                        except:
-                            pass
+                            row_dt = dt.NewRow()
+                            row_dt[0] = pname
+                            row_dt[1] = elem_name
+                            row_dt[2] = str(current)
+                            row_dt[3] = str(val)
+                            row_dt[4] = status
+                            dt.Rows.Add(row_dt)
+
+                            row_count += 1
+                            if row_count >= MAX_ROWS:
+                                break
+                    except:
+                        pass
             finally:
                 wb.close()
 

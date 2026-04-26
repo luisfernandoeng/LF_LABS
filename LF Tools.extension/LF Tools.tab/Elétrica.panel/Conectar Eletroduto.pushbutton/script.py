@@ -699,14 +699,36 @@ FAM_PERFILADO   = "OFEletrico_Perfilado_Uniao_SaidaLateral"
 
 
 def _is_perfilado(cable_tray):
-    """Perfilado = eletrocalha 38x38 mm."""
+    """Detecta perfilado por nome do tipo ou por seção quadrada pequena (≤ 60 mm)."""
+    # 1. Por nome do tipo ou família — mais confiável
     try:
-        w = cable_tray.get_Parameter(BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM)
-        h = cable_tray.get_Parameter(BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
-        if w and h:
-            w_mm = w.AsDouble() * 304.8
-            h_mm = h.AsDouble() * 304.8
-            return (abs(w_mm - 38.0) < 5.0) and (abs(h_mm - 38.0) < 5.0)
+        ct_type = cable_tray.Document.GetElement(cable_tray.GetTypeId())
+        if ct_type:
+            names_to_check = []
+            try:
+                names_to_check.append((ct_type.Name or u"").lower())
+            except Exception:
+                pass
+            try:
+                p = ct_type.get_Parameter(BuiltInParameter.SYMBOL_FAMILY_NAME_PARAM)
+                if p and p.HasValue:
+                    names_to_check.append((p.AsString() or u"").lower())
+            except Exception:
+                pass
+            for n in names_to_check:
+                if u"perfilado" in n or u"strut" in n or u"ladder" in n:
+                    return True
+    except Exception:
+        pass
+    # 2. Por dimensão: seção quadrada e pequena (≤ 60 mm, tolerância 10 mm)
+    try:
+        w_p = cable_tray.get_Parameter(BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM)
+        h_p = cable_tray.get_Parameter(BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
+        if w_p and h_p:
+            w_mm = w_p.AsDouble() * 304.8
+            h_mm = h_p.AsDouble() * 304.8
+            if abs(w_mm - h_mm) < 10.0 and max(w_mm, h_mm) <= 60.0:
+                return True
     except Exception:
         pass
     return False
@@ -1120,8 +1142,6 @@ def _execute_cabletray_connection(doc, settings, cable_tray_el, cable_tray_click
         dbg.xyz("pt_start (union)", pt_start)
 
         dist = pt_start.DistanceTo(pt_dest)
-        # Stub mínimo de 0.5 ft (~15 cm) para o Revit ter espaço de criar a curva;
-        # a saída do fitting é sempre reta, então este segmento não pode ser curto demais.
         stub_len = max(0.5, min(1.0, dist * 0.20))
         p_stub_s = pt_start + dir_start * stub_len
         p_stub_d = pt_dest  + dir_dest  * stub_len
@@ -1129,35 +1149,71 @@ def _execute_cabletray_connection(doc, settings, cable_tray_el, cable_tray_click
         is_flat  = dz < 0.25
         angle    = settings.get('angle_mode_plan' if is_flat else 'angle_mode_vertical', '90')
 
-        if dist < 0.5:
-            segments = [(pt_start, pt_dest)]
-        elif is_flat and angle == '45':
-            mid_segs = create_45_degree_path(p_stub_s, p_stub_d, dir_start, dir_dest)
-            segments = [(pt_start, p_stub_s)] + mid_segs + [(p_stub_d, pt_dest)]
-        elif is_flat:
-            mid_segs = create_90_degree_path(p_stub_s, p_stub_d, dir_start, dir_dest, False)
-            segments = [(pt_start, p_stub_s)] + mid_segs + [(p_stub_d, pt_dest)]
-        elif angle == '45':
-            mid_segs = create_45_degree_path(p_stub_s, p_stub_d, dir_start, dir_dest)
-            segments = [(pt_start, p_stub_s)] + mid_segs + [(p_stub_d, pt_dest)]
-        else:
-            mid_segs = create_90_degree_path(p_stub_s, p_stub_d, dir_start, dir_dest, True)
-            segments = [(pt_start, p_stub_s)] + mid_segs + [(p_stub_d, pt_dest)]
+        def _build_segments(ang):
+            if dist < 0.5:
+                return [(pt_start, pt_dest)]
+            elif is_flat and ang == '45':
+                mid = create_45_degree_path(p_stub_s, p_stub_d, dir_start, dir_dest)
+                return [(pt_start, p_stub_s)] + mid + [(p_stub_d, pt_dest)]
+            elif is_flat:
+                mid = create_90_degree_path(p_stub_s, p_stub_d, dir_start, dir_dest, False)
+                return [(pt_start, p_stub_s)] + mid + [(p_stub_d, pt_dest)]
+            elif ang == '45':
+                mid = create_45_degree_path(p_stub_s, p_stub_d, dir_start, dir_dest)
+                return [(pt_start, p_stub_s)] + mid + [(p_stub_d, pt_dest)]
+            else:
+                mid = create_90_degree_path(p_stub_s, p_stub_d, dir_start, dir_dest, True)
+                return [(pt_start, p_stub_s)] + mid + [(p_stub_d, pt_dest)]
 
-        segments = merge_collinear_segments(segments)
-        dbg.debug("Segmentos: {}".format(len(segments)))
+        # Estratégias em cascata: ângulo configurado → alternativo → direto
+        alt_angle  = '45' if angle == '90' else '90'
+        strategies = [
+            ('config',   _build_segments(angle)),
+            ('alt_angle',_build_segments(alt_angle)),
+            ('direto',   [(pt_start, pt_dest)]),
+        ]
+
+        def _draw_segments(segs):
+            conds, last = [], None
+            for pa, pb in merge_collinear_segments(segs):
+                if pa.DistanceTo(pb) < 0.05:
+                    continue
+                c = draw_conduit_and_connect(
+                    doc, conduit_type_id, pa, pb, level_id, diameter, last, last_ref_conduit
+                )
+                if c:
+                    conds.append(c)
+                    last = c
+            return conds
 
         created_conds = []
-        last_cond = None
-        for idx, (pa, pb) in enumerate(segments):
-            if pa.DistanceTo(pb) < 0.05:
-                continue
-            c_new = draw_conduit_and_connect(
-                doc, conduit_type_id, pa, pb, level_id, diameter, last_cond, last_ref_conduit
-            )
-            if c_new:
-                created_conds.append(c_new)
-                last_cond = c_new
+        for strat_name, segs in strategies:
+            dbg.debug("Tentando estratégia: {}  ({} seg)".format(strat_name, len(segs)))
+            sub = SubTransaction(doc)
+            sub.Start()
+            conds = _draw_segments(segs)
+            if conds:
+                sub.Commit()
+                created_conds = conds
+                dbg.info("Estratégia '{}' OK ({} eletrodutos)".format(strat_name, len(conds)))
+                break
+            else:
+                sub.RollBack()
+                dbg.debug("Estratégia '{}' falhou, tentando próxima.".format(strat_name))
+
+        # Último recurso: eletroduto bruto sem fittings
+        if not created_conds and dist > 0.05:
+            dbg.warn("Todas as estratégias falharam — criando eletroduto bruto.")
+            try:
+                raw = Conduit.Create(doc, conduit_type_id, pt_start, pt_dest, level_id)
+                if raw:
+                    try:
+                        raw.get_Parameter(BuiltInParameter.RBS_CONDUIT_DIAMETER_PARAM).Set(diameter)
+                    except Exception:
+                        pass
+                    created_conds = [raw]
+            except Exception as ex:
+                dbg.warn("Eletroduto bruto também falhou: {}".format(ex))
 
         if created_conds:
             if union_conn:

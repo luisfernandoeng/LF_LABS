@@ -30,43 +30,50 @@ class ViewItem(INotifyPropertyChanged):
         self._is_selected = False
         self._level_name = level_name
         self._discipline = discipline
-        
-        # Evento para notificar mudanças
         self._property_changed_handlers = []
-    
+
     @property
     def View(self):
         return self._view
-    
+
     @property
     def Name(self):
         return self._name
-    
+
     @property
     def LevelName(self):
         return self._level_name
-    
+
     @property
     def Discipline(self):
         return self._discipline
-    
+
+    @property
+    def DisplaySubtitle(self):
+        parts = []
+        if self._level_name:
+            parts.append(self._level_name)
+        if self._discipline and self._discipline != u'geral':
+            parts.append(self._discipline.capitalize())
+        return u'  ·  '.join(parts)
+
     @property
     def IsSelected(self):
         return self._is_selected
-    
+
     @IsSelected.setter
     def IsSelected(self, value):
         if self._is_selected != value:
             self._is_selected = value
             self.OnPropertyChanged("IsSelected")
-    
+
     def add_PropertyChanged(self, handler):
         self._property_changed_handlers.append(handler)
-    
+
     def remove_PropertyChanged(self, handler):
         if handler in self._property_changed_handlers:
             self._property_changed_handlers.remove(handler)
-    
+
     def OnPropertyChanged(self, prop_name):
         for handler in self._property_changed_handlers:
             handler(self, PropertyChangedEventArgs(prop_name))
@@ -85,40 +92,29 @@ class SmartCropWindow(forms.WPFWindow):
             self.crop_info = crop_info
             self.has_selection = has_selection
             self.has_active_crop = has_active_crop
+            self._all_view_items = []
             self.view_items = ObservableCollection[object]()
-            
-            # Preencher informações da vista atual
+
             self.TextBlock_CurrentViewName.Text = current_view.Name
             self.TextBlock_CropBoxInfo.Text = crop_info if crop_info else u"Não ativo"
-            
-            # Mostrar/ocultar painéis baseado no contexto
+
             if has_selection:
                 self.Panel_AdjustMode.Visibility = Visibility.Visible
                 self.Button_AdjustFromSelection.Click += self.adjust_from_selection_click
-            
+
             if has_active_crop:
                 self.Panel_CopyMode.Visibility = Visibility.Visible
-                
-                # Coletar vistas disponíveis
                 self._collect_views()
-                
-                # Configurar ListBox
                 self.ListBox_Views.ItemsSource = self.view_items
-                
-                # Conectar eventos de filtro
-                self.Button_FilterSameLevel.Click += self.filter_same_level
+                self.Button_FilterSameLevel.Click      += self.filter_same_level
                 self.Button_FilterSameDiscipline.Click += self.filter_same_discipline
-                self.Button_FilterAll.Click += self.filter_all
-                self.Button_ApplyCopy.Click += self.apply_copy_click
-                
-                # Monitorar mudanças de seleção
+                self.Button_FilterAll.Click            += self.filter_all
+                self.Button_ApplyCopy.Click            += self.apply_copy_click
+                self.TextBox_SearchViews.TextChanged   += self.on_search_changed
                 for item in self.view_items:
                     item.add_PropertyChanged(self.on_selection_changed)
-                
-                # Atualizar contador inicial
                 self.update_counter()
-            
-            # Conectar botão de fechar
+
             self.Button_Cancel.Click += self.cancel_click
             
         except Exception as e:
@@ -126,29 +122,23 @@ class SmartCropWindow(forms.WPFWindow):
             raise
     
     def _collect_views(self):
-        """Coleta todas as vistas de planta válidas"""
-        current_level = self.current_view.GenLevel
-        current_level_name = current_level.Name if current_level else ""
-        current_discipline = self._detect_discipline(self.current_view.Name)
-        
-        # Coletar vistas de planta
-        collector = DB.FilteredElementCollector(doc).OfClass(DB.ViewPlan)
-        
-        for v in collector:
-            # Pular a vista atual e vistas de template
+        """Coleta vistas de planta e corte/elevação que suportam crop."""
+        def _add(v, level_name):
             if v.Id == self.current_view.Id or v.IsTemplate:
-                continue
-            
-            # Apenas vistas que podem ter crop region
+                return
             if not hasattr(v, 'CropBox'):
-                continue
-            
-            level = v.GenLevel
-            level_name = level.Name if level else ""
+                return
             discipline = self._detect_discipline(v.Name)
-            
-            view_item = ViewItem(v, level_name, discipline)
-            self.view_items.Add(view_item)
+            item = ViewItem(v, level_name, discipline)
+            self._all_view_items.append(item)
+            self.view_items.Add(item)
+
+        for v in DB.FilteredElementCollector(doc).OfClass(DB.ViewPlan):
+            level = v.GenLevel
+            _add(v, level.Name if level else u"")
+
+        for v in DB.FilteredElementCollector(doc).OfClass(DB.ViewSection):
+            _add(v, u"")
     
     def _detect_discipline(self, view_name):
         """Detecta a disciplina pelo nome da vista - MELHORADO"""
@@ -197,15 +187,22 @@ class SmartCropWindow(forms.WPFWindow):
     def adjust_from_selection_click(self, sender, args):
         """Ajusta o crop box para a seleção atual"""
         selection = revit.get_selection()
-        
+
         if not selection:
             forms.alert("Nenhum elemento selecionado.", warn_icon=True)
             return
-        
-        # Calcular limites
+
+        # Ler margem do campo (metros → pés internos do Revit)
+        try:
+            margin_m = float((self.TextBox_Margin.Text or u"0.60").replace(u",", u"."))
+            margin_m = max(0.0, margin_m)
+        except (ValueError, AttributeError):
+            margin_m = 0.60
+        margin = margin_m / 0.3048
+
         min_x, min_y = float('inf'), float('inf')
         max_x, max_y = float('-inf'), float('-inf')
-        
+
         for el in selection:
             bbox = el.get_BoundingBox(self.current_view)
             if bbox:
@@ -213,13 +210,10 @@ class SmartCropWindow(forms.WPFWindow):
                 min_y = min(min_y, bbox.Min.Y)
                 max_x = max(max_x, bbox.Max.X)
                 max_y = max(max_y, bbox.Max.Y)
-        
+
         if min_x == float('inf'):
             forms.alert("Nenhum elemento com bounding box válido.", warn_icon=True)
             return
-        
-        # Margem
-        margin = 2.0
         
         # Aplicar com TransactionGroup
         tg = DB.TransactionGroup(doc, "Ajustar Crop da Seleção")
@@ -262,46 +256,47 @@ class SmartCropWindow(forms.WPFWindow):
     # ========================================================================
     
     def filter_same_level(self, sender, args):
-        """Filtro: Mesmo Nível"""
         current_level = self.current_view.GenLevel
-        current_level_name = current_level.Name if current_level else ""
-        
-        for item in self.view_items:
+        current_level_name = current_level.Name if current_level else u""
+        for item in self._all_view_items:
             item.IsSelected = (item.LevelName == current_level_name)
-        
         self.update_counter()
-    
+
     def filter_same_discipline(self, sender, args):
-        """Filtro: Mesma Disciplina"""
         current_discipline = self._detect_discipline(self.current_view.Name)
-        
-        for item in self.view_items:
+        for item in self._all_view_items:
             item.IsSelected = (item.Discipline == current_discipline)
-        
         self.update_counter()
-    
+
     def filter_all(self, sender, args):
-        """Filtro: Todas"""
-        for item in self.view_items:
+        for item in self._all_view_items:
             item.IsSelected = True
-        
         self.update_counter()
     
+    def on_search_changed(self, sender, args):
+        """Filtra a lista de vistas pelo texto digitado."""
+        term = (self.TextBox_SearchViews.Text or u'').strip().lower()
+        if not term:
+            self.ListBox_Views.ItemsSource = self.view_items
+        else:
+            filtered = [i for i in self._all_view_items
+                        if term in i.Name.lower()
+                        or term in i.LevelName.lower()
+                        or term in i.Discipline.lower()]
+            self.ListBox_Views.ItemsSource = filtered
+
     def on_selection_changed(self, sender, args):
-        """Atualiza o contador quando a seleção muda"""
         self.update_counter()
-    
+
     def update_counter(self):
-        """Atualiza o contador de vistas selecionadas"""
-        count = sum(1 for item in self.view_items if item.IsSelected)
-        self.Button_ApplyCopy.Content = u"✓ COPIAR PARA {} VISTA{}".format(
-            count, 
-            "S" if count != 1 else ""
+        count = sum(1 for item in self._all_view_items if item.IsSelected)
+        self.Button_ApplyCopy.Content = u"Copiar para {} Vista{}".format(
+            count, u"s" if count != 1 else u""
         )
     
     def apply_copy_click(self, sender, args):
         """Aplica o crop region às vistas selecionadas"""
-        selected_views = [item.View for item in self.view_items if item.IsSelected]
+        selected_views = [item.View for item in self._all_view_items if item.IsSelected]
         
         if not selected_views:
             forms.alert(u"Selecione pelo menos uma vista.", warn_icon=True)
