@@ -245,26 +245,51 @@ def create_tomada_circuit_industrial():
     skipped_poles = []
 
     for r in refs_list:
-        elem = doc.GetElement(r.ElementId)
-        if is_element_connected_to_panel(elem): continue
+        host = doc.GetElement(r.ElementId)
+        dbg.elem_full(host, 'HOST')
 
-        # Verificar compatibilidade de fases: ignorar elementos com fases diferentes da config
-        elem_poles = get_element_poles(elem)
-        if elem_poles is not None and elem_poles != phase_config["poles"]:
-            dbg.warn('Elemento Id={} tem {} fase(s), esperado {}. Pulado.'.format(
-                r.ElementId.IntegerValue, elem_poles, phase_config["poles"]))
-            skipped_poles.append(str(r.ElementId.IntegerValue))
+        # Resolve os elementos com conector elétrico real.
+        # Para famílias com sub-componentes (ex: FAST-ELE-CONDULETE-TOMADA), o host é
+        # ConduitFitting sem conector elétrico — o conector fica no sub-componente.
+        valid_pairs = get_valid_electrical_elements(host, (Domain.DomainElectrical,))
+        dbg.step('Host Id={} -> {} par(es) com conector eletrico'.format(
+            r.ElementId.IntegerValue, len(valid_pairs)))
+
+        if not valid_pairs:
+            dbg.warn('Sem conector eletrico Id={}'.format(r.ElementId.IntegerValue))
             continue
 
-        watts = _get_element_wattage(elem)
-        rm = get_room_name(elem)
+        watts = _get_element_wattage(host)
+        rm = get_room_name(host)
+
+        sub_ids_to_add = []
+        for sub_id, conns in valid_pairs:
+            sub = doc.GetElement(sub_id)
+            dbg.elem_full(sub, 'SUB Id={}'.format(sub_id.IntegerValue))
+            if is_element_connected_to_panel(sub):
+                dbg.step('  Sub Id={} ja ligado ao painel — pulado'.format(sub_id.IntegerValue))
+                continue
+            sub_poles = get_element_poles(sub) or get_element_poles(host)
+            dbg.step('  Sub Id={} poles={} config={}'.format(sub_id.IntegerValue, sub_poles, phase_config["poles"]))
+            if sub_poles is not None and sub_poles != phase_config["poles"]:
+                dbg.warn('Sub Id={} tem {} fase(s), esperado {}. Pulado.'.format(
+                    sub_id.IntegerValue, sub_poles, phase_config["poles"]))
+                skipped_poles.append(str(sub_id.IntegerValue))
+                continue
+            sub_ids_to_add.append(sub_id)
+
+        dbg.step('sub_ids_para_batch: {}'.format([s.IntegerValue for s in sub_ids_to_add]))
+        if not sub_ids_to_add:
+            continue
+
         if current_watts + watts > limite_w and current_batch.Count > 0:
             batches.append((current_batch, current_watts, set(current_rooms)))
             current_batch = List[ElementId]()
             current_watts = 0.0
             current_rooms = set()
 
-        current_batch.Add(r.ElementId)
+        for sub_id in sub_ids_to_add:
+            current_batch.Add(sub_id)
         current_watts += watts
         if rm: current_rooms.add(rm)
 
@@ -279,26 +304,44 @@ def create_tomada_circuit_industrial():
     created = 0
     with Transaction(doc, "Circuitos Tomadas Industrial") as t:
         t.Start()
-        for bi, (b_ids, b_watts, b_rooms) in enumerate(batches):
-            dbg.step('Batch {}: {} elemento(s) {:.0f}W'.format(bi+1, b_ids.Count, b_watts))
-            for eid in b_ids:
-                elem = doc.GetElement(eid)
-                ensure_element_is_free(elem)
-                set_param(elem, ["N\xb0 de Fases", "N\xba de Fases", "N\xfamero de Fases", "N\xfamero de polos", "Number of Poles", "Polos"], phase_config["poles"])
-                set_param(elem, ["Tensão (V)", "Tensão", "Voltage", "Voltagem", "Tensão Nominal", "Volts"], phase_config["voltage"])
-                configure_element_for_voltage(elem, phase_config["voltage"], phase_config["poles"])
-            doc.Regenerate()
-            try:
-                with suppress_elec_dialog():
-                    circuit = ElectricalSystem.Create(doc, b_ids, ElectricalSystemType.PowerCircuit)
-                circuit.SelectPanel(panel)
-                room_str = " / ".join(sorted(b_rooms)) if b_rooms else "Tomada {}A".format(detected_amp)
-                set_param(circuit, CIRCUIT_DESC_PARAMS, "{} ({:.0f}W)".format(room_str, b_watts))
-                dbg.ok('Circuito tomada criado Id={}'.format(circuit.Id.IntegerValue))
-                created += 1
-            except Exception as ex:
-                dbg.fail('ElectricalSystem.Create falhou batch {}: {}'.format(bi+1, ex))
-        t.Commit()
+        try:
+            for bi, (b_ids, b_watts, b_rooms) in enumerate(batches):
+                dbg.step('Batch {}: {} elemento(s) {:.0f}W'.format(bi+1, b_ids.Count, b_watts))
+                for eid in b_ids:
+                    elem = doc.GetElement(eid)
+                    ensure_element_is_free(elem)
+                    set_param(elem, ["N\xb0 de Fases", "N\xba de Fases", "N\xfamero de Fases", "N\xfamero de polos", "Number of Poles", "Polos"], phase_config["poles"])
+                    set_param(elem, ["Tensão (V)", "Tensão", "Voltage", "Voltagem", "Tensão Nominal", "Volts"], phase_config["voltage"])
+                    configure_element_for_voltage(elem, phase_config["voltage"], phase_config["poles"])
+                dbg.step('Loop elementos batch {} concluido — Regenerate...'.format(bi+1))
+                try:
+                    doc.Regenerate()
+                    dbg.ok('doc.Regenerate OK')
+                except Exception as ex_regen:
+                    dbg.fail('doc.Regenerate falhou: {}'.format(ex_regen))
+                    dbg.fail(traceback.format_exc())
+                ids_list = [eid.IntegerValue for eid in b_ids]
+                dbg.step('ElectricalSystem.Create IDs: {}'.format(ids_list))
+                try:
+                    with suppress_elec_dialog():
+                        circuit = ElectricalSystem.Create(doc, b_ids, ElectricalSystemType.PowerCircuit)
+                    dbg.ok('Create OK Id={}'.format(circuit.Id.IntegerValue))
+                    circuit.SelectPanel(panel)
+                    room_str = " / ".join(sorted(b_rooms)) if b_rooms else "Tomada {}A".format(detected_amp)
+                    set_param(circuit, CIRCUIT_DESC_PARAMS, "{} ({:.0f}W)".format(room_str, b_watts))
+                    dbg.ok('Circuito tomada criado Id={}'.format(circuit.Id.IntegerValue))
+                    created += 1
+                except Exception as ex:
+                    dbg.fail('ElectricalSystem.Create falhou batch {} IDs={}: {}'.format(
+                        bi+1, ids_list, ex))
+                    dbg.fail(traceback.format_exc())
+            t.Commit()
+            dbg.ok('Transaction COMMITTED')
+        except Exception as ex_outer:
+            dbg.fail('EXCECAO NAO CAPTURADA na Transaction: {}'.format(ex_outer))
+            dbg.fail(traceback.format_exc())
+            try: t.RollBack()
+            except Exception: pass
 
     if created > 0: forms.toast("Sucesso! {} circuito(s) de tomada criado(s).".format(created), title="Industrial")
 

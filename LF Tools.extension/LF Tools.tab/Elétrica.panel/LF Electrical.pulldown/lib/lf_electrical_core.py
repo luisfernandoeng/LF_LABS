@@ -122,6 +122,88 @@ class DebugLog(object):
         else:
             cls._write("PARM", "  [{}] NAO ENCONTRADO".format(param_name))
 
+    @classmethod
+    def elem_full(cls, elem, label=""):
+        """Relatorio completo: categoria, familia, conectores (com domain/IsConnected/MEPSystem/Poles/Volt),
+        sub-componentes e parametros eletricos chave. Ativo apenas com DEBUG_MODE=True."""
+        if not DEBUG_MODE:
+            return
+        try:
+            cat = elem.Category.Name if elem.Category else "?"
+            eid = elem.Id.IntegerValue
+            fname, tname = "", ""
+            try:
+                if hasattr(elem, 'Symbol') and elem.Symbol:
+                    fname = getattr(elem.Symbol, 'FamilyName', '') or ''
+                    tname = getattr(elem.Symbol, 'Name', '') or ''
+            except Exception:
+                pass
+            cls._write("DEBG", "{} Id={} Cat='{}' Fam='{}' Tipo='{}'".format(
+                label, eid, cat, fname, tname))
+
+            # ConnectorManager
+            mgr = None
+            try:
+                if hasattr(elem, 'MEPModel') and elem.MEPModel:
+                    mgr = getattr(elem.MEPModel, 'ConnectorManager', None)
+                if not mgr and hasattr(elem, 'ConnectorManager'):
+                    mgr = elem.ConnectorManager
+            except Exception as ex:
+                cls._write("DEBG", "  MEPModel/CM erro: {}".format(ex))
+
+            if mgr:
+                try:
+                    conns = list(mgr.Connectors)
+                except Exception:
+                    conns = []
+                cls._write("DEBG", "  Conectores totais: {}".format(len(conns)))
+                for i, c in enumerate(conns):
+                    try:
+                        sys_obj = None
+                        sys_id_str = "None"
+                        try:
+                            sys_obj = c.MEPSystem
+                            sys_id_str = str(sys_obj.Id.IntegerValue) if sys_obj else "None"
+                        except Exception:
+                            sys_id_str = "ERRO"
+                        poles_v, volt_v = "?", "?"
+                        try: poles_v = int(c.Poles)
+                        except Exception: pass
+                        try: volt_v = "{}V".format(round(c.Voltage / 10.7639104167, 1))
+                        except Exception: pass
+                        cls._write("DEBG", "    [{i}] domain={d} connected={cn} MEPSystem={s} Poles={p} Volt={v}".format(
+                            i=i, d=c.Domain, cn=c.IsConnected, s=sys_id_str, p=poles_v, v=volt_v))
+                    except Exception as ex:
+                        cls._write("DEBG", "    [{}] erro ao ler: {}".format(i, ex))
+            else:
+                cls._write("DEBG", "  Sem ConnectorManager")
+
+            # Sub-componentes
+            try:
+                if hasattr(elem, 'GetSubComponentIds'):
+                    sub_ids = elem.GetSubComponentIds()
+                    if sub_ids and sub_ids.Count > 0:
+                        cls._write("DEBG", "  Sub-componentes: {}".format(
+                            [s.IntegerValue for s in sub_ids]))
+                    else:
+                        cls._write("DEBG", "  Sub-componentes: nenhum")
+            except Exception:
+                pass
+
+            # Params eletricos chave
+            for pname in ["N\xb0 de Fases", "N\xfamero de Fases", "Tens\xe3o (V)", "Tens\xe3o",
+                          "Painel", "N\xfamero do circuito", "Sistema de distribui\xe7\xe3o"]:
+                try:
+                    p = elem.LookupParameter(pname)
+                    if p and p.HasValue:
+                        val = p.AsString() or p.AsValueString() or str(round(p.AsDouble(), 4))
+                        ro = " [RO]" if p.IsReadOnly else ""
+                        cls._write("DEBG", "  [{}]{} = {}".format(pname, ro, val))
+                except Exception:
+                    pass
+        except Exception as ex:
+            cls._write("DEBG", "{} (erro no relatorio: {})".format(label, ex))
+
 dbg = DebugLog  # alias curto
 
 # ==================== DIALOG HANDLER ====================
@@ -402,9 +484,13 @@ def configure_element_for_voltage(elem, voltage, poles):
     except Exception: pass
 
     # Method 3: assign a DistributionSysType with the matching voltage range
-    dist_id = _find_matching_dist_sys(voltage)
+    try:
+        dist_id = _find_matching_dist_sys(voltage)
+    except Exception as ex:
+        dbg.warn('    _find_matching_dist_sys falhou: {}'.format(ex))
+        dist_id = None
     if dist_id:
-        for name in ["Sistema de distribuição", "Distribution System", "Sistema de Distribuição"]:
+        for name in ["Sistema de distribui\xe7\xe3o", "Distribution System", "Sistema de Distribui\xe7\xe3o"]:
             try:
                 p = elem.LookupParameter(name)
                 if p and not p.IsReadOnly:
@@ -412,25 +498,42 @@ def configure_element_for_voltage(elem, voltage, poles):
                     dbg.ok('    Sistema de distribuição definido')
                     return
             except Exception: pass
+    dbg.step('  configure_element_for_voltage concluido')
 
 
 def ensure_element_is_free(elem):
     dbg.enter('ensure_element_is_free', Id=elem.Id.IntegerValue)
     try:
-        # Buscar sistemas via ConnectorManager (funciona com todos os tipos de MEPModel)
         mgr = None
         if hasattr(elem, "MEPModel") and elem.MEPModel:
             mgr = getattr(elem.MEPModel, "ConnectorManager", None)
         if not mgr and hasattr(elem, "ConnectorManager"):
             mgr = elem.ConnectorManager
         if mgr:
+            try:
+                all_conns = list(mgr.Connectors)
+            except Exception:
+                all_conns = []
+            dbg.step('Conectores: {}'.format(len(all_conns)))
             systems_to_delete = set()
-            for c in mgr.Connectors:
-                if c.IsConnected and c.MEPSystem:
-                    systems_to_delete.add(c.MEPSystem.Id)
+            for i, c in enumerate(all_conns):
+                try:
+                    sys_obj = None
+                    sys_id_str = "None"
+                    try:
+                        sys_obj = c.MEPSystem
+                        sys_id_str = str(sys_obj.Id.IntegerValue) if sys_obj else "None"
+                    except Exception:
+                        sys_id_str = "ERRO"
+                    dbg.step('  [{}] domain={} connected={} MEPSystem={}'.format(
+                        i, c.Domain, c.IsConnected, sys_id_str))
+                    if c.IsConnected and sys_obj:
+                        systems_to_delete.add(sys_obj.Id)
+                except Exception as ex:
+                    dbg.warn('  [{}] erro ao ler conector: {}'.format(i, ex))
             if systems_to_delete:
                 for sys_id in systems_to_delete:
-                    dbg.step('Deletando sistema existente Id={}'.format(sys_id.IntegerValue))
+                    dbg.step('Deletando sistema Id={}'.format(sys_id.IntegerValue))
                     try:
                         doc.Delete(sys_id)
                     except Exception as del_ex:
@@ -439,13 +542,9 @@ def ensure_element_is_free(elem):
                 dbg.exit('ensure_element_is_free', True)
                 return True
             else:
-                dbg.step('Nenhum sistema conectado encontrado')
-                dbg.exit('ensure_element_is_free', True)
-                return True
+                dbg.step('Nenhum sistema eletrico conectado — elemento livre')
         else:
             dbg.step('Sem ConnectorManager')
-            dbg.exit('ensure_element_is_free', True)
-            return True
     except Exception as ex:
         dbg.fail('ensure_element_is_free: {}'.format(ex))
     dbg.exit('ensure_element_is_free', False)
