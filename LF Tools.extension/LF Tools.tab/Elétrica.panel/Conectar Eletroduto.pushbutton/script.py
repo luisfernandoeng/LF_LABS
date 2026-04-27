@@ -1680,21 +1680,22 @@ def _process_pair(el1, el2, pt_click1, pt_click2, same_box, use_connector_mode, 
     dbg.section("Fase 4: Rota")
     segments = []
 
+    angle_active = angle_plan if is_flat else angle_vert
     if dist_direct < 0.5:
         dbg.info("Regra 0a: direto (<0.5 ft)")
         segments = [(pt1, pt2)]
-    elif dist_direct < 1.0:
+    elif dist_direct < 1.0 and angle_active == 'livre':
         facing  = dir1.DotProduct(dir2) < -0.7
         aligned = dir1.DotProduct((pt2 - pt1).Normalize()) > 0.6
         if facing or aligned:
-            dbg.info("Regra 0b: direto (curto, alinhado/encarando)")
+            dbg.info("Regra 0b: direto (curto, alinhado/encarando, livre)")
             segments = [(pt1, pt2)]
         else:
-            dbg.info("Regra 0b: curto com ângulo — 90°")
+            dbg.info("Regra 0b: curto com ângulo — 90° (livre)")
             mid_segs = create_90_degree_path(p_stub1, p_stub2, dir1, dir2, False)
             segments = [(pt1, p_stub1)] + mid_segs + [(p_stub2, pt2)]
-    elif dir1.DotProduct((pt2 - pt1).Normalize()) > 0.85 and dir2.DotProduct((pt1 - pt2).Normalize()) > 0.85:
-        dbg.info("Regra 0c: direto (conectores encarando em linha)")
+    elif dir1.DotProduct((pt2 - pt1).Normalize()) > 0.85 and dir2.DotProduct((pt1 - pt2).Normalize()) > 0.85 and angle_active == 'livre':
+        dbg.info("Regra 0c: direto (conectores encarando em linha, livre)")
         segments = [(pt1, pt2)]
     elif same_box and is_piso and dist_metros < 3.0:
         dbg.info("Regra 1: mesma caixa, piso, curto")
@@ -1703,16 +1704,16 @@ def _process_pair(el1, el2, pt_click1, pt_click2, same_box, use_connector_mode, 
         dbg.info("Regra 2: mesma caixa, parede/teto, mesmo nível (angle_plan={})".format(angle_plan))
         if angle_plan == 'livre':
             segments = [(pt1, pt2)]
-        else:
+        elif angle_plan == '45':
             p1_c, p2_c = solve_chicane_2d(pt1, pt2, dir1, dir2, stub_len)
             if p1_c and p2_c:
                 segments = [(pt1, p1_c), (p1_c, p2_c), (p2_c, pt2)]
-            elif angle_plan == '45':
+            else:
                 mid_segs = create_45_degree_path(p_stub1, p_stub2, dir1, dir2)
                 segments = [(pt1, p_stub1)] + mid_segs + [(p_stub2, pt2)]
-            else:
-                mid_segs = create_90_degree_path(p_stub1, p_stub2, dir1, dir2, False)
-                segments = [(pt1, p_stub1)] + mid_segs + [(p_stub2, pt2)]
+        else:
+            mid_segs = create_90_degree_path(p_stub1, p_stub2, dir1, dir2, False)
+            segments = [(pt1, p_stub1)] + mid_segs + [(p_stub2, pt2)]
     elif same_box and not is_flat:
         if is_piso:
             dbg.info("Regra 3a: mesma caixa, piso, desnível")
@@ -1721,6 +1722,8 @@ def _process_pair(el1, el2, pt_click1, pt_click2, same_box, use_connector_mode, 
             dbg.info("Regra 3b: mesma caixa, parede, desnível (angle_vert={})".format(angle_vert))
             if angle_vert == 'livre':
                 mid_segs = create_terrain_segments(p_stub1, p_stub2, dist_metros)
+            elif angle_vert == '45':
+                mid_segs = create_45_degree_path(p_stub1, p_stub2, dir1, dir2)
             else:
                 mid_segs = create_90_degree_path(p_stub1, p_stub2, dir1, dir2, True)
         segments = [(pt1, p_stub1)] + mid_segs + [(p_stub2, pt2)]
@@ -1729,16 +1732,16 @@ def _process_pair(el1, el2, pt_click1, pt_click2, same_box, use_connector_mode, 
             dbg.info("Regra 4a: caixas diferentes, piso, mesmo nível (angle_plan={})".format(angle_plan))
             if angle_plan == 'livre':
                 segments = [(pt1, pt2)]
-            else:
+            elif angle_plan == '45':
                 p1_c, p2_c = solve_chicane_2d(pt1, pt2, dir1, dir2, stub_len)
                 if p1_c and p2_c:
                     segments = [(pt1, p1_c), (p1_c, p2_c), (p2_c, pt2)]
-                elif angle_plan == '45':
+                else:
                     mid_segs = create_45_degree_path(p_stub1, p_stub2, dir1, dir2)
                     segments = [(pt1, p_stub1)] + mid_segs + [(p_stub2, pt2)]
-                else:
-                    mid_segs = create_90_degree_path(p_stub1, p_stub2, dir1, dir2, False)
-                    segments = [(pt1, p_stub1)] + mid_segs + [(p_stub2, pt2)]
+            else:
+                mid_segs = create_90_degree_path(p_stub1, p_stub2, dir1, dir2, False)
+                segments = [(pt1, p_stub1)] + mid_segs + [(p_stub2, pt2)]
         else:
             dbg.info("Regra 4b: caixas diferentes, parede, mesmo nível (angle_plan={})".format(angle_plan))
             if angle_plan == 'livre':
@@ -1789,7 +1792,14 @@ def _process_pair(el1, el2, pt_click1, pt_click2, same_box, use_connector_mode, 
         routing_strategy = settings.get('routing_strategy', 'auto')
         is_multi_segment = len(segments) > 1
 
-        if routing_strategy == 'auto' and is_multi_segment:
+        can_try_direct = (routing_strategy == 'auto')
+        if can_try_direct:
+            if is_flat and angle_plan != 'livre':
+                can_try_direct = False
+            elif not is_flat and angle_vert != 'livre':
+                can_try_direct = False
+
+        if can_try_direct and is_multi_segment:
             dbg.info("Tentando rota direta...")
             dbg.timer_start("try_direct")
             created_conds = try_direct_with_fittings(

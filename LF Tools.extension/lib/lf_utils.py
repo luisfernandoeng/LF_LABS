@@ -142,8 +142,8 @@ class DebugLogger(object):
             self._print("[DEBUG]", msg)
 
     def warn(self, msg):
-        """Sempre impresso — independente de enabled."""
-        self._print("[WARN ]", msg)
+        if self.enabled:
+            self._print("[WARN ]", msg)
 
     def error(self, msg):
         """Sempre impresso — independente de enabled."""
