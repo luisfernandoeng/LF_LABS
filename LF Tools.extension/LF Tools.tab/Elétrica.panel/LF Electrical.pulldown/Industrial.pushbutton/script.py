@@ -17,11 +17,13 @@ from Autodesk.Revit.Exceptions import OperationCanceledException
 
 import lf_electrical_core
 from lf_electrical_core import (
-    doc, uidoc, get_current_panel, set_current_panel, get_panel_name, set_param, 
+    doc, uidoc, get_current_panel, set_current_panel, get_panel_name, set_param,
     prompt_phase_voltage, ConnectorDomainFilter, get_valid_electrical_elements,
     is_element_connected_to_panel, ensure_element_is_free, get_room_name, get_family_name,
     configure_panel, PanelFilter, CategoryFilter, call_queda_tensao,
-    VALID_SWITCH_LETTERS, _get_switch_label, load_config, dbg
+    VALID_SWITCH_LETTERS, _get_switch_label, load_config, dbg,
+    configure_element_for_voltage, get_element_poles,
+    suppress_elec_dialog, CIRCUIT_DESC_PARAMS
 )
 
 def _get_element_wattage(elem):
@@ -186,24 +188,30 @@ def create_ilum_circuit_industrial():
     if current_batch.Count > 0:
         batches.append((current_batch, current_watts, set(current_rooms)))
 
+    dbg.step('Batches: {} | Elementos totais: {}'.format(len(batches), sum(b[0].Count for b in batches)))
     created = 0
     with Transaction(doc, "Circuitos Ilum Industrial") as t:
         t.Start()
-        for b_ids, b_watts, b_rooms in batches:
+        for bi, (b_ids, b_watts, b_rooms) in enumerate(batches):
+            dbg.step('Batch {}: {} elemento(s) {:.0f}W rooms={}'.format(bi+1, b_ids.Count, b_watts, list(b_rooms)))
             for eid in b_ids:
                 elem = doc.GetElement(eid)
-                set_param(elem, ["N° de Fases", "Nº de Fases", "Número de polos", "Number of Poles", "Polos"], phase_config["poles"])
-                set_param(elem, ["Tensão (V)", "Tensão", "Voltage", "Voltagem", "Tensão Nominal", "Volts"], phase_config["voltage"])
                 ensure_element_is_free(elem)
-            
+                set_param(elem, ["N\xb0 de Fases", "N\xba de Fases", "N\xfamero de Fases", "N\xfamero de polos", "Number of Poles", "Polos"], phase_config["poles"])
+                set_param(elem, ["Tensão (V)", "Tensão", "Voltage", "Voltagem", "Tensão Nominal", "Volts"], phase_config["voltage"])
+                configure_element_for_voltage(elem, phase_config["voltage"], phase_config["poles"])
+
             doc.Regenerate()
             try:
-                circuit = ElectricalSystem.Create(doc, b_ids, ElectricalSystemType.PowerCircuit)
+                with suppress_elec_dialog():
+                    circuit = ElectricalSystem.Create(doc, b_ids, ElectricalSystemType.PowerCircuit)
                 circuit.SelectPanel(panel)
                 room_str = " / ".join(sorted(b_rooms)) if b_rooms else "Ilum Industrial"
-                set_param(circuit, ["Descrição", "Comments"], "{} ({:.0f}W)".format(room_str, b_watts))
+                set_param(circuit, CIRCUIT_DESC_PARAMS, "{} ({:.0f}W)".format(room_str, b_watts))
+                dbg.ok('Circuito ilum criado Id={}'.format(circuit.Id.IntegerValue))
                 created += 1
-            except Exception: pass
+            except Exception as ex:
+                dbg.fail('ElectricalSystem.Create falhou batch {}: {}'.format(bi+1, ex))
         t.Commit()
 
     if created > 0: forms.toast("Sucesso! {} circuito(s) criado(s).".format(created), title="Industrial")
@@ -234,11 +242,20 @@ def create_tomada_circuit_industrial():
     current_batch = List[ElementId]()
     current_watts = 0.0
     current_rooms = set()
+    skipped_poles = []
 
     for r in refs_list:
         elem = doc.GetElement(r.ElementId)
         if is_element_connected_to_panel(elem): continue
-            
+
+        # Verificar compatibilidade de fases: ignorar elementos com fases diferentes da config
+        elem_poles = get_element_poles(elem)
+        if elem_poles is not None and elem_poles != phase_config["poles"]:
+            dbg.warn('Elemento Id={} tem {} fase(s), esperado {}. Pulado.'.format(
+                r.ElementId.IntegerValue, elem_poles, phase_config["poles"]))
+            skipped_poles.append(str(r.ElementId.IntegerValue))
+            continue
+
         watts = _get_element_wattage(elem)
         rm = get_room_name(elem)
         if current_watts + watts > limite_w and current_batch.Count > 0:
@@ -246,7 +263,7 @@ def create_tomada_circuit_industrial():
             current_batch = List[ElementId]()
             current_watts = 0.0
             current_rooms = set()
-        
+
         current_batch.Add(r.ElementId)
         current_watts += watts
         if rm: current_rooms.add(rm)
@@ -254,23 +271,33 @@ def create_tomada_circuit_industrial():
     if current_batch.Count > 0:
         batches.append((current_batch, current_watts, set(current_rooms)))
 
+    if skipped_poles:
+        forms.alert(u"{} elemento(s) ignorado(s) por ter fases incompatíveis com a configuração ({} fase(s)):\n{}".format(
+            len(skipped_poles), phase_config["poles"], ", ".join(skipped_poles)), title="Incompatibilidade de Fases")
+
+    dbg.step('Batches tomada: {} | Limite {}W'.format(len(batches), limite_w))
     created = 0
     with Transaction(doc, "Circuitos Tomadas Industrial") as t:
         t.Start()
-        for b_ids, b_watts, b_rooms in batches:
+        for bi, (b_ids, b_watts, b_rooms) in enumerate(batches):
+            dbg.step('Batch {}: {} elemento(s) {:.0f}W'.format(bi+1, b_ids.Count, b_watts))
             for eid in b_ids:
                 elem = doc.GetElement(eid)
-                set_param(elem, ["N° de Fases", "Nº de Fases", "Número de polos", "Number of Poles", "Polos"], phase_config["poles"])
-                set_param(elem, ["Tensão (V)", "Tensão", "Voltage", "Voltagem", "Tensão Nominal", "Volts"], phase_config["voltage"])
                 ensure_element_is_free(elem)
+                set_param(elem, ["N\xb0 de Fases", "N\xba de Fases", "N\xfamero de Fases", "N\xfamero de polos", "Number of Poles", "Polos"], phase_config["poles"])
+                set_param(elem, ["Tensão (V)", "Tensão", "Voltage", "Voltagem", "Tensão Nominal", "Volts"], phase_config["voltage"])
+                configure_element_for_voltage(elem, phase_config["voltage"], phase_config["poles"])
             doc.Regenerate()
             try:
-                circuit = ElectricalSystem.Create(doc, b_ids, ElectricalSystemType.PowerCircuit)
+                with suppress_elec_dialog():
+                    circuit = ElectricalSystem.Create(doc, b_ids, ElectricalSystemType.PowerCircuit)
                 circuit.SelectPanel(panel)
                 room_str = " / ".join(sorted(b_rooms)) if b_rooms else "Tomada {}A".format(detected_amp)
-                set_param(circuit, ["Descrição", "Comments"], "{} ({:.0f}W)".format(room_str, b_watts))
+                set_param(circuit, CIRCUIT_DESC_PARAMS, "{} ({:.0f}W)".format(room_str, b_watts))
+                dbg.ok('Circuito tomada criado Id={}'.format(circuit.Id.IntegerValue))
                 created += 1
-            except Exception: pass
+            except Exception as ex:
+                dbg.fail('ElectricalSystem.Create falhou batch {}: {}'.format(bi+1, ex))
         t.Commit()
 
     if created > 0: forms.toast("Sucesso! {} circuito(s) de tomada criado(s).".format(created), title="Industrial")
@@ -378,19 +405,22 @@ def create_individual_circuits_industrial():
                 if not has_connector: continue
 
                 ensure_element_is_free(elem)
-                set_param(elem, ["N° de Fases", "Nº de Fases", "Número de polos", "Number of Poles", "Polos"], phase_config["poles"])
+                set_param(elem, ["N\xb0 de Fases", "N\xba de Fases", "N\xfamero de Fases", "N\xfamero de polos", "Number of Poles", "Polos"], phase_config["poles"])
                 set_param(elem, ["Tensão (V)", "Tensão", "Voltage", "Voltagem", "Tensão Nominal", "Volts"], phase_config["voltage"])
+                configure_element_for_voltage(elem, phase_config["voltage"], phase_config["poles"])
                 doc.Regenerate()
 
                 ids = List[ElementId]()
                 ids.Add(elem.Id)
-                try: circuit = ElectricalSystem.Create(doc, ids, ElectricalSystemType.PowerCircuit)
+                try:
+                    with suppress_elec_dialog():
+                        circuit = ElectricalSystem.Create(doc, ids, ElectricalSystemType.PowerCircuit)
                 except Exception: continue
 
                 circuit.SelectPanel(panel)
                 set_param(circuit, ["Nome da carga", "Load Name"], str(contador))
                 rm = get_room_name(elem)
-                set_param(circuit, ["Descrição", "Comments"], rm if rm else "Carga Industrial")
+                set_param(circuit, CIRCUIT_DESC_PARAMS, rm if rm else "Carga Industrial")
                 contador += 1
                 created_count += 1
             t.Commit()
@@ -458,15 +488,17 @@ def create_grouped_circuit_industrial():
         t.Start()
         for eid in ids:
             child_elem = doc.GetElement(eid)
-            set_param(child_elem, ["N° de Fases", "Nº de Fases", "Número de polos", "Number of Poles", "Polos"], phase_config["poles"])
+            set_param(child_elem, ["N\xb0 de Fases", "N\xba de Fases", "N\xfamero de Fases", "N\xfamero de polos", "Number of Poles", "Polos"], phase_config["poles"])
             set_param(child_elem, ["Tensão (V)", "Tensão", "Voltage", "Voltagem", "Tensão Nominal", "Volts"], phase_config["voltage"])
+            configure_element_for_voltage(child_elem, phase_config["voltage"], phase_config["poles"])
 
         doc.Regenerate()
         try:
-            circuit = ElectricalSystem.Create(doc, ids, ElectricalSystemType.PowerCircuit)
+            with suppress_elec_dialog():
+                circuit = ElectricalSystem.Create(doc, ids, ElectricalSystemType.PowerCircuit)
             circuit.SelectPanel(panel)
             room_str = " / ".join(sorted(rooms)) if rooms else "Agrupado Industrial"
-            set_param(circuit, ["Descrição", "Comments"], room_str)
+            set_param(circuit, CIRCUIT_DESC_PARAMS, room_str)
             t.Commit()
             forms.toast("Circuito agrupado criado com {} elemento(s).".format(ids.Count), title="Industrial")
         except Exception as e:

@@ -16,11 +16,12 @@ from Autodesk.Revit.Exceptions import OperationCanceledException
 
 import lf_electrical_core
 from lf_electrical_core import (
-    doc, uidoc, get_current_panel, get_panel_name, set_param, 
+    doc, uidoc, get_current_panel, get_panel_name, set_param,
     prompt_phase_voltage, ConnectorDomainFilter, get_valid_electrical_elements,
     is_element_connected_to_panel, ensure_element_is_free, get_room_name,
     select_and_configure_panel, call_queda_tensao,
-    CategoryFilter, next_valid_letter, dbg
+    CategoryFilter, next_valid_letter, dbg,
+    suppress_elec_dialog, CIRCUIT_DESC_PARAMS
 )
 
 def create_grouped_circuit(load_name, target_voltage=None):
@@ -91,7 +92,7 @@ def create_grouped_circuit(load_name, target_voltage=None):
         dbg.step('Configurando polos/tensao nos elementos...')
         for eid in ids:
             child_elem = doc.GetElement(eid)
-            set_param(child_elem, ["N° de Fases", "Nº de Fases", "Número de polos", "Number of Poles", "Polos"], phase_config["poles"])
+            set_param(child_elem, ["N\xb0 de Fases", "N\xba de Fases", "N\xfamero de Fases", "N\xfamero de polos", "Number of Poles", "Polos"], phase_config["poles"])
             set_param(child_elem, ["Tensão (V)", "Tensão", "Voltage", "Voltagem", "Tensão Nominal", "Volts"], phase_config["voltage"])
 
         if disconnected > 0:
@@ -100,7 +101,8 @@ def create_grouped_circuit(load_name, target_voltage=None):
 
         dbg.step('Criando ElectricalSystem...')
         try:
-            circuit = ElectricalSystem.Create(doc, ids, ElectricalSystemType.PowerCircuit)
+            with suppress_elec_dialog():
+                circuit = ElectricalSystem.Create(doc, ids, ElectricalSystemType.PowerCircuit)
             dbg.ok('Circuito criado: Id={}'.format(circuit.Id.IntegerValue))
         except Exception as e:
             dbg.fail('ElectricalSystem.Create falhou: {}'.format(e))
@@ -117,7 +119,7 @@ def create_grouped_circuit(load_name, target_voltage=None):
         circuit.SelectPanel(panel)
         set_param(circuit, ["Nome da carga", "Load Name"], load_name)
         room_str = " / ".join(sorted(rooms)) if rooms else "Automático"
-        set_param(circuit, ["Descrição", "Comments"], room_str)
+        set_param(circuit, CIRCUIT_DESC_PARAMS, room_str)
 
         t.Commit()
         dbg.ok('Transaction COMMITTED')
@@ -180,7 +182,7 @@ def create_individual_circuits():
                         continue
 
                     ensure_element_is_free(sub_elem)
-                    set_param(sub_elem, ["N° de Fases", "Nº de Fases", "Número de polos", "Number of Poles", "Polos"], phase_config["poles"])
+                    set_param(sub_elem, ["N\xb0 de Fases", "N\xba de Fases", "N\xfamero de Fases", "N\xfamero de polos", "Number of Poles", "Polos"], phase_config["poles"])
                     set_param(sub_elem, ["Tensão (V)", "Tensão", "Voltage", "Voltagem", "Tensão Nominal", "Volts"], phase_config["voltage"])
                     doc.Regenerate()
                     
@@ -188,11 +190,12 @@ def create_individual_circuits():
                     for c in conns:
                         if c.IsConnected: continue
                         try:
-                            circuit = ElectricalSystem.Create(c, ElectricalSystemType.PowerCircuit)
+                            with suppress_elec_dialog():
+                                circuit = ElectricalSystem.Create(c, ElectricalSystemType.PowerCircuit)
                             circuit.SelectPanel(panel)
                             nome = prefixo + str(contador)
                             set_param(circuit, ["Nome da carga", "Load Name"], nome)
-                            set_param(circuit, ["Descrição", "Comments"], rm if rm else "Carga Específica")
+                            set_param(circuit, CIRCUIT_DESC_PARAMS, rm if rm else "Carga Específica")
                             dbg.ok('Circuito criado: {} (Id={})'.format(nome, circuit.Id.IntegerValue))
                             contador += 1
                             created_count += 1

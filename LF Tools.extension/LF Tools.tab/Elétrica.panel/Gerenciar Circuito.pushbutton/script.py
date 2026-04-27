@@ -1,6 +1,14 @@
 # coding: utf-8
-"""Gerenciar Circuito - Adicionar/Remover elementos de circuitos
-Autor: Luís Fernando
+"""Gerenciar Circuito - Adicionar/Remover elementos de circuitos elétricos.
+
+CAUSA RAIZ DO PROBLEMA ANTERIOR:
+  AddToCircuit() no Revit percorre o GRAFO de conectividade elétrica inteiro
+  quando os elementos não têm conexão física (Conectado:False).
+  Resultado: 70+ elementos adicionados ao clicar em 1.
+
+SOLUÇÃO:
+  Em vez de AddToCircuit, RECRIAMOS o circuito com ElectricalSystem.Create()
+  passando exatamente os conectores desejados — sem traversal de rede.
 """
 
 __title__ = "Gerenciar\nCircuito"
@@ -11,438 +19,494 @@ clr.AddReference("RevitAPI")
 clr.AddReference("RevitAPIUI")
 clr.AddReference("System")
 
+import System
 from Autodesk.Revit.DB import *
 from Autodesk.Revit.DB.Electrical import *
 from Autodesk.Revit.UI import *
 from Autodesk.Revit.UI.Selection import ObjectType, ISelectionFilter
+from Autodesk.Revit.Exceptions import OperationCanceledException
 from pyrevit import forms
 
-doc = __revit__.ActiveUIDocument.Document
+doc   = __revit__.ActiveUIDocument.Document
 uidoc = __revit__.ActiveUIDocument
 
 
-class ElectricalConnectorFilter(ISelectionFilter):
-    """Só aceita elementos que possuem pelo menos um conector elétrico."""
-    def AllowElement(self, elem):
-        try:
-            cm = None
-            mep = getattr(elem, 'MEPModel', None)
-            if mep:
-                cm = getattr(mep, 'ConnectorManager', None)
-            if cm is None:
-                cm = getattr(elem, 'ConnectorManager', None)
-            if cm:
-                for conn in cm.Connectors:
-                    if conn.Domain == Domain.DomainElectrical:
-                        return True
-        except:
-            pass
-        return False
+# ─────────────────────────────────────────────────────────────────────────────
+#  HELPERS DE CONECTORES
+# ─────────────────────────────────────────────────────────────────────────────
 
-    def AllowReference(self, ref, point):
-        return True
-
-
-class WarningSwallower(IFailuresPreprocessor):
-    def PreprocessFailures(self, failuresAccessor):
-        for f in failuresAccessor.GetFailureMessages():
-            if f.GetSeverity() == FailureSeverity.Warning:
-                failuresAccessor.DeleteWarning(f)
-        return FailureProcessingResult.Continue
-
-
-def with_warning_swallower(t):
-    opts = t.GetFailureHandlingOptions()
-    opts.SetFailuresPreprocessor(WarningSwallower())
-    t.SetFailureHandlingOptions(opts)
-
-
-def set_red_override(view, element_ids, apply=True):
-    if apply:
-        solid_fill = None
-        for fp in FilteredElementCollector(doc).OfClass(FillPatternElement):
-            try:
-                if fp.GetFillPattern().IsSolidFill:
-                    solid_fill = fp
-                    break
-            except:
-                continue
-
-        ogs = OverrideGraphicSettings()
-        red = Color(255, 0, 0)
-        ogs.SetProjectionLineColor(red)
-        try:
-            ogs.SetProjectionLineWeight(8)
-        except:
-            pass
-        if solid_fill:
-            for setter in [
-                lambda: (ogs.SetSurfaceForegroundPatternId(solid_fill.Id),
-                         ogs.SetSurfaceForegroundPatternColor(red),
-                         ogs.SetSurfaceForegroundPatternVisible(True)),
-                lambda: (ogs.SetSurfaceBackgroundPatternId(solid_fill.Id),
-                         ogs.SetSurfaceBackgroundPatternColor(red),
-                         ogs.SetSurfaceBackgroundPatternVisible(True)),
-                lambda: (ogs.SetProjectionFillPatternId(solid_fill.Id),
-                         ogs.SetProjectionFillColor(red)),
-            ]:
-                try:
-                    setter()
-                except:
-                    pass
-        for eid in element_ids:
-            try:
-                view.SetElementOverrides(eid, ogs)
-            except:
-                pass
-    else:
-        blank = OverrideGraphicSettings()
-        for eid in element_ids:
-            try:
-                view.SetElementOverrides(eid, blank)
-            except:
-                pass
-
-
-def find_circuit(elem):
-    if isinstance(elem, ElectricalSystem):
-        return elem
-
-    # Método 1: MEPModel e ElectricalSystems direto
+def _get_cm(elem):
     try:
-        mep = getattr(elem, 'MEPModel', None)
-        sources = [mep] if mep else []
-        sources.append(elem)
-        for src in sources:
-            if src is None:
-                continue
-            for attr in ['GetElectricalSystems', 'GetAssignedElectricalSystems']:
-                if hasattr(src, attr):
-                    try:
-                        result = getattr(src, attr)()
-                        if result:
-                            for sys in result:
-                                return sys
-                    except:
-                        pass
-            if hasattr(src, 'ElectricalSystems'):
-                try:
-                    for sys in src.ElectricalSystems:
-                        return sys
-                except:
-                    pass
-    except:
-        pass
-
-    # Método 2: Conectores elétricos
-    try:
-        cm = None
         mep = getattr(elem, 'MEPModel', None)
         if mep:
             cm = getattr(mep, 'ConnectorManager', None)
-        if cm is None:
-            cm = getattr(elem, 'ConnectorManager', None)
-        if cm:
-            for conn in cm.Connectors:
-                if conn.Domain != Domain.DomainElectrical:
-                    continue
-                for attr in ['MEPSystem']:
-                    sys = getattr(conn, attr, None)
-                    if isinstance(sys, ElectricalSystem):
-                        return sys
-                if conn.IsConnected:
-                    for ref in conn.AllRefs:
-                        if isinstance(ref.Owner, ElectricalSystem):
-                            return ref.Owner
-    except:
-        pass
-
-    # Método 3: Varredura global (fallback lento)
+            if cm: return cm
+    except Exception: pass
     try:
-        for es in FilteredElementCollector(doc).OfClass(ElectricalSystem).ToElements():
-            try:
-                if es.Elements:
-                    for member in es.Elements:
-                        if member.Id == elem.Id:
-                            return es
-            except:
-                continue
-    except:
-        pass
-
+        cm = getattr(elem, 'ConnectorManager', None)
+        if cm: return cm
+    except Exception: pass
     return None
 
 
-def get_member_ids(circuit):
+def _elec_connectors(elem):
+    result = []
+    cm = _get_cm(elem)
+    if cm is None: return result
+    try:
+        for c in cm.Connectors:
+            if c.Domain == Domain.DomainElectrical:
+                result.append(c)
+    except Exception: pass
+    return result
+
+
+def _has_elec_conn(elem):
+    return len(_elec_connectors(elem)) > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  FILTRO DE SELEÇÃO
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ElecFilter(ISelectionFilter):
+    def AllowElement(self, elem): return _has_elec_conn(elem)
+    def AllowReference(self, ref, point): return True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  BUSCA DE CIRCUITO
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _find_circuits(elem):
+    found = {}
+    # Via AllRefs dos conectores (mais confiável)
+    for conn in _elec_connectors(elem):
+        try:
+            for ref in conn.AllRefs:
+                owner = ref.Owner
+                if isinstance(owner, ElectricalSystem):
+                    found[owner.Id.IntegerValue] = owner
+        except Exception: pass
+    if found: return list(found.values())
+    # Via MEPModel
+    try:
+        sources = []
+        mep = getattr(elem, 'MEPModel', None)
+        if mep: sources.append(mep)
+        sources.append(elem)
+        for src in sources:
+            for attr in ('GetElectricalSystems', 'GetAssignedElectricalSystems'):
+                fn = getattr(src, attr, None)
+                if fn:
+                    try:
+                        for es in (fn() or []):
+                            found[es.Id.IntegerValue] = es
+                    except Exception: pass
+    except Exception: pass
+    return list(found.values())
+
+
+def find_circuit(elem):
+    circuits = _find_circuits(elem)
+    if not circuits: return None
+    if len(circuits) == 1: return circuits[0]
+    opts = [u"#{} (ID:{})".format(
+        getattr(es, 'CircuitNumber', '?'), es.Id.IntegerValue
+    ) for es in circuits]
+    chosen = forms.SelectFromList.show(opts, title=u"Múltiplos circuitos", multiselect=False)
+    if chosen is None: return None
+    return circuits[opts.index(chosen)]
+
+
+def _get_member_ids(circuit):
     ids = []
     try:
-        for el in circuit.Elements:
+        fresh = doc.GetElement(circuit.Id)
+        for el in (fresh.Elements or []):
             ids.append(el.Id)
-    except:
-        pass
+    except Exception: pass
     return ids
 
 
-def is_in_circuit(circuit, elem_id):
-    """Verifica se elemento ainda está no circuito (re-query após transação)."""
-    try:
-        # Recarrega o circuito do doc para ter estado atualizado
-        fresh = doc.GetElement(circuit.Id)
-        if fresh and fresh.Elements:
-            for member in fresh.Elements:
-                if member.Id == elem_id:
-                    return True
-    except:
-        pass
-    return False
+# ─────────────────────────────────────────────────────────────────────────────
+#  NÚCLEO: RECRIAR CIRCUITO COM MEMBROS EXATOS
+#
+#  Por que recriar em vez de AddToCircuit?
+#  AddToCircuit faz traversal do grafo elétrico inteiro quando os elementos
+#  não têm conexão física — adiciona 70+ elementos ao invés de 1.
+#  ElectricalSystem.Create(IList[ElementId]) cria circuito com EXATAMENTE os
+#  elementos passados, sem nenhum traversal de rede.
+# ─────────────────────────────────────────────────────────────────────────────
 
+def _rebuild_circuit(circuit, desired_elements):
+    """
+    Recria o circuito com exatamente desired_elements.
+    Preserva SystemType, tensão (VoltageType), polos e painel.
+    Deve ser chamado DENTRO de uma transação aberta.
+    Retorna (novo_ElectricalSystem | None, msg_erro).
+    """
+    from System.Collections.Generic import List as CsList
 
-def try_remove(circuit, el):
-    """
-    Tenta remover elemento do circuito com múltiplos métodos.
-    Deve ser chamada DENTRO de uma transação aberta.
-    Retorna True se removido com sucesso.
-    """
-    # Verifica se o elemento a ser removido é o Quadro (Panel) do circuito
-    try:
-        if circuit.BaseEquipment and circuit.BaseEquipment.Id == el.Id:
-            circuit.SelectPanel(None)
+    if not desired_elements:
+        try:
+            doc.Delete(circuit.Id)
             doc.Regenerate()
-            return True
-    except:
-        pass
+            return None, "circuito deletado (sem membros)"
+        except Exception as e:
+            return None, str(e)
 
-    single_set = ElementSet()
-    single_set.Insert(el)
+    # ── Captura estado original ANTES de deletar ─────────────────────────
+    sys_type = ElectricalSystemType.PowerCircuit
+    try: sys_type = circuit.SystemType
+    except Exception: pass
 
-    # Método 1: RemoveFromCircuit padrão
+    panel = None
+    try: panel = circuit.BaseEquipment
+    except Exception: pass
+
+    # Tensão: ElementId que aponta para a definição de VoltageType
+    old_voltage_id = ElementId.InvalidElementId
     try:
-        circuit.RemoveFromCircuit(single_set)
-        doc.Regenerate()  # Força o Revit a atualizar a lista circuit.Elements
-    except:
-        pass
+        vt = circuit.VoltageType
+        if vt: old_voltage_id = vt.Id
+    except Exception: pass
 
-    # Verifica se foi removido de verdade
-    still_in = False
+    # Número de polos: 1=monofásico, 2=bifásico, 3=trifásico
+    old_poles = 1
+    try: old_poles = circuit.PolesNumber
+    except Exception: pass
+
+    # ── Monta IList[ElementId] — esta versão do Revit exige IList, não ConnectorSet ──
+    id_list = CsList[ElementId]()
+    for elem in desired_elements:
+        if elem and elem.Id != ElementId.InvalidElementId:
+            id_list.Add(elem.Id)
+
+    if id_list.Count == 0:
+        return None, u"Nenhum elemento válido encontrado"
+
+    # ── Deleta circuito antigo ───────────────────────────────────────────
     try:
-        fresh_circuit = doc.GetElement(circuit.Id)
-        for member in fresh_circuit.Elements:
-            if member.Id == el.Id:
-                still_in = True
-                break
-    except:
-        pass
+        doc.Delete(circuit.Id)
+        doc.Regenerate()
+    except Exception as e:
+        return None, u"Falha ao deletar circuito antigo: {}".format(e)
 
-    if not still_in:
-        return True
-
-    # Método 3: Desconectar via conectores
+    # ── Cria novo circuito com exatamente os IDs ────────────────────────
     try:
-        cm = None
-        mep = getattr(el, 'MEPModel', None)
-        if mep:
-            cm = getattr(mep, 'ConnectorManager', None)
-        if cm is None:
-            cm = getattr(el, 'ConnectorManager', None)
-        if cm:
-            for conn in cm.Connectors:
-                if conn.Domain != Domain.DomainElectrical or not conn.IsConnected:
-                    continue
-                to_disconnect = []
-                for ref in conn.AllRefs:
-                    if isinstance(ref.Owner, ElectricalSystem) and ref.Owner.Id == circuit.Id:
-                        to_disconnect.append(ref)
-                for ref in to_disconnect:
-                    try:
-                        conn.DisconnectFrom(ref)
-                    except:
-                        pass
-        # Verifica
-        for member in circuit.Elements:
-            if member.Id == el.Id:
-                return False
-        return True
-    except:
-        pass
+        new_circuit = ElectricalSystem.Create(doc, id_list, sys_type)
+        doc.Regenerate()
+    except Exception as e:
+        return None, u"Falha ao criar novo circuito: {}".format(e)
 
-    return False
+    if new_circuit is None:
+        return None, u"ElectricalSystem.Create retornou None"
+
+    # ── Restaura tensão e polos do circuito original ─────────────────────
+    if old_voltage_id != ElementId.InvalidElementId:
+        try:
+            vt_elem = doc.GetElement(old_voltage_id)
+            if vt_elem:
+                new_circuit.VoltageType = vt_elem
+        except Exception: pass
+
+    try:
+        new_circuit.PolesNumber = old_poles
+    except Exception: pass
+
+    doc.Regenerate()
+
+    # ── Re-associa ao mesmo painel ───────────────────────────────────────
+    if panel:
+        try:
+            new_circuit.SelectPanel(panel)
+            doc.Regenerate()
+        except Exception: pass
+
+    return new_circuit, u""
 
 
-def _pick_one_by_one(message):
-    """Loop de PickObject — retorna lista de Elements; ESC encerra."""
-    elec_filter = ElectricalConnectorFilter()
-    elements = []
+# ─────────────────────────────────────────────────────────────────────────────
+#  ADD / REMOVE via recriação
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _add_elements(circuit, elems_to_add):
+    """
+    Adiciona uma lista de elementos ao circuito de uma vez (1 rebuild só).
+    Retorna (novo_circuit, ok, msg).
+    """
+    current_ids = _get_member_ids(circuit)
+    current_ids_int = set(eid.IntegerValue for eid in current_ids)
+    current_elems = [doc.GetElement(eid) for eid in current_ids if doc.GetElement(eid)]
+
+    novos = [e for e in elems_to_add if e and e.Id.IntegerValue not in current_ids_int]
+    ja_membros = len(elems_to_add) - len(novos)
+
+    if not novos:
+        return circuit, True, u"todos já eram membros"
+
+    desired = current_elems + novos
+    new_c, msg = _rebuild_circuit(circuit, desired)
+    info = u"{} adicionado(s)".format(len(novos))
+    if ja_membros:
+        info += u" ({} já eram membros)".format(ja_membros)
+    if msg:
+        info += u" | " + msg
+    if new_c is not None:
+        return new_c, True, info
+    return None, False, msg
+
+
+def _remove_elements(circuit, elems_to_rem):
+    """
+    Remove uma lista de elementos do circuito de uma vez (1 rebuild só).
+    Retorna (novo_circuit, ok, msg).
+    """
+    current_ids = _get_member_ids(circuit)
+    current_ids_int = set(eid.IntegerValue for eid in current_ids)
+    current_elems = [doc.GetElement(eid) for eid in current_ids if doc.GetElement(eid)]
+
+    rem_ids_int = set(e.Id.IntegerValue for e in elems_to_rem if e)
+    nao_membros = len([e for e in elems_to_rem if e and e.Id.IntegerValue not in current_ids_int])
+    a_remover   = len(rem_ids_int) - nao_membros
+
+    desired = [e for e in current_elems if e.Id.IntegerValue not in rem_ids_int]
+    new_c, msg = _rebuild_circuit(circuit, desired)
+    info = u"{} removido(s)".format(a_remover)
+    if nao_membros:
+        info += u" ({} não eram membros)".format(nao_membros)
+    if msg:
+        info += u" | " + msg
+    ok = (new_c is not None) or ("deletado" in msg) or ("sem membros" in msg)
+    return new_c, ok, info
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  HIGHLIGHT
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _solid_fill_id():
+    for fp in FilteredElementCollector(doc).OfClass(FillPatternElement):
+        try:
+            if fp.GetFillPattern().IsSolidFill: return fp.Id
+        except Exception: continue
+    return ElementId.InvalidElementId
+
+_FILL_ID = None
+
+def _apply_highlight(view, eids, apply=True):
+    global _FILL_ID
+    if _FILL_ID is None: _FILL_ID = _solid_fill_id()
+    if apply:
+        ogs = OverrideGraphicSettings()
+        red = Color(220, 50, 50)
+        ogs.SetProjectionLineColor(red)
+        try: ogs.SetProjectionLineWeight(6)
+        except Exception: pass
+        if _FILL_ID != ElementId.InvalidElementId:
+            try:
+                ogs.SetSurfaceForegroundPatternId(_FILL_ID)
+                ogs.SetSurfaceForegroundPatternColor(red)
+                ogs.SetSurfaceForegroundPatternVisible(True)
+            except Exception: pass
+    else:
+        ogs = OverrideGraphicSettings()
+    for eid in eids:
+        try: view.SetElementOverrides(eid, ogs)
+        except Exception: pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  SELEÇÃO INTERATIVA (acumula cliques, ESC confirma)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _pick_one(message):
+    """Retorna um único Element ou None (ESC cancela). Usado no seed inicial."""
+    try:
+        ref = uidoc.Selection.PickObject(
+            ObjectType.Element, ElecFilter(),
+            u"{} — ESC para cancelar".format(message)
+        )
+        return doc.GetElement(ref.ElementId)
+    except Exception:
+        return None
+
+
+def _pick_many(message):
+    """
+    Loop de PickObject — acumula elementos a cada clique.
+    Clicar no mesmo elemento 2x o desfaz (toggle).
+    ESC encerra e retorna a lista acumulada.
+    """
+    sel_filter = ElecFilter()
+    collected  = {}   # int_id → Element
+
     while True:
+        count = len(collected)
+        hint  = u" [{} selecionado(s) — ESC para confirmar]".format(count) if count else u" [ESC para cancelar]"
         try:
             ref = uidoc.Selection.PickObject(
-                ObjectType.Element,
-                elec_filter,
-                u"{} (ESC para finalizar)".format(message)
+                ObjectType.Element, sel_filter,
+                u"{}{}".format(message, hint)
             )
-            el = doc.GetElement(ref.ElementId)
+        except Exception:
+            break   # ESC ou qualquer erro encerra o loop
+
+        try:
+            el  = doc.GetElement(ref.ElementId)
+            key = ref.ElementId.IntegerValue
             if el:
-                elements.append(el)
-        except:
-            break
-    return elements
+                if key in collected:
+                    del collected[key]   # segundo clique = deseleciona
+                    forms.toast(u"↩ Removido da seleção")
+                else:
+                    collected[key] = el
+                    forms.toast(u"✔ {} selecionado(s)".format(len(collected)))
+        except Exception:
+            pass
+
+    return list(collected.values())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  LOOP PRINCIPAL
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _WarnSwallower(IFailuresPreprocessor):
+    def PreprocessFailures(self, fa):
+        for f in fa.GetFailureMessages():
+            if f.GetSeverity() == FailureSeverity.Warning:
+                fa.DeleteWarning(f)
+        return FailureProcessingResult.Continue
 
 
 def manage_circuit():
-    elec_filter = ElectricalConnectorFilter()
-    try:
-        ref = uidoc.Selection.PickObject(
-            ObjectType.Element,
-            elec_filter,
-            u"Selecione um elemento que pertence a um circuito"
-        )
-        elem = doc.GetElement(ref.ElementId)
-    except:
-        return
+    # 1. Seleciona elemento base (deve ter circuito)
+    seed = _pick_one(u"Clique num elemento que pertence a um circuito")
+    if not seed: return
 
-    circuit = find_circuit(elem)
+    circuit = find_circuit(seed)
     if not circuit:
-        forms.alert("Elemento não pertence a nenhum circuito elétrico.")
+        forms.alert(u"O elemento não pertence a nenhum circuito elétrico.",
+                    title=u"Gerenciar Circuito")
         return
 
     view = doc.ActiveView
-    member_ids = []
-    old_member_ids = []
+    highlighted = []
 
     try:
         while True:
-            member_ids = get_member_ids(circuit)
+            if circuit is None:
+                forms.toast(u"Circuito deletado — encerrando.")
+                break
 
-            with Transaction(doc, "Highlight Circuito") as t:
+            member_ids = _get_member_ids(circuit)
+
+            # Atualiza highlight
+            with Transaction(doc, u"Highlight Circuito") as t:
                 t.Start()
-                to_clear = [eid for eid in old_member_ids if eid not in member_ids]
-                if to_clear:
-                    set_red_override(view, to_clear, apply=False)
-                set_red_override(view, member_ids, apply=True)
+                to_clear = [eid for eid in highlighted if eid not in member_ids]
+                _apply_highlight(view, to_clear, apply=False)
+                _apply_highlight(view, member_ids, apply=True)
                 t.Commit()
+            highlighted = list(member_ids)
 
-            old_member_ids = list(member_ids)
+            circ_num = u"?"
+            try: circ_num = circuit.CircuitNumber or u"?"
+            except Exception: pass
 
-            circ_num = "?"
+            panel_info = u""
             try:
-                circ_num = circuit.CircuitNumber
-            except:
-                pass
+                base = circuit.BaseEquipment
+                if base: panel_info = u" | {}".format(base.Name)
+            except Exception: pass
 
             action = forms.CommandSwitchWindow.show(
-                [u'➕ Adicionar elementos', u'➖ Remover elementos',
-                 u'🗑️ Deletar Circuito', u'◀ Sair'],
-                message=u"Circuito: {} | {} membro(s)".format(circ_num, len(member_ids)),
+                [u"➕  Adicionar elemento",
+                 u"➖  Remover elemento",
+                 u"🗑️  Deletar circuito",
+                 u"✖  Sair"],
+                message=u"Circuito: {}{} | {} membro(s)".format(
+                    circ_num, panel_info, len(member_ids)),
                 title=u"Gerenciar Circuito"
             )
 
-            if not action or 'Sair' in action:
+            if not action or u"Sair" in action or u"✖" in action:
                 break
 
-            if 'Adicionar' in action:
-                add_elements = _pick_one_by_one(u"Selecione elemento para ADICIONAR")
-                if not add_elements:
-                    continue
+            # ── ADICIONAR ─────────────────────────────────────────────────
+            if u"Adicionar" in action:
+                # Loop: clique para acumular, ESC para confirmar lote
+                elems = _pick_many(
+                    u"ADICIONAR ao circuito {} — clique nos elementos".format(circ_num)
+                )
+                if not elems: continue
 
-                added = 0
-                failed = 0
-                with Transaction(doc, "Adicionar ao Circuito") as t:
+                with Transaction(doc, u"Adicionar ao Circuito") as t:
+                    opts = t.GetFailureHandlingOptions()
+                    opts.SetFailuresPreprocessor(_WarnSwallower())
+                    t.SetFailureHandlingOptions(opts)
                     t.Start()
-                    with_warning_swallower(t)
-                    for el in add_elements:
-                        single_set = ElementSet()
-                        single_set.Insert(el)
-                        ok = False
-                        try:
-                            circuit.AddToCircuit(single_set)
-                            ok = True
-                        except:
-                            pass
-                        if not ok:
-                            # Tenta remover de outro circuito primeiro
-                            try:
-                                ex_circ = find_circuit(el)
-                                if ex_circ and ex_circ.Id != circuit.Id:
-                                    ex_circ.RemoveFromCircuit(single_set)
-                                    doc.Regenerate()
-                                    circuit.AddToCircuit(single_set)
-                                    doc.Regenerate()
-                                    ok = True
-                            except:
-                                pass
-                        if ok:
-                            added += 1
-                        else:
-                            failed += 1
-                    t.Commit()
-
-                if added > 0:
-                    msg = u"✅ {} adicionado(s)".format(added)
-                    if failed > 0:
-                        msg += u" | ⚠️ {} falhou".format(failed)
-                    forms.toast(msg)
-                elif failed > 0:
-                    forms.alert(u"Não foi possível adicionar {} elemento(s).".format(failed))
-
-            elif 'Remover' in action:
-                rem_elements = _pick_one_by_one(u"Selecione elemento para REMOVER")
-                if not rem_elements:
-                    continue
-
-                removed = 0
-                failed = 0
-                rem_ids = [el.Id for el in rem_elements]
-                with Transaction(doc, "Remover do Circuito") as t:
-                    t.Start()
-                    with_warning_swallower(t)
-                    for el in rem_elements:
-                        if try_remove(circuit, el):
-                            removed += 1
-                        else:
-                            failed += 1
-                    t.Commit()
-
-                # Valida novamente fora da transação (estado real do documento)
-                actually_removed = 0
-                still_there = 0
-                for eid in rem_ids:
-                    if is_in_circuit(circuit, eid):
-                        still_there += 1
+                    new_c, ok, msg = _add_elements(circuit, elems)
+                    if ok:
+                        t.Commit()
+                        if new_c: circuit = new_c
+                        forms.toast(u"✅ {}".format(msg))
                     else:
-                        actually_removed += 1
+                        t.RollBack()
+                        forms.alert(u"Não foi possível adicionar:\n{}".format(msg),
+                                    title=u"Erro")
 
-                if actually_removed > 0:
-                    msg = u"✅ {} removido(s)".format(actually_removed)
-                    if still_there > 0:
-                        msg += u" | ⚠️ {} não removido(s)".format(still_there)
-                    forms.toast(msg)
-                else:
-                    forms.alert(
-                        u"Nenhum elemento foi removido.\n"
-                        u"Verifique se os elementos selecionados pertencem a este circuito."
-                    )
+            # ── REMOVER ────────────────────────────────────────────────────
+            elif u"Remover" in action:
+                elems = _pick_many(
+                    u"REMOVER do circuito {} — clique nos elementos".format(circ_num)
+                )
+                if not elems: continue
 
-            elif 'Deletar' in action:
-                if forms.alert(u"Deseja realmente deletar o circuito?", yes=True, no=True):
-                    with Transaction(doc, "Deletar Circuito") as t:
-                        t.Start()
-                        set_red_override(view, member_ids, apply=False)
-                        try:
-                            doc.Delete(circuit.Id)
-                            t.Commit()
-                            forms.toast(u"✅ Circuito deletado!")
-                            return
-                        except Exception as ex:
-                            t.RollBack()
-                            forms.alert(u"Não foi possível deletar o circuito:\n{}".format(ex))
+                with Transaction(doc, u"Remover do Circuito") as t:
+                    opts = t.GetFailureHandlingOptions()
+                    opts.SetFailuresPreprocessor(_WarnSwallower())
+                    t.SetFailureHandlingOptions(opts)
+                    t.Start()
+                    new_c, ok, msg = _remove_elements(circuit, elems)
+                    if ok:
+                        t.Commit()
+                        circuit = new_c
+                        forms.toast(u"✅ {}".format(msg))
+                        if circuit is None: break
+                    else:
+                        t.RollBack()
+                        forms.alert(u"Não foi possível remover:\n{}".format(msg),
+                                    title=u"Erro")
+
+            # ── DELETAR ────────────────────────────────────────────────────
+            elif u"Deletar" in action:
+                if not forms.alert(u"Deletar circuito {}?".format(circ_num),
+                                   title=u"Confirmar", yes=True, no=True):
+                    continue
+                with Transaction(doc, u"Deletar Circuito") as t:
+                    t.Start()
+                    _apply_highlight(view, highlighted, apply=False)
+                    try:
+                        doc.Delete(circuit.Id)
+                        t.Commit()
+                        forms.toast(u"✅ Circuito {} deletado!".format(circ_num))
+                        highlighted = []
+                        circuit = None
+                        break
+                    except Exception as ex:
+                        t.RollBack()
+                        forms.alert(u"Erro ao deletar:\n{}".format(ex), title=u"Erro")
 
     finally:
         try:
-            with Transaction(doc, "Limpar Highlight") as t:
+            with Transaction(doc, u"Limpar Highlight") as t:
                 t.Start()
-                all_ids = list(set(member_ids + old_member_ids))
-                set_red_override(view, all_ids, apply=False)
+                _apply_highlight(view, list(set(highlighted)), apply=False)
                 t.Commit()
-        except:
+        except Exception:
             pass
 
 

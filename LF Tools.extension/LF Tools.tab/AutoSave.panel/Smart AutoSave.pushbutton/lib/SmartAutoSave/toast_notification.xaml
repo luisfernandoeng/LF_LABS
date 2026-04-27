@@ -1,7 +1,7 @@
 <Window x:Name="ToastWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Width="340" Height="100"
+        Width="320" Height="80"
         WindowStyle="None"
         AllowsTransparency="True"
         Background="Transparent"
@@ -11,14 +11,14 @@
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Display">
     
-    <Border Background="#E60D0E12" 
-            CornerRadius="20" 
-            BorderBrush="#FF3B82F6" 
-            BorderThickness="1.5"
-            Padding="20,15"
+    <Border Background="#E6F2FA" 
+            CornerRadius="8" 
+            BorderBrush="#BEDAFA" 
+            BorderThickness="1"
+            Padding="15,10"
             Margin="5">
         <Border.Effect>
-            <DropShadowEffect BlurRadius="15" Color="Black" Opacity="0.4" ShadowDepth="2"/>
+            <DropShadowEffect BlurRadius="10" Color="#000000" Opacity="0.15" ShadowDepth="2"/>
         </Border.Effect>
         <Grid>
             <Grid.ColumnDefinitions>
@@ -26,26 +26,25 @@
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
             
-            <!-- Ícone animado/texto -->
-            <Border Grid.Column="0" Background="#1A3B82F6" Width="42" Height="42" CornerRadius="21" Margin="0,0,15,0">
-                <TextBlock x:Name="ToastIcon" 
-                           Text="💾" 
-                           FontSize="22" 
-                           HorizontalAlignment="Center"
-                           VerticalAlignment="Center"/>
-            </Border>
+            <!-- Ícone -->
+            <TextBlock x:Name="ToastIcon" 
+                       Grid.Column="0"
+                       Text="💾" 
+                       FontSize="20" 
+                       VerticalAlignment="Center"
+                       Margin="0,0,12,0"/>
             
             <!-- Conteúdo -->
             <StackPanel Grid.Column="1" VerticalAlignment="Center">
                 <TextBlock x:Name="ToastTitle" 
-                           Text="Salvando projeto..." 
+                           Text="AutoSave Concluído" 
                            FontWeight="SemiBold" 
-                           FontSize="14"
-                           Foreground="#FFF8FAFC"/>
+                           FontSize="13"
+                           Foreground="#0078D7"/>
                 <TextBlock x:Name="ToastMessage" 
-                           Text="Aguarde um momento" 
-                           FontSize="12" 
-                           Foreground="#FF94A3B8"
+                           Text="Projeto salvo com sucesso." 
+                           FontSize="11" 
+                           Foreground="#556677"
                            Margin="0,2,0,0"/>
             </StackPanel>
         </Grid>

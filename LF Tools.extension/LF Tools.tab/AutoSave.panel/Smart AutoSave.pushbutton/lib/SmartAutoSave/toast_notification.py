@@ -14,9 +14,13 @@ from pyrevit import forms
 class ToastNotificationWindow(forms.WPFWindow):
     def __init__(self, xaml_file_name, hwnd=None):
         forms.WPFWindow.__init__(self, xaml_file_name)
+        self.MouseLeftButtonDown += self.on_click_close
         self.Topmost = True
         self._hwnd = hwnd
         self.position_bottom_right()
+
+    def on_click_close(self, sender, e):
+        self.trigger_fade_out(None, None)
 
     def position_bottom_right(self):
         """Posiciona toast no canto inferior direito da tela onde o Revit está aberto."""
@@ -31,8 +35,8 @@ class ToastNotificationWindow(forms.WPFWindow):
                 from System.Windows import SystemParameters
                 right  = SystemParameters.WorkArea.Right
                 bottom = SystemParameters.WorkArea.Bottom
-            self.Left = right  - 340 - 20
-            self.Top  = bottom - 100 - 20
+            self.Left = right  - 320 - 20
+            self.Top  = bottom - 80 - 20
         except:
             pass
 
@@ -68,17 +72,18 @@ class ToastNotificationWindow(forms.WPFWindow):
         anim.From = 0.0
         anim.To   = 1.0
         anim.Duration = TimeSpan.FromMilliseconds(400)
-        self.BeginAnimation(Window.OpacityProperty, anim)
+        self.BeginAnimation(self.OpacityProperty, anim)
 
     def trigger_fade_out(self, sender, e):
-        self.close_timer.Stop()
+        try: self.close_timer.Stop()
+        except: pass
         from System.Windows.Media.Animation import DoubleAnimation
         anim = DoubleAnimation()
         anim.From = self.Opacity
         anim.To   = 0.0
         anim.Duration = TimeSpan.FromMilliseconds(400)
         anim.Completed += self._on_fade_out_completed
-        self.BeginAnimation(Window.OpacityProperty, anim)
+        self.BeginAnimation(self.OpacityProperty, anim)
 
     def _on_fade_out_completed(self, sender, e):
         self.Close()

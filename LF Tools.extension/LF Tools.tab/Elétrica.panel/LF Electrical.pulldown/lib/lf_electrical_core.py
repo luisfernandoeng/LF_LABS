@@ -34,7 +34,7 @@ VALID_SWITCH_LETTERS = [chr(ord('a') + i) for i in range(26) if chr(ord('a') + i
 
 # ==================== SISTEMA DE DEBUG ====================
 
-DEBUG_MODE = False  # <<< Mude para False quando tudo estiver estável
+DEBUG_MODE = True  # <<< Mude para False quando tudo estiver estável
 
 import System as _System
 from datetime import datetime as _dt
@@ -123,6 +123,49 @@ class DebugLog(object):
             cls._write("PARM", "  [{}] NAO ENCONTRADO".format(param_name))
 
 dbg = DebugLog  # alias curto
+
+# ==================== DIALOG HANDLER ====================
+
+def _elec_circuit_dialog_handler(sender, args):
+    """Auto-confirma o dialog de especificacao de circuito que aparece quando
+    os params de tensao/fases sao somente-leitura na familia."""
+    try:
+        if hasattr(args, 'DialogId') and 'SpecifyCircuitInfo' in str(args.DialogId):
+            dbg.step('AutoConfirm dialog: {}'.format(args.DialogId))
+            args.OverrideResult(1)  # 1 = OK / Continuar
+    except Exception:
+        pass
+
+
+class suppress_elec_dialog(object):
+    """Context manager que assina DialogBoxShowing para auto-confirmar o dialog
+    'Dialog_BuildingSystems_SpecifyCircuitInfo' durante ElectricalSystem.Create().
+
+    Esse dialog aparece quando o Revit nao consegue determinar tensao/fases a
+    partir dos parametros do elemento (params somente-leitura em familias de
+    fabricante). Auto-confirmar com OK permite que a criacao prossiga usando
+    o DistributionSysType do quadro para definir a tensao do circuito.
+
+    Uso:
+        with suppress_elec_dialog():
+            circuit = ElectricalSystem.Create(doc, ids, PowerCircuit)
+    """
+    def __enter__(self):
+        try:
+            __revit__.DialogBoxShowing += _elec_circuit_dialog_handler
+        except Exception as ex:
+            dbg.warn('suppress_elec_dialog: falha ao subscrever: {}'.format(ex))
+        return self
+
+    def __exit__(self, *args):
+        try:
+            __revit__.DialogBoxShowing -= _elec_circuit_dialog_handler
+        except Exception:
+            pass
+
+
+# Params de descricao em circuitos eletricos (PT-BR Revit)
+CIRCUIT_DESC_PARAMS = [BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS, "Coment\xe1rios", "Observa\xe7\xf5es", "Comments"]
 
 # ==================== CONFIGURAÇÕES PERSISTENTES ====================
 
@@ -247,32 +290,43 @@ def set_current_panel(panel_id):
     save_config(settings)
 
 def set_param(elem, names, value):
+    found_readonly = []
     for n in names:
-        p = elem.LookupParameter(n)
-        if p and not p.IsReadOnly:
-            try:
-                if isinstance(value, (int, float)):
-                    is_voltage = any(x in n.lower() for x in ["tens\xe3o", "voltage", "voltagem", "volts"])
-                    if is_voltage:
-                        if p.SetValueString(str(value) + " V"):
-                            dbg.ok('set_param [{}] = {} (ValueString+V)'.format(n, value))
-                            return True
-                        if p.SetValueString(str(value)):
-                            dbg.ok('set_param [{}] = {} (ValueString)'.format(n, value))
-                            return True
-                        p.Set(float(value) * 10.7639104167)
-                        dbg.ok('set_param [{}] = {} (raw float)'.format(n, value))
+        try:
+            p = elem.get_Parameter(n) if isinstance(n, BuiltInParameter) else elem.LookupParameter(n)
+        except Exception:
+            p = None
+        if not p:
+            continue
+        if p.IsReadOnly:
+            found_readonly.append(n if isinstance(n, str) else str(n))
+            continue
+        try:
+            if isinstance(value, (int, float)):
+                is_voltage = isinstance(n, str) and any(x in n.lower() for x in ["tens\xe3o", "voltage", "voltagem", "volts"])
+                if is_voltage:
+                    if p.SetValueString(str(value) + " V"):
+                        dbg.ok('set_param [{}] = {} (ValueString+V)'.format(n, value))
                         return True
-                    else:
-                        p.Set(float(value))
+                    if p.SetValueString(str(value)):
+                        dbg.ok('set_param [{}] = {} (ValueString)'.format(n, value))
+                        return True
+                    p.Set(float(value) * 10.7639104167)
+                    dbg.ok('set_param [{}] = {} (raw float)'.format(n, value))
+                    return True
                 else:
-                    p.Set(str(value))
-                dbg.ok('set_param [{}] = {}'.format(n, value))
-                return True
-            except Exception as ex:
-                dbg.warn('set_param [{}] falhou: {}'.format(n, ex))
-                continue
-    dbg.warn('set_param NENHUM param encontrado em {} para valor {}'.format(names, value))
+                    p.Set(float(value))
+            else:
+                p.Set(str(value))
+            dbg.ok('set_param [{}] = {}'.format(n, value))
+            return True
+        except Exception as ex:
+            dbg.warn('set_param [{}] falhou: {}'.format(n, ex))
+            continue
+    if found_readonly:
+        dbg.step('set_param somente leitura em {} (valor {})'.format(found_readonly, value))
+    else:
+        dbg.warn('set_param NENHUM param encontrado em {} para valor {}'.format(names, value))
     return False
 
 def is_element_connected_to_panel(elem):
@@ -286,6 +340,79 @@ def is_element_connected_to_panel(elem):
                     return True
     except Exception: pass
     return False
+
+def _find_matching_dist_sys(target_voltage):
+    """Find ElementId of DistributionSysType whose voltage range covers target_voltage (Volts)."""
+    v_internal = float(target_voltage) * 10.7639104167
+    dbg.step('  Buscando sistema para {:.1f}V'.format(target_voltage))
+    
+    for s in FilteredElementCollector(doc).OfClass(DistributionSysType).ToElements():
+        # RBS_ELEC_DISTRIBUTION_SYS_VOLTAGE_L_G_PARAM (Fase-Neutro)
+        # RBS_ELEC_DISTRIBUTION_SYS_VOLTAGE_L_L_PARAM (Fase-Fase)
+        for bip in [BuiltInParameter.RBS_ELEC_DISTRIBUTION_SYS_VOLTAGE_L_G_PARAM,
+                    BuiltInParameter.RBS_ELEC_DISTRIBUTION_SYS_VOLTAGE_L_L_PARAM]:
+            vp = s.get_Parameter(bip)
+            if not vp or not vp.HasValue: continue
+            
+            vid = vp.AsElementId()
+            if vid == ElementId.InvalidElementId: continue
+            
+            vtype = doc.GetElement(vid)
+            if not vtype: continue
+            
+            min_p = vtype.get_Parameter(BuiltInParameter.RBS_ELEC_VOLTAGE_MIN_PARAM)
+            max_p = vtype.get_Parameter(BuiltInParameter.RBS_ELEC_VOLTAGE_MAX_PARAM)
+            if min_p and max_p:
+                # Margem de +- 55 unidades internas (~5 Volts)
+                if (min_p.AsDouble() - 55) <= v_internal <= (max_p.AsDouble() + 55):
+                    dbg.ok('  Sistema compativel: {}'.format(s.Name))
+                    return s.Id
+    return None
+
+
+def configure_element_for_voltage(elem, voltage, poles):
+    """Force the MEP connector of elem to show target voltage and poles."""
+    dbg.step('  Configurando elemento: {}V, {} polos'.format(voltage, poles))
+
+    v_internal = float(voltage) * 10.7639104167
+
+    # Method 1: BuiltInParameters on the element itself
+    for bip, val in [(BuiltInParameter.RBS_ELEC_VOLTAGE, v_internal),
+                     (BuiltInParameter.RBS_ELEC_NUMBER_OF_POLES, float(poles))]:
+        try:
+            p = elem.get_Parameter(bip)
+            if p and not p.IsReadOnly:
+                p.Set(val)
+                dbg.ok('    Param [{}] definido'.format(bip))
+        except Exception: pass
+
+    # Method 2: direct connector Voltage / Poles properties
+    try:
+        mgr = None
+        if hasattr(elem, 'MEPModel') and elem.MEPModel:
+            mgr = getattr(elem.MEPModel, 'ConnectorManager', None)
+        if mgr:
+            for c in mgr.Connectors:
+                if c.Domain == Domain.DomainElectrical:
+                    try:
+                        c.Voltage = v_internal
+                        c.Poles = poles
+                        dbg.ok('    Conector elétrico configurado')
+                    except Exception: pass
+    except Exception: pass
+
+    # Method 3: assign a DistributionSysType with the matching voltage range
+    dist_id = _find_matching_dist_sys(voltage)
+    if dist_id:
+        for name in ["Sistema de distribuição", "Distribution System", "Sistema de Distribuição"]:
+            try:
+                p = elem.LookupParameter(name)
+                if p and not p.IsReadOnly:
+                    p.Set(dist_id)
+                    dbg.ok('    Sistema de distribuição definido')
+                    return
+            except Exception: pass
+
 
 def ensure_element_is_free(elem):
     dbg.enter('ensure_element_is_free', Id=elem.Id.IntegerValue)
@@ -313,12 +440,46 @@ def ensure_element_is_free(elem):
                 return True
             else:
                 dbg.step('Nenhum sistema conectado encontrado')
+                dbg.exit('ensure_element_is_free', True)
+                return True
         else:
             dbg.step('Sem ConnectorManager')
+            dbg.exit('ensure_element_is_free', True)
+            return True
     except Exception as ex:
         dbg.fail('ensure_element_is_free: {}'.format(ex))
     dbg.exit('ensure_element_is_free', False)
     return False
+
+def get_element_poles(elem):
+    """Lê o número de fases/polos reais do elemento (conector ou parâmetro).
+    Retorna int ou None se não conseguir."""
+    try:
+        mgr = None
+        if hasattr(elem, 'MEPModel') and elem.MEPModel:
+            mgr = getattr(elem.MEPModel, 'ConnectorManager', None)
+        if mgr:
+            for c in mgr.Connectors:
+                if c.Domain == Domain.DomainElectrical:
+                    try:
+                        v = int(c.Poles)
+                        if v > 0:
+                            return v
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    for n in ["Número de Fases", "N\xb0 de Fases", "N\xba de Fases", "N\xfamero de polos", "Number of Poles", "Polos"]:
+        try:
+            p = elem.LookupParameter(n)
+            if p and p.HasValue:
+                v = p.AsInteger() if p.StorageType.ToString() == 'Integer' else int(p.AsDouble())
+                if v > 0:
+                    return v
+        except Exception:
+            pass
+    return None
+
 
 def get_family_name(elem):
     try:
@@ -379,42 +540,59 @@ def get_room_name(elem):
     except Exception:
         pass
     # Estratégia 3: GetRoomAtPoint (fallback geométrico)
+    # Para elementos hospedados em parede, Location.Point cai dentro da espessura da parede.
+    # Geramos candidatos de ponto com offset nas direções da face (FacingOrientation) e
+    # também nas 4 direções ortogonais — um deles estará dentro do ambiente.
+    def _name_from_room_or_space(target_doc, pt):
+        for getter in [target_doc.GetRoomAtPoint, target_doc.GetSpaceAtPoint]:
+            try:
+                obj = getter(pt)
+                if obj:
+                    p = obj.get_Parameter(BuiltInParameter.ROOM_NAME)
+                    if p:
+                        n = p.AsString()
+                        if n:
+                            return n
+            except Exception:
+                pass
+        return None
+
     try:
         if hasattr(elem, "Location") and elem.Location and hasattr(elem.Location, "Point"):
             pt = elem.Location.Point
-            rm = elem.Document.GetRoomAtPoint(pt)
-            if rm:
-                name = rm.get_Parameter(BuiltInParameter.ROOM_NAME).AsString()
+
+            # Candidatos: ponto original + offsets para atravessar a espessura da parede
+            OFFSET = 0.5  # ~15 cm em pés
+            candidates = [pt]
+            try:
+                fo = elem.FacingOrientation
+                candidates.append(XYZ(pt.X + fo.X * OFFSET, pt.Y + fo.Y * OFFSET, pt.Z))
+                candidates.append(XYZ(pt.X - fo.X * OFFSET, pt.Y - fo.Y * OFFSET, pt.Z))
+            except Exception:
+                pass
+            for dx, dy in [(OFFSET, 0), (-OFFSET, 0), (0, OFFSET), (0, -OFFSET)]:
+                candidates.append(XYZ(pt.X + dx, pt.Y + dy, pt.Z))
+
+            for candidate in candidates:
+                name = _name_from_room_or_space(elem.Document, candidate)
                 if name:
                     dbg.step('Room por ponto: "{}" (Id={})'.format(name, eid))
                     return name
-            sp = elem.Document.GetSpaceAtPoint(pt)
-            if sp:
-                name = sp.get_Parameter(BuiltInParameter.ROOM_NAME).AsString()
-                if name:
-                    dbg.step('Space por ponto: "{}" (Id={})'.format(name, eid))
-                    return name
-            
-            # Buscar em Links (Modelos vinculados)
+
+            # Buscar em Links (Modelos vinculados) com os mesmos candidatos
             for link in FilteredElementCollector(doc).OfClass(RevitLinkInstance).ToElements():
                 link_doc = link.GetLinkDocument()
-                if link_doc:
-                    try:
-                        pt_in_link = link.GetTransform().Inverse.OfPoint(pt)
-                        rm_link = link_doc.GetRoomAtPoint(pt_in_link)
-                        if rm_link:
-                            name = rm_link.get_Parameter(BuiltInParameter.ROOM_NAME).AsString()
-                            if name:
-                                dbg.step('Room (Link) por ponto: "{}" (Id={})'.format(name, eid))
-                                return name
-                        sp_link = link_doc.GetSpaceAtPoint(pt_in_link)
-                        if sp_link:
-                            name = sp_link.get_Parameter(BuiltInParameter.ROOM_NAME).AsString()
-                            if name:
-                                dbg.step('Space (Link) por ponto: "{}" (Id={})'.format(name, eid))
-                                return name
-                    except Exception as link_ex:
-                        pass
+                if not link_doc:
+                    continue
+                try:
+                    inv = link.GetTransform().Inverse
+                    for candidate in candidates:
+                        name = _name_from_room_or_space(link_doc, inv.OfPoint(candidate))
+                        if name:
+                            dbg.step('Room (Link) por ponto: "{}" (Id={})'.format(name, eid))
+                            return name
+                except Exception:
+                    pass
     except Exception as ex:
         dbg.warn('get_room_name fallback erro: {} (Id={})'.format(ex, eid))
     dbg.warn('Sem room/space para Id={}'.format(eid))
@@ -459,22 +637,27 @@ def get_valid_electrical_elements(elem, expected_domains=(Domain.DomainElectrica
     return valid_pairs
 
 class ConnectorDomainFilter(ISelectionFilter):
-    def __init__(self, target_domains=None):
+    def __init__(self, target_domains=None, allowed_categories=None):
         self.target_domains = target_domains
-        self.allowed = (
-            int(BuiltInCategory.OST_ElectricalFixtures),
-            int(BuiltInCategory.OST_ElectricalEquipment),
-            int(BuiltInCategory.OST_LightingFixtures),
-            int(BuiltInCategory.OST_LightingDevices),
-            int(BuiltInCategory.OST_DataDevices),
-            int(BuiltInCategory.OST_CommunicationDevices),
-            int(BuiltInCategory.OST_TelephoneDevices),
-        )
+        # Se allowed_categories for passado, restringe a essas categorias.
+        # Se None, usa o conjunto padrão de categorias elétricas.
+        if allowed_categories is not None:
+            self.allowed = set(allowed_categories)
+        else:
+            self.allowed = {
+                int(BuiltInCategory.OST_ElectricalFixtures),
+                int(BuiltInCategory.OST_ElectricalEquipment),
+                int(BuiltInCategory.OST_LightingFixtures),
+                int(BuiltInCategory.OST_LightingDevices),
+                int(BuiltInCategory.OST_DataDevices),
+                int(BuiltInCategory.OST_CommunicationDevices),
+                int(BuiltInCategory.OST_TelephoneDevices),
+            }
 
     def AllowElement(self, e):
         if not e.Category: return False
         return e.Category.Id.IntegerValue in self.allowed
-        
+
     def AllowReference(self, ref, pos): return False
 
 class CategoryFilter(ISelectionFilter):
@@ -544,10 +727,13 @@ def _get_compatible_systems(panel):
             if cm:
                 for c in cm.Connectors:
                     if c.Domain == Domain.DomainElectrical:
-                        v_panel = c.Voltage
-                        poles_panel = c.Poles
-                        dbg.step('Conector encontrado: {}V, {} Polos'.format(round(v_panel/10.7639, 1) if v_panel else 0, poles_panel))
-                        break # Pega o primario
+                        try: v_panel = c.Voltage
+                        except Exception: pass
+                        try: poles_panel = c.Poles
+                        except Exception: pass
+                        if v_panel is not None:
+                            dbg.step('Conector encontrado: {}V, {} Polos'.format(round(v_panel/10.7639, 1), poles_panel))
+                        break
     except Exception as ex:
         dbg.warn("Erro ao ler conector: {}".format(ex))
 

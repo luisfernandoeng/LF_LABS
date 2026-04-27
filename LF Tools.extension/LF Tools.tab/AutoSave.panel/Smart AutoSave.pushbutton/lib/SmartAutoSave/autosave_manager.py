@@ -268,6 +268,10 @@ class AutoSaveHandler(IExternalEventHandler):
         try:
             if not doc.PathName:
                 self.manager.log(u"⚠️ Projeto ainda não salvo em disco. Salvamento ignorado.")
+                if self.manager._countdown_toast:
+                    try: self.manager._countdown_toast.Close()
+                    except: pass
+                self.manager._countdown_toast = None
                 return
 
             if not self._is_safe_to_save(doc):
@@ -277,6 +281,9 @@ class AutoSaveHandler(IExternalEventHandler):
 
             if not doc.IsModified:
                 self.manager.log(u"— Sem alterações, salvamento ignorado.")
+                if self.manager._countdown_toast:
+                    try: self.manager._countdown_toast.Close()
+                    except: pass
                 self.manager._countdown_toast = None
                 return
 
@@ -305,7 +312,7 @@ class AutoSaveHandler(IExternalEventHandler):
                     toast_inst.ToastTitle.Text   = u"✅ Projeto salvo"
                     toast_inst.ToastMessage.Text = u"Salvo às " + time_str
                     toast_inst.ToastIcon.Text    = u"✅"
-                    toast_inst.restart_close_timer(4)
+                    toast_inst.restart_close_timer(5)
                 except:
                     pass
 

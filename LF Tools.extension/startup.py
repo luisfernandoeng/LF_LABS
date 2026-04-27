@@ -33,43 +33,68 @@ except Exception:
     # Nunca deixa o startup quebrar o carregamento da extensão
     pass
 
-# ── Ocultar abas do Revit (diferido para após a ribbon estar pronta) ────────
+# ── Ocultar abas do Revit (Persistente) ─────────────────────────────────────
 try:
     from pyrevit import script as _script, HOST_APP
-    _cfg = _script.get_config('lf_hidden_tabs')
-    _hidden = set(_cfg.get_option('hidden_tabs', []))
-    if _hidden:
+    
+    # Nome da função do handler para persistência entre reloads
+    HANDLER_NAME = 'lf_tabs_visibility_handler'
+    
+    def _apply_hidden_tabs():
+        """Lê config e aplica visibilidade na Ribbon."""
+        cfg = _script.get_config('lf_hidden_tabs')
+        is_active = cfg.get_option('is_active', False)
+        hidden_list = set(cfg.get_option('hidden_tabs', []))
+        
+        if not is_active or not hidden_list:
+            return
+
         import clr
         clr.AddReference('AdWindows')
-        import Autodesk.Windows as _adWin
-
-        def _apply_hidden_tabs():
-            for _tab in _adWin.ComponentManager.Ribbon.Tabs:
-                _title  = _tab.Title or u""
-                _tab_id = _tab.Id   or u""
-                if "LF Tools" in _title:
-                    continue
-                if "Modify" in _tab_id:
-                    continue
-                try:
-                    if _tab.IsContextualTab:
-                        continue
-                except Exception:
-                    continue
-                if _title in _hidden:
-                    _tab.IsVisible = False
-
-        def _on_view_activated(_sender, _args):
-            # One-shot: aplica uma vez e remove o handler
+        import Autodesk.Windows as adWin
+        
+        for tab in adWin.ComponentManager.Ribbon.Tabs:
+            title = tab.Title or u""
+            tab_id = tab.Id or u""
+            
+            # Pula abas de sistema e da própria extensão
+            if not title or "LF Tools" in title or "Modify" in tab_id:
+                continue
             try:
-                HOST_APP.uiapp.ViewActivated -= _on_view_activated  # noqa
+                if tab.IsContextualTab:
+                    continue
             except Exception:
-                pass
-            try:
-                _apply_hidden_tabs()
-            except Exception:
-                pass
+                continue
+            
+            # Se a aba está no perfil de ocultação, força False
+            if title in hidden_list:
+                if tab.IsVisible:
+                    tab.IsVisible = False
 
+    def _on_view_activated(sender, args):
+        """Handler disparado sempre que uma vista é ativada (ex: troca de projeto)."""
+        try:
+            _apply_hidden_tabs()
+        except Exception:
+            pass
+
+    # Registro do Evento de forma segura (evita duplicatas em reloads do pyRevit)
+    # Procuramos no dicionário da UIApplication se já existe nosso handler
+    if not hasattr(HOST_APP.uiapp, HANDLER_NAME):
+        setattr(HOST_APP.uiapp, HANDLER_NAME, _on_view_activated)
         HOST_APP.uiapp.ViewActivated += _on_view_activated
+    else:
+        # Se já existe (reload), remove o antigo e põe o novo
+        old_handler = getattr(HOST_APP.uiapp, HANDLER_NAME)
+        try:
+            HOST_APP.uiapp.ViewActivated -= old_handler
+        except Exception:
+            pass
+        setattr(HOST_APP.uiapp, HANDLER_NAME, _on_view_activated)
+        HOST_APP.uiapp.ViewActivated += _on_view_activated
+
+    # Aplicação imediata no boot/reload
+    _apply_hidden_tabs()
+
 except Exception:
     pass

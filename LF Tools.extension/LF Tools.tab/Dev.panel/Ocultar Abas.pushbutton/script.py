@@ -23,10 +23,23 @@ def _get_hidden():
     return set(cfg.get_option('hidden_tabs', []))
 
 
+def _is_active():
+    cfg = script.get_config(LF_HIDE_CONFIG_KEY)
+    return cfg.get_option('is_active', False)
+
+
 def _save_hidden(tab_names):
     cfg = script.get_config(LF_HIDE_CONFIG_KEY)
     cfg.hidden_tabs = list(tab_names)
     script.save_config()
+
+
+def _set_active(state):
+    cfg = script.get_config(LF_HIDE_CONFIG_KEY)
+    cfg.is_active = state
+    script.save_config()
+    # Atualiza o ícone do botão para feedback visual
+    script.toggle_icon(state)
 
 
 # ── AdWindows helpers ───────────────────────────────────────────────────────
@@ -107,6 +120,12 @@ def open_config(this_ext):
 
     new_hidden = set(str(t) for t in selected if t)
     _save_hidden(new_hidden)
+    
+    # Se salvou algo, ativa o modo de ocultação automaticamente
+    if new_hidden:
+        _set_active(True)
+    else:
+        _set_active(False)
 
     try:
         old_set = old_hidden
@@ -130,19 +149,22 @@ def open_config(this_ext):
 def toggle(this_ext):
     """Click normal: liga/desliga o perfil salvo."""
     saved = _get_hidden()
+    active = _is_active()
 
     if not saved:
         forms.toast(u'Nenhum perfil configurado — use Shift+Click para configurar.')
         return
 
-    if _are_hidden_applied(saved, this_ext):
-        # Abas estão ocultas → restaurar
+    if active:
+        # Modo ocultar está ATIVO → Desativar (Mostrar tudo)
+        _set_active(False)
         _apply_visibility(to_hide=set(), to_show=saved, exclude_ext=this_ext)
-        forms.toast(u'Abas restauradas ({} exibida(s)).'.format(len(saved)))
+        forms.toast(u'Modo de ocultação DESATIVADO (Abas restauradas).')
     else:
-        # Abas estão visíveis → ocultar
+        # Modo ocultar está INATIVO → Ativar (Ocultar perfil)
+        _set_active(True)
         _apply_visibility(to_hide=saved, to_show=set(), exclude_ext=this_ext)
-        forms.toast(u'{} aba(s) oculta(s).'.format(len(saved)))
+        forms.toast(u'Modo de ocultação ATIVADO ({} aba(s) oculta(s)).'.format(len(saved)))
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────

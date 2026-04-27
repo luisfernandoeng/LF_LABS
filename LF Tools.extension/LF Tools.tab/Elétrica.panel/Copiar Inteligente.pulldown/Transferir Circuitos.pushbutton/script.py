@@ -22,10 +22,14 @@ import clr
 
 clr.AddReference('RevitAPI')
 clr.AddReference('RevitAPIUI')
+clr.AddReference('System')
+clr.AddReference('System.Collections')
+
+from System.Collections.Generic import List
 
 from Autodesk.Revit.DB import (
     FilteredElementCollector, BuiltInCategory, BuiltInParameter,
-    Transaction, TransactionStatus, ElementSet, StorageType
+    Transaction, TransactionStatus, ElementSet, ElementId, StorageType
 )
 from Autodesk.Revit.DB.Electrical import ElectricalSystem, ElectricalSystemType
 
@@ -283,9 +287,9 @@ def transfer_one_circuit(circ, dest_panel, target_poles):
     # Criar novo circuito a partir do primeiro membro
     new_circ = None
     try:
-        first_set = ElementSet()
-        first_set.Insert(members[0])
-        new_circ = ElectricalSystem.Create(doc, first_set, ElectricalSystemType.PowerCircuit)
+        first_ids = List[ElementId]()
+        first_ids.Add(members[0].Id)
+        new_circ = ElectricalSystem.Create(doc, first_ids, ElectricalSystemType.PowerCircuit)
     except Exception as e:
         return False, "Erro ao criar: {}".format(e)
 
@@ -295,9 +299,9 @@ def transfer_one_circuit(circ, dest_panel, target_poles):
     # Adicionar membros restantes
     for m in members[1:]:
         try:
-            add_set = ElementSet()
-            add_set.Insert(m)
-            new_circ.AddToCircuit(add_set)
+            add_ids = List[ElementId]()
+            add_ids.Add(m.Id)
+            new_circ.AddToCircuit(add_ids)
         except Exception as e:
             dbg.warn("C{}: membro {} não adicionado: {}".format(circ_num, m.Id, e))
 

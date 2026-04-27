@@ -720,14 +720,19 @@ def _is_perfilado(cable_tray):
                     return True
     except Exception:
         pass
-    # 2. Por dimensão: seção quadrada e pequena (≤ 60 mm, tolerância 10 mm)
+    # 2. Por dimensão: seção quadrada e pequena (≤ 75 mm, tolerância 15 mm)
+    # Perfilado típico: 38×38, 50×50, 38×25 — eletrocalha começa a partir de 100mm de largura.
     try:
         w_p = cable_tray.get_Parameter(BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM)
         h_p = cable_tray.get_Parameter(BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
         if w_p and h_p:
             w_mm = w_p.AsDouble() * 304.8
             h_mm = h_p.AsDouble() * 304.8
-            if abs(w_mm - h_mm) < 10.0 and max(w_mm, h_mm) <= 60.0:
+            # Perfilado: seção quadrada (ou quase) E dimensão máxima ≤ 75 mm
+            if abs(w_mm - h_mm) < 15.0 and max(w_mm, h_mm) <= 75.0:
+                return True
+            # Caso especial: qualquer dimensão ≤ 50 mm é sempre perfilado
+            if max(w_mm, h_mm) <= 50.0:
                 return True
     except Exception:
         pass
@@ -1478,7 +1483,7 @@ def _process_pair(el1, el2, pt_click1, pt_click2, same_box, use_connector_mode, 
                 forms.alert(u"Use o modo 'Conector' (Shift+Click → Configurações) para clicar no ponto exato da eletrocalha.",
                             title="Conectar Eletroduto")
                 return False
-        # Parâmetros de eletroduto (versão simplificada de Fase 3)
+        # Parâmetros de eletroduto — respeita as preferências de tipo configuradas
         _ct_level_id = cable_tray_el.LevelId
         if _ct_level_id == ElementId.InvalidElementId:
             _ct_level_id = other_el.LevelId
@@ -1486,9 +1491,39 @@ def _process_pair(el1, el2, pt_click1, pt_click2, same_box, use_connector_mode, 
             view = doc.ActiveView
             _ct_level_id = (view.GenLevel.Id if hasattr(view, "GenLevel") and view.GenLevel
                            else FilteredElementCollector(doc).OfClass(Level).FirstElementId())
-        _ct_last_ref   = get_last_conduit(doc)
-        _ct_conduit_id = (_ct_last_ref.GetTypeId() if _ct_last_ref
-                         else get_default_conduit_type(doc))
+        _ct_last_ref = get_last_conduit(doc)
+
+        # Determina se a rota eletrocalha→elemento é plana ou vertical
+        _ct_is_flat = True
+        try:
+            _other_conns = get_connectors(other_el)
+            if _other_conns:
+                _conn_z  = _other_conns[0].Origin.Z
+                _tray_crv = cable_tray_el.Location.Curve
+                _tray_z   = (_tray_crv.GetEndPoint(0).Z + _tray_crv.GetEndPoint(1).Z) / 2.0
+                _ct_is_flat = abs(_conn_z - _tray_z) < 0.25
+        except Exception:
+            pass
+
+        # Resolve tipo de eletroduto usando as mesmas preferências da rota padrão
+        pref_plan_ct = settings.get('conduit_type_plan', '')
+        pref_vert_ct = settings.get('conduit_type_vertical', '')
+        pref_ct = pref_plan_ct if _ct_is_flat else pref_vert_ct
+
+        def _resolve_ct_conduit_id(pref_name):
+            if pref_name and pref_name not in ("(Usar Último Desenhado)", "(Padrão do Revit)"):
+                for t in FilteredElementCollector(doc).OfClass(clr.GetClrType(ConduitType)):
+                    if __get_name__(t) == pref_name:
+                        return t.Id, False
+            if pref_name == "(Padrão do Revit)":
+                return get_default_conduit_type(doc), True
+            if _ct_last_ref:
+                return _ct_last_ref.GetTypeId(), False
+            return get_default_conduit_type(doc), False
+
+        _ct_conduit_id, _ct_clear_ref = _resolve_ct_conduit_id(pref_ct)
+        _ct_ref_for_copy = None if _ct_clear_ref else _ct_last_ref
+
         _ct_diam = 0.082021
         try:
             _d = float(settings.get('default_diameter', '').replace("mm", "").strip())
@@ -1505,7 +1540,7 @@ def _process_pair(el1, el2, pt_click1, pt_click2, same_box, use_connector_mode, 
                 pass
         _execute_cabletray_connection(
             doc, settings, cable_tray_el, cable_tray_click, other_el, other_click,
-            use_connector_mode, _ct_conduit_id, _ct_diam, _ct_level_id, _ct_last_ref
+            use_connector_mode, _ct_conduit_id, _ct_diam, _ct_level_id, _ct_ref_for_copy
         )
         return False
 
