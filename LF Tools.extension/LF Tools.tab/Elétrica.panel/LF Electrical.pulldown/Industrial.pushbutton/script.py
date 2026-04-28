@@ -64,7 +64,7 @@ def _detect_amperage_from_family(elem):
 
 def configure_panel_industrial(panel):
     messages = []
-    
+
     new_name = forms.ask_for_string(default=get_panel_name(panel), prompt="Nome do Quadro Industrial (ex: QGBT, CCM-01):", title="Quadro Industrial")
     if not new_name: return False, "Cancelado"
 
@@ -74,17 +74,28 @@ def configure_panel_industrial(panel):
         t.Commit()
     messages.append("Nome: " + new_name)
 
-    # Filtrar sistemas compativeis com o quadro
-    sys_id = None
-    compatible_systems = lf_electrical_core._get_compatible_systems(panel)
+    # Obter TODOS os sistemas sem filtro (deixar o Revit validar na hora do Set)
+    all_systems = {}
+    for s in FilteredElementCollector(doc).OfClass(DistributionSysType).ToElements():
+        n = ""
+        try: n = s.Name
+        except Exception:
+            pp = s.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+            if pp: n = pp.AsString()
+        if n: all_systems[n] = s.Id
 
-    if compatible_systems:
-        chosen_sys = forms.CommandSwitchWindow.show(sorted(compatible_systems.keys()), message="Sistema de Distribuição para " + new_name + " ({} compatíveis):".format(len(compatible_systems)), title="Sistema de Distribuição")
+    sys_id = None
+    chosen_sys = None
+    if all_systems:
+        chosen_sys = forms.CommandSwitchWindow.show(
+            sorted(all_systems.keys()),
+            message="Sistema de Distribuição para {} ({} disponíveis):".format(new_name, len(all_systems)),
+            title="Sistema de Distribuição"
+        )
         if chosen_sys:
-            sys_id = compatible_systems.get(chosen_sys)
-            messages.append("Sistema: " + chosen_sys)
+            sys_id = all_systems.get(chosen_sys)
     else:
-        forms.alert("Nenhum sistema de distribuição compatível com este quadro.")
+        forms.alert("Nenhum sistema de distribuição encontrado no modelo.")
 
     all_namings = {}
     for s in FilteredElementCollector(doc).OfClass(CircuitNamingScheme).ToElements():
@@ -101,8 +112,18 @@ def configure_panel_industrial(panel):
         t.Start()
         p = panel.LookupParameter("Sistema de distribuição") or panel.LookupParameter("Distribution System")
         if p and not p.IsReadOnly and sys_id:
-            try: p.Set(sys_id)
-            except Exception: messages.append("Sistema: FALHA")
+            try:
+                p.Set(sys_id)
+                messages.append("Sistema: " + chosen_sys)
+            except Exception as e:
+                t.RollBack()
+                forms.alert(
+                    u"Sistema '{}' é incompatível com este quadro.\n"
+                    u"Escolha um sistema com tensão compatível.\n\n"
+                    u"Detalhe: {}".format(chosen_sys, e),
+                    title="Sistema Inválido"
+                )
+                return False, "Sistema de distribuição inválido"
 
         p = panel.LookupParameter("Nomenclatura do circuito") or panel.LookupParameter("Circuit Naming")
         if p and not p.IsReadOnly and nam_id: p.Set(nam_id)
@@ -416,60 +437,60 @@ def create_individual_circuits_industrial():
     phase_config = prompt_phase_voltage()
     if not phase_config: return
 
-    forms.toast("Selecione os equipamentos (1 circuito por elemento)...", title="Industrial")
+    forms.toast("Selecione os equipamentos (1 circuito por conector)...", title="Industrial")
     refs = uidoc.Selection.PickObjects(
         ObjectType.Element,
-        CategoryFilter(BuiltInCategory.OST_ElectricalFixtures),
-        "Selecione os equipamentos — cada um será um circuito individual"
+        ConnectorDomainFilter((Domain.DomainElectrical,)),
+        "Selecione os equipamentos — cada conector elétrico será um circuito individual"
     )
     if not refs: return
 
     refs_list = list(refs)
     refs_list.reverse()
 
-    created_count, contador = 0, 1
+    created_count = 0
     with Transaction(doc, "Circuitos Individuais Industrial") as t:
         t.Start()
         try:
             for r in refs_list:
-                elem = doc.GetElement(r.ElementId)
-                if is_element_connected_to_panel(elem): continue
+                host_elem = doc.GetElement(r.ElementId)
+                valid_pairs = get_valid_electrical_elements(host_elem, (Domain.DomainElectrical,))
+                if not valid_pairs:
+                    continue
 
-                has_connector = False
-                try:
-                    if hasattr(elem, 'MEPModel') and elem.MEPModel:
-                        cm = elem.MEPModel.ConnectorManager
-                        if cm:
-                            for c in cm.Connectors:
-                                if c.Domain == Domain.DomainElectrical:
-                                    has_connector = True; break
-                except Exception: pass
+                for sub_id, conns in valid_pairs:
+                    sub_elem = doc.GetElement(sub_id)
+                    if is_element_connected_to_panel(sub_elem):
+                        continue
 
-                if not has_connector: continue
+                    ensure_element_is_free(sub_elem)
+                    set_param(sub_elem, ["N\xb0 de Fases", "N\xba de Fases", "N\xfamero de Fases", "N\xfamero de polos", "Number of Poles", "Polos"], phase_config["poles"])
+                    set_param(sub_elem, ["Tensão (V)", "Tensão", "Voltage", "Voltagem", "Tensão Nominal", "Volts"], phase_config["voltage"])
+                    configure_element_for_voltage(sub_elem, phase_config["voltage"], phase_config["poles"])
+                    doc.Regenerate()
 
-                ensure_element_is_free(elem)
-                set_param(elem, ["N\xb0 de Fases", "N\xba de Fases", "N\xfamero de Fases", "N\xfamero de polos", "Number of Poles", "Polos"], phase_config["poles"])
-                set_param(elem, ["Tensão (V)", "Tensão", "Voltage", "Voltagem", "Tensão Nominal", "Volts"], phase_config["voltage"])
-                configure_element_for_voltage(elem, phase_config["voltage"], phase_config["poles"])
-                doc.Regenerate()
+                    rm = get_room_name(host_elem)
+                    for c in conns:
+                        if c.IsConnected:
+                            continue
+                        try:
+                            with suppress_elec_dialog():
+                                circuit = ElectricalSystem.Create(c, ElectricalSystemType.PowerCircuit)
+                            circuit.SelectPanel(panel)
+                            set_param(circuit, CIRCUIT_DESC_PARAMS, rm if rm else "Carga Industrial")
+                            dbg.ok('Circuito individual criado Id={}'.format(circuit.Id.IntegerValue))
+                            created_count += 1
+                        except Exception as e:
+                            dbg.fail('Falha ao criar circuito Id={}: {}'.format(sub_id.IntegerValue, e))
 
-                ids = List[ElementId]()
-                ids.Add(elem.Id)
-                try:
-                    with suppress_elec_dialog():
-                        circuit = ElectricalSystem.Create(doc, ids, ElectricalSystemType.PowerCircuit)
-                except Exception: continue
-
-                circuit.SelectPanel(panel)
-                set_param(circuit, ["Nome da carga", "Load Name"], str(contador))
-                rm = get_room_name(elem)
-                set_param(circuit, CIRCUIT_DESC_PARAMS, rm if rm else "Carga Industrial")
-                contador += 1
-                created_count += 1
             t.Commit()
-            forms.toast("Industrial: {} circuito(s) individual(ais) criado(s).".format(created_count), title="Industrial")
+            if created_count > 0:
+                forms.toast("Industrial: {} circuito(s) individual(ais) criado(s).".format(created_count), title="Industrial")
+            else:
+                forms.alert("Nenhum circuito individual criado.")
         except Exception as e:
             t.RollBack()
+            dbg.fail('Erro: {}'.format(e))
             forms.alert("Erro. Detalhes no console do pyRevit.")
 
 def create_grouped_circuit_industrial():
@@ -496,41 +517,26 @@ def create_grouped_circuit_industrial():
     rooms = set()
 
     for r in refs:
-        elem = doc.GetElement(r.ElementId)
-        if is_element_connected_to_panel(elem): continue
-
-        try:
-            if hasattr(elem, 'MEPModel') and elem.MEPModel:
-                existing = elem.MEPModel.ElectricalSystems
-                if existing and existing.Count > 0:
-                    for es in existing:
-                        try: doc.Delete(es.Id)
-                        except Exception: pass
-        except Exception: pass
-
-        has_connector = False
-        try:
-            if hasattr(elem, 'MEPModel') and elem.MEPModel:
-                cm = elem.MEPModel.ConnectorManager
-                if cm:
-                    for c in cm.Connectors:
-                        if c.Domain == Domain.DomainElectrical:
-                            has_connector = True; break
-        except Exception: pass
-
-        if has_connector:
-            ids.Add(r.ElementId)
-            rm = get_room_name(elem)
-            if rm: rooms.add(rm)
+        host = doc.GetElement(r.ElementId)
+        valid_pairs = get_valid_electrical_elements(host, (Domain.DomainElectrical,))
+        if not valid_pairs:
+            continue
+        for sub_id, _ in valid_pairs:
+            sub = doc.GetElement(sub_id)
+            if not is_element_connected_to_panel(sub):
+                ids.Add(sub_id)
+        rm = get_room_name(host)
+        if rm: rooms.add(rm)
 
     if ids.Count == 0:
-        forms.toast("Nenhum elemento valido.", title="Agrupado Industrial")
+        forms.toast("Nenhum elemento válido.", title="Agrupado Industrial")
         return
 
     with Transaction(doc, "Circuito Agrupado Industrial") as t:
         t.Start()
         for eid in ids:
             child_elem = doc.GetElement(eid)
+            ensure_element_is_free(child_elem)
             set_param(child_elem, ["N\xb0 de Fases", "N\xba de Fases", "N\xfamero de Fases", "N\xfamero de polos", "Number of Poles", "Polos"], phase_config["poles"])
             set_param(child_elem, ["Tensão (V)", "Tensão", "Voltage", "Voltagem", "Tensão Nominal", "Volts"], phase_config["voltage"])
             configure_element_for_voltage(child_elem, phase_config["voltage"], phase_config["poles"])
@@ -545,6 +551,7 @@ def create_grouped_circuit_industrial():
             t.Commit()
             forms.toast("Circuito agrupado criado com {} elemento(s).".format(ids.Count), title="Industrial")
         except Exception as e:
+            dbg.fail('ElectricalSystem.Create falhou: {}'.format(e))
             t.RollBack()
             forms.alert("Erro ao criar circuito agrupado:\n" + str(e))
 

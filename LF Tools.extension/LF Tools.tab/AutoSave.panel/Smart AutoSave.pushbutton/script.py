@@ -26,15 +26,28 @@ if __name__ == '__main__':
         show_config()
     else:
         # Modo Ação (Salvar Agora)
-        if config.get("enabled", True):
-            from pyrevit import HOST_APP, forms
-            manager = AutoSaveManager(HOST_APP.uiapp)
-            if manager.is_paused:
-                forms.alert(u"Timer Pausado. Clique com o botão direito para gerenciar, mas vamos forçar o save:", warn_icon=False)
-            with forms.ProgressBar(title=u"AutoSave: Salvando...", cancellable=False) as pb:
-                pb.update_progress(0, 1)
-                manager.trigger_save_now()
-                pb.update_progress(1, 1)
-        else:
-            from pyrevit import forms
+        from pyrevit import HOST_APP, forms
+        if not config.get("enabled", True):
             forms.alert(u"O AutoSave está desativado.\nSegure Shift e clique no botão para abrir as configurações e ativá-lo.", warn_icon=False)
+        else:
+            manager = AutoSaveManager(HOST_APP.uiapp)
+            manager._cancel_countdown()
+
+            uidoc = HOST_APP.uiapp.ActiveUIDocument
+            if uidoc is None:
+                forms.alert(u"Nenhum documento ativo.")
+            else:
+                doc = uidoc.Document
+                if not doc or doc.IsFamilyDocument:
+                    forms.alert(u"Tipo de documento não suportado.")
+                elif not doc.PathName:
+                    forms.alert(u"Projeto ainda não salvo em disco. Use Salvar Como primeiro.")
+                elif not doc.IsModified:
+                    forms.toast(u"Sem alterações para salvar.", title=u"AutoSave")
+                else:
+                    with forms.ProgressBar(title=u"AutoSave: Salvando...", cancellable=False) as pb:
+                        pb.update_progress(0, 1)
+                        doc.Save()
+                        pb.update_progress(1, 1)
+                    manager.start()
+                    forms.toast(u"Projeto salvo!", title=u"AutoSave")

@@ -48,7 +48,7 @@ class CountdownBarWindow(forms.WPFWindow):
             from System import TimeSpan
             anim = DoubleAnimation()
             anim.To = new_w
-            anim.Duration = TimeSpan.FromMilliseconds(850)
+            anim.Duration = TimeSpan.FromMilliseconds(380)
             self.ProgressFill.BeginAnimation(FrameworkElement.WidthProperty, anim)
         except:
             try:
