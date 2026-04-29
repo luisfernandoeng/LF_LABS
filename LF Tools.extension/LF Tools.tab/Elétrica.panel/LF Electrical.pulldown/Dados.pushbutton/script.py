@@ -379,7 +379,6 @@ def create_individual_circuits_data():
         return
 
     refs_list = list(refs)
-    refs_list.reverse()
     dbg.step('{} elementos selecionados'.format(len(refs_list)))
 
     created = 0

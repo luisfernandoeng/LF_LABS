@@ -246,6 +246,67 @@ def _add_elements(circuit, elems_to_add):
     if not novos:
         return circuit, True, u"todos já eram membros"
 
+    # ── ADAPTAÇÃO DOS NOVOS ELEMENTOS AO CIRCUITO ───────────────────────
+    # O novo elemento deve se adequar ao circuito existente, e não o contrário.
+    try:
+        old_poles = 1
+        try: old_poles = circuit.PolesNumber
+        except Exception: pass
+        
+        old_voltage_val = None
+        try:
+            param_v = circuit.get_Parameter(BuiltInParameter.RBS_ELEC_VOLTAGE)
+            if param_v: old_voltage_val = param_v.AsDouble()
+        except Exception: pass
+
+        p_names_poles = ["Pólos", "Polos", "Número de Polos", "Poles", "Número de polos", "Fases"]
+        p_names_volt  = ["Tensão", "Tensão Numérica", "Voltagem", "Voltage"]
+
+        for elem in novos:
+            # Tenta adaptar o número de polos
+            p_poles = None
+            for p_name in p_names_poles:
+                p = elem.LookupParameter(p_name)
+                if p and not p.IsReadOnly:
+                    p_poles = p
+                    break
+            if p_poles:
+                try: p_poles.Set(old_poles)
+                except Exception: pass
+            else:
+                elem_type = doc.GetElement(elem.GetTypeId()) if hasattr(elem, "GetTypeId") else None
+                if elem_type:
+                    for p_name in p_names_poles:
+                        p = elem_type.LookupParameter(p_name)
+                        if p and not p.IsReadOnly:
+                            try: p.Set(old_poles)
+                            except Exception: pass
+                            break
+
+            # Tenta adaptar a tensão
+            if old_voltage_val is not None:
+                p_volt = None
+                for p_name in p_names_volt:
+                    p = elem.LookupParameter(p_name)
+                    if p and not p.IsReadOnly:
+                        p_volt = p
+                        break
+                if p_volt:
+                    try: p_volt.Set(old_voltage_val)
+                    except Exception: pass
+                else:
+                    elem_type = doc.GetElement(elem.GetTypeId()) if hasattr(elem, "GetTypeId") else None
+                    if elem_type:
+                        for p_name in p_names_volt:
+                            p = elem_type.LookupParameter(p_name)
+                            if p and not p.IsReadOnly:
+                                try: p.Set(old_voltage_val)
+                                except Exception: pass
+                                break
+    except Exception:
+        pass
+    # ─────────────────────────────────────────────────────────────────────
+
     desired = current_elems + novos
     new_c, msg = _rebuild_circuit(circuit, desired)
     info = u"{} adicionado(s)".format(len(novos))
@@ -359,10 +420,8 @@ def _pick_many(message):
             if el:
                 if key in collected:
                     del collected[key]   # segundo clique = deseleciona
-                    forms.toast(u"↩ Removido da seleção")
                 else:
                     collected[key] = el
-                    forms.toast(u"✔ {} selecionado(s)".format(len(collected)))
         except Exception:
             pass
 
@@ -383,8 +442,18 @@ class _WarnSwallower(IFailuresPreprocessor):
 
 def manage_circuit():
     # 1. Seleciona elemento base (deve ter circuito)
-    seed = _pick_one(u"Clique num elemento que pertence a um circuito")
-    if not seed: return
+    seed = None
+    selected_ids = uidoc.Selection.GetElementIds()
+    if selected_ids:
+        for eid in selected_ids:
+            el = doc.GetElement(eid)
+            if _has_elec_conn(el) and _find_circuits(el):
+                seed = el
+                break
+
+    if not seed:
+        seed = _pick_one(u"Clique num elemento que pertence a um circuito")
+        if not seed: return
 
     circuit = find_circuit(seed)
     if not circuit:

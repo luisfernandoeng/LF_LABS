@@ -1,12 +1,12 @@
 # coding: utf-8
-"""Acoplar — conecta dois elementos via conector MEP de bandeja/eletroduto.
+"""Acoplar — conecta um elemento base a múltiplos via conector MEP de bandeja/eletroduto.
 
 Casos tratados:
-  A) Um elemento tem conector CT, o outro não   → insere adaptador no sem-conector, conecta
-  B) Ambos têm conector CT do mesmo perfil      → ConnectTo direto, sem adaptador
-  C) Ambos têm conector CT de perfis diferentes → tenta ConnectTo; se falhar, usa adaptador
-     ponte (família com conector round + rectangular)
-  D) Nenhum tem conector CT                     → erro
+  A)  Target sem conector CT                     → insere adaptador no target, conecta
+  A') Base sem conector CT                       → insere adaptador na base, conecta
+  B)  Ambos têm conector CT do mesmo perfil      → ConnectTo direto, sem adaptador
+  C)  Ambos têm conector CT de perfis diferentes → tenta ConnectTo; se falhar, usa adaptador ponte
+  D)  Nenhum tem conector CT                     → erro
 """
 
 __title__ = "Acoplar"
@@ -24,11 +24,6 @@ uidoc = __revit__.ActiveUIDocument
 
 import sys
 import os
-
-_LUMINARIA_CATS = {
-    int(BuiltInCategory.OST_LightingFixtures),
-    int(BuiltInCategory.OST_LightingDevices),
-}
 
 _ADAPTER_CATS = {
     int(BuiltInCategory.OST_CableTrayFitting),
@@ -130,6 +125,40 @@ def _try_connect(conn_a, conn_b):
     return False
 
 
+def _is_cable_tray(elem):
+    try:
+        return elem.Category.Id.IntegerValue == int(BuiltInCategory.OST_CableTray)
+    except Exception:
+        return False
+
+
+def _find_ct_for_point(type_id, pt):
+    """Acha o segmento de eletrocalha (mesmo tipo) cuja curva XY é mais próxima de pt.
+
+    Necessário após splits: a eletrocalha original é deletada e substituída por segmentos.
+    Projetamos pt no plano Z da eletrocalha para ignorar diferença de altura.
+    """
+    best_ct, best_d = None, float('inf')
+    for ct in FilteredElementCollector(doc).OfClass(CableTray).ToElements():
+        try:
+            if ct.GetTypeId() != type_id:
+                continue
+            crv = ct.Location.Curve
+            z = crv.GetEndPoint(0).Z
+            flat_pt = XYZ(pt.X, pt.Y, z)
+            try:
+                proj = crv.Project(flat_pt)
+                d = proj.Distance if proj else float('inf')
+            except Exception:
+                mid = crv.Evaluate(0.5, True)
+                d = XYZ(mid.X - pt.X, mid.Y - pt.Y, 0.0).GetLength()
+            if d < best_d:
+                best_d, best_ct = d, ct
+        except Exception:
+            pass
+    return best_ct
+
+
 class _AggressiveSwallower(IFailuresPreprocessor):
     def PreprocessFailures(self, failuresAccessor):
         failuresAccessor.DeleteAllWarnings()
@@ -201,7 +230,7 @@ def _copy_parameters(source_elem, target_inst):
         h_p = source_elem.get_Parameter(BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
         if w_p and h_p:
             tgt_w = target_inst.get_Parameter(BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM)
-            if tgt_w and not tgt_w.IsReadOnly: 
+            if tgt_w and not tgt_w.IsReadOnly:
                 tgt_w.Set(w_p.AsDouble())
             else:
                 for p_name in ["Largura", "Largura 1", "Width"]:
@@ -209,9 +238,9 @@ def _copy_parameters(source_elem, target_inst):
                     if p_comp and not p_comp.IsReadOnly:
                         p_comp.Set(w_p.AsDouble())
                         break
-            
+
             tgt_h = target_inst.get_Parameter(BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)
-            if tgt_h and not tgt_h.IsReadOnly: 
+            if tgt_h and not tgt_h.IsReadOnly:
                 tgt_h.Set(h_p.AsDouble())
             else:
                 p_alt = target_inst.LookupParameter("Altura")
@@ -241,13 +270,10 @@ def _copy_parameters(source_elem, target_inst):
             pass
 
 def _orient_adapter(inst, conn_dest):
-    # Alinha perfeitamente o conector do adaptador com o conector destino
     try:
         import math
-        # Queremos apontar para o lado oposto do conector destino
         target_dir = conn_dest.CoordinateSystem.BasisZ.Negate()
-        
-        # Acha o conector correspondente no adaptador
+
         my_conns = []
         try:
             my_conns = list(inst.MEPModel.ConnectorManager.Connectors)
@@ -256,10 +282,10 @@ def _orient_adapter(inst, conn_dest):
                 my_conns = list(inst.ConnectorManager.Connectors)
             except Exception:
                 pass
-                
+
         if not my_conns:
             return
-            
+
         my_conn = None
         for c in my_conns:
             if c.Shape == conn_dest.Shape:
@@ -267,14 +293,13 @@ def _orient_adapter(inst, conn_dest):
                 break
         if not my_conn:
             my_conn = my_conns[0]
-            
+
         my_dir = my_conn.CoordinateSystem.BasisZ
-        
+
         angle_my = math.atan2(my_dir.Y, my_dir.X)
         angle_target = math.atan2(target_dir.Y, target_dir.X)
         rot = angle_target - angle_my
-        
-        # Mantém a rotação no intervalo seguro
+
         while rot > math.pi: rot -= 2 * math.pi
         while rot < -math.pi: rot += 2 * math.pi
 
@@ -286,162 +311,8 @@ def _orient_adapter(inst, conn_dest):
     except Exception:
         pass
 
-# ── Descida ──────────────────────────────────────────────────────────────────
 
-def _is_luminaria(elem):
-    try:
-        return elem.Category.Id.IntegerValue in _LUMINARIA_CATS
-    except Exception:
-        return False
-
-
-def _level_id_of(elem):
-    try:
-        lid = elem.LevelId
-        if lid != ElementId.InvalidElementId:
-            return lid
-    except Exception:
-        pass
-    try:
-        v = doc.ActiveView
-        if hasattr(v, "GenLevel") and v.GenLevel:
-            return v.GenLevel.Id
-    except Exception:
-        pass
-    return FilteredElementCollector(doc).OfClass(Level).FirstElementId()
-
-
-def _top_face_z(elem):
-    """Z da face superior do elemento (bounding box max Z)."""
-    for view in [None, doc.ActiveView]:
-        try:
-            bb = elem.get_BoundingBox(view)
-            if bb:
-                return bb.Max.Z
-        except Exception:
-            continue
-    return _location(elem).Z
-
-
-def _is_cable_tray(elem):
-    try:
-        return elem.Category.Id.IntegerValue == int(BuiltInCategory.OST_CableTray)
-    except Exception:
-        return False
-
-
-def _draw_descida(elem_bottom, elem_top):
-    """
-    Cria bandeja ou eletroduto descendo verticalmente de elem_top até a face
-    superior de elem_bottom. Usa o mesmo tipo e categoria de elem_top.
-    """
-    type_id  = elem_top.GetTypeId()
-    pt_bot   = _location(elem_bottom)
-    z_top    = _location(elem_top).Z
-    z_face   = _top_face_z(elem_bottom)
-
-    pt_start = XYZ(pt_bot.X, pt_bot.Y, z_top)  # diretamente acima de elem_bottom
-    pt_end   = XYZ(pt_bot.X, pt_bot.Y, z_face)  # face superior de elem_bottom
-
-    if pt_start.DistanceTo(pt_end) < 0.1:
-        forms.alert(u"Os elementos estão praticamente no mesmo nível — descida não necessária.",
-                    title="Acoplar")
-        return False
-
-    lv_id          = _level_id_of(elem_bottom)
-    use_cable_tray = _is_cable_tray(elem_top)
-
-    t = _make_t(u"Acoplar — Descida")
-    t.Start()
-    try:
-        if use_cable_tray:
-            segment = CableTray.Create(doc, type_id, pt_start, pt_end, lv_id)
-            # Copia Largura e Altura de elem_top (parâmetros de instância)
-            for bip in [BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM,
-                        BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM]:
-                try:
-                    src_p = elem_top.get_Parameter(bip)
-                    tgt_p = segment.get_Parameter(bip)
-                    if src_p and tgt_p and not tgt_p.IsReadOnly:
-                        tgt_p.Set(src_p.AsDouble())
-                except Exception:
-                    pass
-        else:
-            segment = Conduit.Create(doc, type_id, pt_start, pt_end, lv_id)
-
-        doc.Regenerate()
-
-        # Conecta ponta superior do segmento a elem_top.
-        # NewTakeoffFitting cria um tê no meio da curva MEP — não precisa de conector livre na ponta.
-        # Fallback: ConnectTo ponta-a-ponta caso elem_top tenha conector livre nessa posição.
-        seg_conns = list(segment.ConnectorManager.Connectors)
-        top_conn  = min(seg_conns, key=lambda c: c.Origin.DistanceTo(pt_start))
-        try:
-            doc.Create.NewTakeoffFitting(top_conn, elem_top)
-        except Exception:
-            try:
-                free_top = [c for c in _ct_connectors(elem_top) if not c.IsConnected]
-                if free_top:
-                    nearest_top = min(free_top, key=lambda c: c.Origin.DistanceTo(pt_start))
-                    _try_connect(top_conn, nearest_top)
-            except Exception:
-                pass
-
-        t.Commit()
-        return True
-    except Exception as e:
-        try:
-            t.RollBack()
-        except Exception:
-            pass
-        raise
-
-
-def _offer_descida(elem_a, elem_b):
-    """Pergunta e desenha descida entre os dois elementos se não forem luminárias."""
-    if _is_luminaria(elem_a) or _is_luminaria(elem_b):
-        return
-
-    pt_a = _location(elem_a)
-    pt_b = _location(elem_b)
-    if abs(pt_a.Z - pt_b.Z) < 0.1:
-        return
-
-    elem_bottom = elem_a if pt_a.Z <= pt_b.Z else elem_b
-    elem_top    = elem_b if pt_a.Z <= pt_b.Z else elem_a
-
-    resp = forms.alert(
-        u"Deseja desenhar a descida (eletroduto vertical) até o elemento?",
-        title="Acoplar — Descida",
-        options=[u"Sim", u"Não"])
-    if resp != u"Sim":
-        return
-
-    try:
-        ok = _draw_descida(elem_bottom, elem_top)
-        if ok:
-            forms.toast(u"Descida desenhada.", title="Acoplar")
-    except Exception as e:
-        forms.alert(u"Erro ao desenhar descida:\n" + str(e), title="Acoplar — Erro")
-
-
-# ── Operações de conexão ──────────────────────────────────────────────────────
-
-def _connect_direct(conn_a, conn_b):
-    """Tenta ConnectTo entre dois conectores CT (mesmo Domain, qualquer perfil)."""
-    t = _make_t(u"Acoplar — Conexão Direta")
-    t.Start()
-    try:
-        ok = _try_connect(conn_a, conn_b)
-        t.Commit()
-        return ok
-    except Exception as e:
-        try:
-            t.RollBack()
-        except Exception:
-            pass
-        return False
-
+# ── Split helper ──────────────────────────────────────────────────────────────
 
 def _split_cabletray(doc, cable_tray, split_pt, fallback_level_id=None):
     from Autodesk.Revit.DB import SubTransaction, StorageType
@@ -539,10 +410,12 @@ def _split_cabletray(doc, cable_tray, split_pt, fallback_level_id=None):
         return None, None
 
 
+# ── Operações de conexão ──────────────────────────────────────────────────────
+
 def _insert_adapter_simple(sym, insert_pt, lv, conn_target, pt_target, source_elem=None):
     """
     CASO A — insere adaptador em insert_pt e conecta ao conn_target.
-    Retorna (instância, conectado:bool).
+    Retorna (instância, conectado:bool, conn_adapter).
     """
     t = _make_t(u"Acoplar — Adaptador Simples")
     t.Start()
@@ -552,26 +425,27 @@ def _insert_adapter_simple(sym, insert_pt, lv, conn_target, pt_target, source_el
             doc.Regenerate()
         inst = _place_instance(sym, insert_pt, lv)
         doc.Regenerate()
-        
+
         if source_elem:
             _copy_parameters(source_elem, inst)
-            
+
         if conn_target:
             _orient_adapter(inst, conn_target)
 
         adapter_conns = _ct_connectors(inst)
-        
-        # Se for eletrocalha, divide e conecta dos dois lados
-        is_ct = conn_target and conn_target.Owner and conn_target.Owner.Category.Id.IntegerValue == int(BuiltInCategory.OST_CableTray)
+
+        is_ct = (conn_target and conn_target.Owner and
+                 conn_target.Owner.Category.Id.IntegerValue == int(BuiltInCategory.OST_CableTray))
         connected = False
         conn_adapter = None
-        
+
         if is_ct:
             c1_tray, c2_tray = _split_cabletray(doc, conn_target.Owner, insert_pt, lv)
             remaining = list(adapter_conns)
             for tray_conn in [c1_tray, c2_tray]:
                 if tray_conn and remaining:
-                    best = max(remaining, key=lambda fc: fc.CoordinateSystem.BasisZ.DotProduct(tray_conn.CoordinateSystem.BasisZ.Negate()))
+                    best = max(remaining, key=lambda fc: fc.CoordinateSystem.BasisZ.DotProduct(
+                        tray_conn.CoordinateSystem.BasisZ.Negate()))
                     try:
                         best.ConnectTo(tray_conn)
                         remaining.remove(best)
@@ -581,13 +455,13 @@ def _insert_adapter_simple(sym, insert_pt, lv, conn_target, pt_target, source_el
             if remaining:
                 conn_adapter = remaining[0]
         else:
-            conn_adapter  = _best_conn(adapter_conns, pt_target)
+            conn_adapter = _best_conn(adapter_conns, pt_target)
             if conn_adapter and conn_target:
                 connected = _try_connect(conn_adapter, conn_target)
 
         t.Commit()
         return inst, connected, conn_adapter
-    except Exception as e:
+    except Exception:
         try:
             t.RollBack()
         except Exception:
@@ -598,8 +472,7 @@ def _insert_adapter_simple(sym, insert_pt, lv, conn_target, pt_target, source_el
 def _insert_bridge_adapter(sym, insert_pt, lv,
                             round_target_conn, rect_target_conn, source_elem=None):
     """
-    CASO C — adaptador ponte: conecta lado round ao elemento com conduite,
-    lado rectangular ao elemento com bandeja.
+    CASO C — adaptador ponte: conecta lado round ao conduíte, lado rectangular à bandeja.
     Retorna (instância, round_ok:bool, rect_ok:bool).
     """
     t = _make_t(u"Acoplar — Adaptador Ponte")
@@ -619,23 +492,23 @@ def _insert_bridge_adapter(sym, insert_pt, lv,
 
         adapter_conns = _ct_connectors(inst)
         adapter_round = _conn_by_profile(adapter_conns, ConnectorProfileType.Round)
-        
-        # O adaptador_rect pode ser conectado a duas pontas se dividirmos a bandeja
-        is_ct = rect_target_conn and rect_target_conn.Owner and rect_target_conn.Owner.Category.Id.IntegerValue == int(BuiltInCategory.OST_CableTray)
-        
+
+        is_ct = (rect_target_conn and rect_target_conn.Owner and
+                 rect_target_conn.Owner.Category.Id.IntegerValue == int(BuiltInCategory.OST_CableTray))
+
         round_ok = False
         rect_ok  = False
 
         if adapter_round and round_target_conn:
             round_ok = _try_connect(adapter_round, round_target_conn)
-            
+
         if is_ct:
             c1_tray, c2_tray = _split_cabletray(doc, rect_target_conn.Owner, insert_pt, lv)
-            # Pega conectores retangulares que sobraram
             rect_conns = [c for c in adapter_conns if c.Shape != ConnectorProfileType.Round]
             for tray_conn in [c1_tray, c2_tray]:
                 if tray_conn and rect_conns:
-                    best = max(rect_conns, key=lambda fc: fc.CoordinateSystem.BasisZ.DotProduct(tray_conn.CoordinateSystem.BasisZ.Negate()))
+                    best = max(rect_conns, key=lambda fc: fc.CoordinateSystem.BasisZ.DotProduct(
+                        tray_conn.CoordinateSystem.BasisZ.Negate()))
                     try:
                         best.ConnectTo(tray_conn)
                         rect_conns.remove(best)
@@ -643,13 +516,13 @@ def _insert_bridge_adapter(sym, insert_pt, lv,
                     except Exception:
                         pass
         else:
-            adapter_rect  = _conn_by_profile(adapter_conns, ConnectorProfileType.Rectangular)
+            adapter_rect = _conn_by_profile(adapter_conns, ConnectorProfileType.Rectangular)
             if adapter_rect and rect_target_conn:
-                rect_ok  = _try_connect(adapter_rect,  rect_target_conn)
+                rect_ok = _try_connect(adapter_rect, rect_target_conn)
 
         t.Commit()
         return inst, round_ok, rect_ok
-    except Exception as e:
+    except Exception:
         try:
             t.RollBack()
         except Exception:
@@ -657,141 +530,152 @@ def _insert_bridge_adapter(sym, insert_pt, lv,
         raise
 
 
+def _connect_direct(conn_a, conn_b):
+    """Tenta ConnectTo entre dois conectores CT."""
+    t = _make_t(u"Acoplar — Conexão Direta")
+    t.Start()
+    try:
+        ok = _try_connect(conn_a, conn_b)
+        t.Commit()
+        return ok
+    except Exception:
+        try:
+            t.RollBack()
+        except Exception:
+            pass
+        return False
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    # 1. Selecionar os dois elementos
+    # 1. Elemento base (eletrocalha, eletroduto...)
     try:
         r1 = uidoc.Selection.PickObject(ObjectType.Element, AnyFilter(),
-             u"1/2 — Clique no 1º elemento")
+             u"Clique no elemento principal (eletrocalha, eletroduto...)")
     except OperationCanceledException:
         return
+
+    # 2. Múltiplos elementos a acoplar
     try:
-        r2 = uidoc.Selection.PickObject(ObjectType.Element, AnyFilter(),
-             u"2/2 — Clique no 2º elemento")
+        refs = uidoc.Selection.PickObjects(ObjectType.Element, AnyFilter(),
+             u"Selecione os elementos a acoplar e pressione Enter")
     except OperationCanceledException:
         return
 
-    el1 = doc.GetElement(r1.ElementId)
-    el2 = doc.GetElement(r2.ElementId)
-    pt1 = _location(el1)
-    pt2 = _location(el2)
-    c1  = _ct_connectors(el1)
-    c2  = _ct_connectors(el2)
-
-    # ── CASO D ───────────────────────────────────────────────────────
-    if not c1 and not c2:
-        forms.alert(
-            u"Nenhum dos dois elementos tem conector de bandeja/eletroduto.\n"
-            u"Pelo menos um deve ter (ex: eletrocalha, eletroduto, perfilado).",
-            title="Acoplar")
+    if not refs:
         return
 
-    # ── CASO A: um sem conector ───────────────────────────────────────
-    if not c1 or not c2:
-        elem_no_conn  = el2 if c1 else el1
-        elem_has_conn = el1 if c1 else el2
-        conns_has     = c1 if c1 else c2
-        pt_no_conn    = _location(elem_no_conn)
-        pt_has_conn   = _location(elem_has_conn)
-        conn_target   = _best_conn(conns_has, pt_no_conn)
+    el_main = doc.GetElement(r1.ElementId)
+    c_main  = _ct_connectors(el_main)
+    targets = [doc.GetElement(r.ElementId) for r in refs]
 
+    # Rastreia tipo da eletrocalha para reencontrar segmentos após splits
+    main_is_ct = _is_cable_tray(el_main)
+    ct_type_id = el_main.GetTypeId() if main_is_ct else None
+
+    # Pergunta a família de adaptador uma única vez, se algum target precisar
+    need_adapter = (not c_main) or any(not _ct_connectors(t) for t in targets)
+    sym = None
+    if need_adapter:
         _, sym = _pick_adapter()
         if sym is None:
             return
 
-        try:
-            inst, connected, conn_adapter = _insert_adapter_simple(
-                sym, pt_no_conn, _level(elem_no_conn), conn_target, pt_has_conn, source_elem=elem_has_conn)
-        except Exception as e:
-            forms.alert(u"Erro ao criar adaptador:\n" + str(e), title="Acoplar — Erro")
-            return
+    ok_count = 0
+    errors   = []
 
-        if connected:
-            forms.toast(u"Adaptador inserido e conectado.", title="Acoplar")
-            _offer_descida(elem_no_conn, elem_has_conn)
+    for el_target in targets:
+        pt_target = _location(el_target)
+        c_target  = _ct_connectors(el_target)
+
+        # Após splits, reencontra o segmento da eletrocalha mais próximo deste target
+        if ct_type_id is not None:
+            el_cur = _find_ct_for_point(ct_type_id, pt_target) or el_main
         else:
-            if not _ct_connectors(inst):
-                detail = u"A família não tem conector de bandeja/eletroduto."
-            elif conn_adapter and conn_target and _profile(conn_adapter) != _profile(conn_target):
-                detail = (u"Perfis incompatíveis: adaptador={}, destino={}.".format(
-                    _profile(conn_adapter), _profile(conn_target)))
+            el_cur = el_main
+
+        c_cur  = _ct_connectors(el_cur)
+        pt_cur = _location(el_cur)
+
+        # Caso D: nenhum tem conector CT
+        if not c_cur and not c_target:
+            errors.append(u"Id={}: sem conector CT".format(el_target.Id.IntegerValue))
+            continue
+
+        # Caso A: target sem CT → adaptador no target
+        if not c_target:
+            conn_tray = _best_conn(c_cur, pt_target)
+            try:
+                _, connected, _ = _insert_adapter_simple(
+                    sym, pt_target, _level(el_target),
+                    conn_tray, pt_cur, source_elem=el_cur)
+                if connected:
+                    ok_count += 1
+                else:
+                    errors.append(u"Id={}: adaptador inserido sem conexão".format(el_target.Id.IntegerValue))
+            except Exception as e:
+                errors.append(u"Id={}: {}".format(el_target.Id.IntegerValue, e))
+            continue
+
+        # Caso A': base sem CT → adaptador na base
+        if not c_cur:
+            conn_tray = _best_conn(c_target, pt_cur)
+            try:
+                _, connected, _ = _insert_adapter_simple(
+                    sym, pt_cur, _level(el_cur),
+                    conn_tray, pt_target, source_elem=el_target)
+                if connected:
+                    ok_count += 1
+                else:
+                    errors.append(u"Id={}: adaptador inserido sem conexão".format(el_target.Id.IntegerValue))
+            except Exception as e:
+                errors.append(u"Id={}: {}".format(el_target.Id.IntegerValue, e))
+            continue
+
+        # Casos B/C: ambos têm CT → tenta direto
+        conn_a = _best_conn(c_cur, pt_target)
+        conn_b = _best_conn(c_target, pt_cur)
+        if _connect_direct(conn_a, conn_b):
+            ok_count += 1
+            continue
+
+        # Direto falhou — perfis diferentes → adaptador ponte
+        pa, pb = _profile(conn_a), _profile(conn_b)
+        if pa != pb:
+            if sym is None:
+                _, sym = _pick_adapter(u"deve ter conector round + rectangular")
+                if sym is None:
+                    errors.append(u"Id={}: adaptador ponte cancelado".format(el_target.Id.IntegerValue))
+                    continue
+            if pa == ConnectorProfileType.Round:
+                round_conn, rect_conn = conn_a, conn_b
+                round_elem, rect_elem = el_cur, el_target
             else:
-                detail = u"ConnectTo rejeitado (tamanho ou tipo incompatível)."
-            forms.alert(u"Adaptador inserido mas sem conexão física.\n\n" + detail,
-                        title="Acoplar — Aviso")
-        return
-
-    # ── CASO B/C: ambos têm conector CT ──────────────────────────────
-    conn_a = _best_conn(c1, pt2)
-    conn_b = _best_conn(c2, pt1)
-    pa = _profile(conn_a)
-    pb = _profile(conn_b)
-
-    # Tenta direto — a API do Revit exige apenas mesmo Domain, não mesmo perfil
-    ok = _connect_direct(conn_a, conn_b)
-    if ok:
-        forms.toast(u"Conectado diretamente (sem adaptador).", title="Acoplar")
-        _offer_descida(el1, el2)
-        return
-
-    # ConnectTo falhou — perfis diferentes? Usa adaptador ponte
-    if pa != pb:
-        # Identifica qual conector é round e qual é rectangular
-        if pa == ConnectorProfileType.Round:
-            round_elem, round_conn, round_pt = el1, conn_a, pt1
-            rect_elem,  rect_conn,  rect_pt  = el2, conn_b, pt2
+                round_conn, rect_conn = conn_b, conn_a
+                round_elem, rect_elem = el_target, el_cur
+            try:
+                _, round_ok, rect_ok = _insert_bridge_adapter(
+                    sym, _location(round_elem), _level(round_elem),
+                    round_conn, rect_conn, source_elem=rect_elem)
+                if round_ok or rect_ok:
+                    ok_count += 1
+                else:
+                    errors.append(u"Id={}: ponte sem conexão".format(el_target.Id.IntegerValue))
+            except Exception as e:
+                errors.append(u"Id={}: {}".format(el_target.Id.IntegerValue, e))
         else:
-            round_elem, round_conn, round_pt = el2, conn_b, pt2
-            rect_elem,  rect_conn,  rect_pt  = el1, conn_a, pt1
+            errors.append(u"Id={}: ConnectTo rejeitado (mesmo perfil, já conectado?)".format(
+                el_target.Id.IntegerValue))
 
-        result = forms.alert(
-            u"ConnectTo direto falhou (perfis diferentes: conduíte vs bandeja).\n\n"
-            u"Posso inserir um adaptador ponte com os dois tipos de conector.\n"
-            u"O adaptador será colocado sobre o elemento com conduíte (round).\n\n"
-            u"Deseja continuar?",
-            title="Acoplar — Adaptador Ponte",
-            options=[u"Sim, escolher adaptador", u"Cancelar"])
-        if not result or result == u"Cancelar":
-            return
-
-        _, sym = _pick_adapter(u"deve ter conector round + rectangular")
-        if sym is None:
-            return
-
-        insert_pt = _location(round_elem)
-        lv        = _level(round_elem)
-
-        try:
-            inst, round_ok, rect_ok = _insert_bridge_adapter(
-                sym, insert_pt, lv,
-                round_conn, rect_conn, source_elem=rect_elem)
-        except Exception as e:
-            forms.alert(u"Erro ao criar adaptador ponte:\n" + str(e), title="Acoplar — Erro")
-            return
-
-        if round_ok and rect_ok:
-            forms.toast(u"Adaptador ponte inserido e conectado nos dois lados.", title="Acoplar")
-            _offer_descida(round_elem, rect_elem)
-        elif round_ok or rect_ok:
-            lado = u"conduíte" if round_ok else u"bandeja"
-            forms.alert(
-                u"Adaptador inserido mas conectado apenas no lado {}.\n\n"
-                u"O outro lado falhou — verifique se a família tem os dois tipos "
-                u"de conector (round + rectangular).".format(lado),
-                title="Acoplar — Parcial")
-        else:
-            forms.alert(
-                u"Adaptador inserido mas nenhuma conexão foi estabelecida.\n\n"
-                u"A família selecionada precisa ter um conector round E um rectangular "
-                u"(ambos do domínio bandeja/eletroduto).",
-                title="Acoplar — Aviso")
+    if ok_count > 0:
+        msg = u"{} elemento(s) acoplado(s).".format(ok_count)
+        if errors:
+            msg += u"\n{} falha(s):\n{}".format(len(errors), u"\n".join(errors[:3]))
+        forms.toast(msg, title=u"Acoplar")
     else:
-        # Mesmo perfil mas ConnectTo falhou mesmo assim
-        forms.alert(
-            u"ConnectTo rejeitado pelo Revit mesmo com conectores do mesmo perfil.\n"
-            u"Verifique se os conectores já estão conectados a outro elemento.",
-            title="Acoplar — Erro")
+        forms.alert(u"Nenhum acoplamento realizado.\n\n" + u"\n".join(errors[:5]),
+                    title=u"Acoplar — Falha")
 
 
 if __name__ == "__main__":
