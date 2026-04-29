@@ -23,18 +23,11 @@ class ToastNotificationWindow(forms.WPFWindow):
         self.trigger_fade_out(None, None)
 
     def position_bottom_right(self):
-        """Posiciona toast no canto inferior direito da tela onde o Revit está aberto."""
+        """Posiciona toast no canto inferior direito da tela principal (DPI-aware)."""
         try:
-            if self._hwnd is not None and int(self._hwnd) != 0:
-                import System
-                screen = WinForms.Screen.FromHandle(System.IntPtr(int(self._hwnd)))
-                wa = screen.WorkingArea
-                right  = wa.Right
-                bottom = wa.Bottom
-            else:
-                from System.Windows import SystemParameters
-                right  = SystemParameters.WorkArea.Right
-                bottom = SystemParameters.WorkArea.Bottom
+            from System.Windows import SystemParameters
+            right  = SystemParameters.WorkArea.Right
+            bottom = SystemParameters.WorkArea.Bottom
             self.Left = right  - 320 - 20
             self.Top  = bottom - 80 - 20
         except:

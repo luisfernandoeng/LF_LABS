@@ -193,9 +193,11 @@ class AutoSaveManager(object):
         countdown_bar.hide()
         if self._countdown_toast:
             try:
+                self._countdown_toast.Opacity = 1.0
                 self._countdown_toast.ToastTitle.Text   = u"Salvando projeto..."
                 self._countdown_toast.ToastMessage.Text = u"Aguarde..."
                 self._countdown_toast.ToastIcon.Text    = u"💾"
+                self._countdown_toast.fade_in()
             except:
                 pass
 
@@ -309,9 +311,11 @@ class AutoSaveHandler(IExternalEventHandler):
 
             if show_toast and toast_inst:
                 try:
+                    toast_inst.Opacity = 1.0
                     toast_inst.ToastTitle.Text   = u"✅ Projeto salvo"
                     toast_inst.ToastMessage.Text = u"Salvo às " + time_str
                     toast_inst.ToastIcon.Text    = u"✅"
+                    toast_inst.fade_in()
                     toast_inst.restart_close_timer(5)
                 except:
                     pass
@@ -324,9 +328,11 @@ class AutoSaveHandler(IExternalEventHandler):
             effective_toast = toast_inst or self.manager._countdown_toast
             if show_toast and effective_toast:
                 try:
+                    effective_toast.Opacity = 1.0
                     effective_toast.ToastTitle.Text   = u"⚠️ Erro ao salvar"
                     effective_toast.ToastMessage.Text = u"Tente novamente mais tarde"
                     effective_toast.ToastIcon.Text    = u"⚠️"
+                    effective_toast.fade_in()
                     effective_toast.restart_close_timer(5)
                 except:
                     pass
