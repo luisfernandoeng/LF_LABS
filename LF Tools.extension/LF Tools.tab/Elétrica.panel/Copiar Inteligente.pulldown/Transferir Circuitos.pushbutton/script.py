@@ -104,6 +104,55 @@ def get_circuits_from_panel(panel_element):
     return circuits
 
 
+def _get_circuit_number(circ):
+    """Retorna o numero do circuito como texto, tolerante a falhas."""
+    try:
+        num = circ.CircuitNumber
+        return str(num or "")
+    except Exception:
+        return ""
+
+
+def _get_circuit_start_slot(circ):
+    """Retorna o slot inicial do circuito no quadro, quando disponivel."""
+    try:
+        slot = int(circ.StartSlot)
+        if slot > 0:
+            return slot
+    except Exception:
+        pass
+    return None
+
+
+def _circuit_sort_key(circ):
+    """Ordenacao pela posicao real no quadro de origem.
+
+    StartSlot e a ordem que aparece no painel. CircuitNumber entra apenas
+    como fallback para casos em que a API nao exponha o slot.
+    """
+    slot = _get_circuit_start_slot(circ)
+    try:
+        eid = circ.Id.IntegerValue
+    except Exception:
+        eid = 0
+
+    if slot is not None:
+        return (0, slot, eid)
+
+    cnum = _get_circuit_number(circ).strip()
+    parts = re.split(r'(\d+)', cnum)
+    natural = []
+    for part in parts:
+        if not part:
+            continue
+        if part.isdigit():
+            natural.append((0, int(part)))
+        else:
+            natural.append((1, part.lower()))
+
+    return (1, natural, eid)
+
+
 # ══════════════════════════════════════════════════════════════
 #  SNAPSHOT / RESTORE DE PROPRIEDADES
 # ══════════════════════════════════════════════════════════════
@@ -393,15 +442,7 @@ class TransferCircuitsWindow(forms.WPFWindow):
 
         self.lbl_CircuitsCount.Text = "{} circuito(s)".format(len(circuits))
 
-        # Ordenar por número do circuito
-        def _sort_key(c):
-            try:
-                nums = re.findall(r'\d+', c.CircuitNumber)
-                return [int(n) for n in nums] if nums else [c.CircuitNumber]
-            except Exception:
-                return [0]
-
-        circuits = sorted(circuits, key=_sort_key)
+        circuits = sorted(circuits, key=_circuit_sort_key)
 
         for circ in circuits:
             self._add_circuit_row(circ)
@@ -552,6 +593,8 @@ class TransferCircuitsWindow(forms.WPFWindow):
                 target_poles = [1, 2, 3][pi] if 0 <= pi <= 2 else 1
                 selected.append((circ, target_poles))
 
+        selected = sorted(selected, key=lambda item: _circuit_sort_key(item[0]))
+
         if not selected:
             forms.alert("Selecione pelo menos um circuito.", title="Transferir Circuitos")
             return
@@ -597,6 +640,10 @@ class TransferCircuitsWindow(forms.WPFWindow):
                 ok, msg = transfer_one_circuit(circ, dest_panel, target_poles)
                 if ok:
                     sucessos += 1
+                    try:
+                        doc.Regenerate()
+                    except Exception:
+                        pass
                 else:
                     erros.append((circ_num, msg))
                     dbg.error("C{}: {}".format(circ_num, msg))

@@ -905,23 +905,32 @@ def make_warning_swallower():
     try:
         import clr
         clr.AddReference('RevitAPI')
-        from Autodesk.Revit.DB import IFailuresPreprocessor, FailureProcessingResult, BuiltInFailures
-        
+        from Autodesk.Revit.DB import (
+            IFailuresPreprocessor, FailureProcessingResult, FailureSeverity)
+
         class WarningSwallower(IFailuresPreprocessor):
             def PreprocessFailures(self, failuresAccessor):
-                fail_list = failuresAccessor.GetFailureMessages()
-                for f in fail_list:
-                    severity = f.GetSeverity()
-                    # Se for apenas aviso, deleta
-                    try:
-                        from Autodesk.Revit.DB import FailureSeverity
-                        if severity == FailureSeverity.Warning:
-                            failuresAccessor.DeleteWarning(f)
-                    except:
-                        # Fallback para versões onde FailureSeverity não é acessível assim
-                        failuresAccessor.DeleteWarning(f)
-                return FailureProcessingResult.Continue
-        
+                try:
+                    failuresAccessor.DeleteAllWarnings()
+                except Exception:
+                    pass
+                try:
+                    for f in list(failuresAccessor.GetFailureMessages()):
+                        try:
+                            sev = f.GetSeverity()
+                            if sev == FailureSeverity.Warning:
+                                failuresAccessor.DeleteWarning(f)
+                            elif sev == FailureSeverity.Error:
+                                try:
+                                    failuresAccessor.ResolveFailure(f)
+                                except Exception:
+                                    failuresAccessor.DeleteWarning(f)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                return FailureProcessingResult.ProceedWithCommit
+
         return WarningSwallower()
-    except:
+    except Exception:
         return None

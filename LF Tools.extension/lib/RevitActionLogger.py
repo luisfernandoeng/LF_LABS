@@ -5,6 +5,8 @@ Monitora eventos da API do Revit e grava log estruturado em arquivo de texto.
 """
 import System
 import os
+import codecs
+import time
 from datetime import datetime
 
 from Autodesk.Revit.DB import (
@@ -22,6 +24,16 @@ LOG_FILE  = os.path.join(desktop, "RevitActionLog.txt")
 
 # Idling: intervalo mínimo entre checagens de seleção (segundos)
 _IDLING_THROTTLE_S = 10
+
+# Noise controls. View/selection changes are expensive and usually do not
+# explain a failing Revit operation, so keep them off unless debugging that.
+_LOG_VIEW_CHANGES = False
+_LOG_SELECTION_CHANGES = False
+_LOG_DIALOGS = True
+_LOG_ONLY_RELEVANT_CATEGORIES = True
+_MAX_ELEMENTS_PER_TX = 25
+_SUMMARY_SAMPLE_LIMIT = 100
+_PERF_WARN_MS = 300
 
 # Transações internas do Revit que não interessam no log
 _IGNORED_TX = [
@@ -44,6 +56,7 @@ _KEY_FILE_EXP     = "LF_ActionLogger_FileExported"
 _KEY_FILE_IMP     = "LF_ActionLogger_FileImported"
 _KEY_IDLE_TIME    = "LF_ActionLogger_IdlingLastTime"
 _KEY_SEL_COUNT    = "LF_ActionLogger_LastSelectionCount"
+_KEY_LAST_ERROR   = "LF_ActionLogger_LastError"
 
 # ================================================================
 # ESCRITA NO LOG
@@ -53,8 +66,14 @@ def write_log(message):
     """Grava uma linha no log com timestamp, tolerante a falhas."""
     try:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open(LOG_FILE, "a") as f:
+        with codecs.open(LOG_FILE, "a", "utf-8") as f:
             f.write("[{}] {}\n".format(timestamp, message))
+    except Exception as e:
+        _remember_error("write_log: " + str(e))
+
+def _remember_error(message):
+    try:
+        System.AppDomain.CurrentDomain.SetData(_KEY_LAST_ERROR, message)
     except Exception:
         pass
 
@@ -62,18 +81,90 @@ def write_log(message):
 # HELPERS DE ELEMENTO
 # ================================================================
 
-_ELEC_CATS = [
-    int(BuiltInCategory.OST_ElectricalEquipment),
-    int(BuiltInCategory.OST_ElectricalFixtures),
-    int(BuiltInCategory.OST_LightingFixtures),
-    int(BuiltInCategory.OST_LightingDevices),
-    int(BuiltInCategory.OST_ElectricalCircuit),
-    int(BuiltInCategory.OST_Wire),
-]
+def _cat_ids(names):
+    ids = []
+    for name in names:
+        try:
+            ids.append(int(getattr(BuiltInCategory, name)))
+        except Exception:
+            pass
+    return ids
+
+_ELEC_CATS = _cat_ids([
+    "OST_ElectricalEquipment",
+    "OST_ElectricalFixtures",
+    "OST_LightingFixtures",
+    "OST_LightingDevices",
+    "OST_ElectricalCircuit",
+    "OST_Wire",
+])
+
+_RELEVANT_CATS = _cat_ids([
+    "OST_ElectricalEquipment",
+    "OST_ElectricalFixtures",
+    "OST_LightingFixtures",
+    "OST_LightingDevices",
+    "OST_ElectricalCircuit",
+    "OST_Wire",
+    "OST_Conduit",
+    "OST_ConduitFitting",
+    "OST_CableTray",
+    "OST_CableTrayFitting",
+    "OST_CableTrayRun",
+])
 
 def _is_electrical(elem):
     try:
         return elem and elem.Category and elem.Category.Id.IntegerValue in _ELEC_CATS
+    except Exception:
+        return False
+
+def _is_relevant(elem):
+    if not _LOG_ONLY_RELEVANT_CATEGORIES:
+        return True
+    try:
+        return elem and elem.Category and elem.Category.Id.IntegerValue in _RELEVANT_CATS
+    except Exception:
+        return False
+
+def _category_name(elem):
+    try:
+        return elem.Category.Name if elem and elem.Category else "Unknown"
+    except Exception:
+        return "Unknown"
+
+def _category_counts(doc, ids):
+    counts = {}
+    for idx, e_id in enumerate(ids):
+        if idx >= _SUMMARY_SAMPLE_LIMIT:
+            counts["..."] = counts.get("...", 0) + 1
+            break
+        try:
+            elem = doc.GetElement(e_id)
+            cat = _category_name(elem)
+            counts[cat] = counts.get(cat, 0) + 1
+        except Exception:
+            counts["Unknown"] = counts.get("Unknown", 0) + 1
+    return counts
+
+def _format_counts(counts):
+    try:
+        return ", ".join(["{}:{}".format(k, counts[k]) for k in sorted(counts.keys())])
+    except Exception:
+        return ""
+
+def _is_cabletray_related(elem):
+    try:
+        if not elem or not elem.Category:
+            return False
+        cat_name = (elem.Category.Name or "").lower()
+        if "bandeja" in cat_name or "cable tray" in cat_name:
+            return True
+        bic = elem.Category.Id.IntegerValue
+        return bic in [
+            int(BuiltInCategory.OST_CableTray),
+            int(BuiltInCategory.OST_CableTrayFitting),
+        ]
     except Exception:
         return False
 
@@ -104,6 +195,105 @@ def _elem_summary(elem):
             except Exception:
                 pass
         return ("    " + " | ".join(parts)) if parts else ""
+    except Exception:
+        return ""
+
+def _xyz_text(pt):
+    try:
+        return "({:.4f}, {:.4f}, {:.4f})".format(pt.X, pt.Y, pt.Z)
+    except Exception:
+        return "(?)"
+
+def _connector_manager(elem):
+    try:
+        return elem.ConnectorManager
+    except Exception:
+        pass
+    try:
+        if elem.MEPModel:
+            return elem.MEPModel.ConnectorManager
+    except Exception:
+        pass
+    return None
+
+def _mep_curve_context(elem):
+    """Log rico para bandejas/conexoes: curva, dimensoes e conectores."""
+    try:
+        lines = []
+
+        try:
+            loc = elem.Location
+            if loc and hasattr(loc, "Curve") and loc.Curve:
+                crv = loc.Curve
+                lines.append("    Curva: {} -> {} | L={:.4f} ft".format(
+                    _xyz_text(crv.GetEndPoint(0)),
+                    _xyz_text(crv.GetEndPoint(1)),
+                    crv.Length))
+        except Exception:
+            pass
+
+        for label, bip in [
+            ("Largura", BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM),
+            ("Altura", BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM),
+            ("Diametro", BuiltInParameter.RBS_CONDUIT_DIAMETER_PARAM),
+            ("Comprimento", BuiltInParameter.CURVE_ELEM_LENGTH),
+        ]:
+            try:
+                p = elem.get_Parameter(bip)
+                if p and p.HasValue:
+                    val = p.AsValueString()
+                    if not val:
+                        try:
+                            val = "{:.1f} mm".format(p.AsDouble() * 304.8)
+                        except Exception:
+                            val = str(p.AsInteger())
+                    lines.append("    {}: {}".format(label, val))
+            except Exception:
+                pass
+
+        cm = _connector_manager(elem)
+        if cm:
+            try:
+                conns = list(cm.Connectors)
+                lines.append("    Conectores: {}".format(len(conns)))
+                for idx, c in enumerate(conns[:12]):
+                    try:
+                        diam = ""
+                        try:
+                            if hasattr(c, "Radius"):
+                                diam = " D={:.1f}mm".format(c.Radius * 2.0 * 304.8)
+                        except Exception:
+                            pass
+                        try:
+                            bz = c.CoordinateSystem.BasisZ
+                            dir_txt = " Dir=({:.3f},{:.3f},{:.3f})".format(bz.X, bz.Y, bz.Z)
+                        except Exception:
+                            dir_txt = ""
+                        refs = []
+                        try:
+                            for r in c.AllRefs:
+                                try:
+                                    if r.Owner and r.Owner.Id != elem.Id:
+                                        refs.append(str(r.Owner.Id.IntegerValue))
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        ref_txt = " Refs=[{}]".format(",".join(refs)) if refs else ""
+                        lines.append("      C{}: {} Shape={} Tipo={}{}{}{}".format(
+                            idx,
+                            _xyz_text(c.Origin),
+                            c.Shape,
+                            c.ConnectorType,
+                            diam,
+                            dir_txt,
+                            ref_txt))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        return "\n".join(lines)
     except Exception:
         return ""
 
@@ -198,6 +388,7 @@ def OnDocumentSynchronizedWithCentral(sender, args):
         pass
 
 def OnDocumentChanged(sender, args):
+    t0 = time.time()
     try:
         tx_names = args.GetTransactionNames()
         tx_name  = tx_names[0] if tx_names else "Implicita"
@@ -215,29 +406,65 @@ def OnDocumentChanged(sender, args):
         if deleted_ids:
             msgs.append("  [DELETADO] {} elemento(s)".format(len(deleted_ids)))
 
-        for e_id in added_ids:
+        skipped_added = 0
+        skipped_modified = 0
+
+        for idx, e_id in enumerate(added_ids):
+            if idx >= _MAX_ELEMENTS_PER_TX:
+                skipped_added += 1
+                continue
             elem = doc.GetElement(e_id)
             if not elem: continue
-            cat = elem.Category.Name if elem.Category else "Unknown"
+            if not _is_relevant(elem):
+                skipped_added += 1
+                continue
+            cat = _category_name(elem)
             msgs.append("  [ADICIONADO] ID:{} | Cat:{} | Nome:{}".format(
                 e_id.IntegerValue, cat, elem.Name))
-            detail = _elec_context(elem) if _is_electrical(elem) else _elem_summary(elem)
+            if _is_cabletray_related(elem):
+                detail = _mep_curve_context(elem) or _elem_summary(elem)
+            else:
+                detail = _elec_context(elem) if _is_electrical(elem) else _elem_summary(elem)
             if detail: msgs.append(detail)
 
-        for e_id in modified_ids:
+        for idx, e_id in enumerate(modified_ids):
+            if idx >= _MAX_ELEMENTS_PER_TX:
+                skipped_modified += 1
+                continue
             elem = doc.GetElement(e_id)
             if not elem: continue
-            cat = elem.Category.Name if elem.Category else "Unknown"
+            if not _is_relevant(elem):
+                skipped_modified += 1
+                continue
+            cat = _category_name(elem)
             msgs.append("  [MODIFICADO] ID:{} | Cat:{} | Nome:{}".format(
                 e_id.IntegerValue, cat, elem.Name))
-            if _is_electrical(elem):
+            if _is_cabletray_related(elem):
+                detail = _mep_curve_context(elem)
+                if detail: msgs.append(detail)
+            elif _is_electrical(elem):
                 detail = _elec_context(elem)
                 if detail: msgs.append(detail)
+
+        if skipped_added:
+            txt = _format_counts(_category_counts(doc, added_ids))
+            msgs.append("  [ADICIONADO] {} item(ns) omitido(s) por filtro/limite{}".format(
+                skipped_added, " | " + txt if txt else ""))
+        if skipped_modified:
+            txt = _format_counts(_category_counts(doc, modified_ids))
+            msgs.append("  [MODIFICADO] {} item(ns) omitido(s) por filtro/limite{}".format(
+                skipped_modified, " | " + txt if txt else ""))
 
         if len(msgs) > 1:
             write_log("\n".join(msgs))
 
+        elapsed_ms = int((time.time() - t0) * 1000)
+        if elapsed_ms >= _PERF_WARN_MS:
+            write_log("  [PERF] OnDocumentChanged levou {} ms | tx='{}'".format(
+                elapsed_ms, tx_name))
+
     except Exception as e:
+        _remember_error("OnDocumentChanged: " + str(e))
         write_log("ERRO OnDocumentChanged: " + str(e))
 
 # ================================================================
@@ -273,6 +500,8 @@ def OnFileImported(sender, args):
 # ================================================================
 
 def OnViewActivated(sender, args):
+    if not _LOG_VIEW_CHANGES:
+        return
     try:
         if args.CurrentActiveView:
             write_log("--- VISTA ATIVADA: '{}' ---".format(
@@ -281,6 +510,8 @@ def OnViewActivated(sender, args):
         pass
 
 def OnDialogBoxShowing(sender, args):
+    if not _LOG_DIALOGS:
+        return
     """Captura dialogs e avisos que o Revit exibe durante operações."""
     try:
         dialog_id = ""
@@ -291,6 +522,8 @@ def OnDialogBoxShowing(sender, args):
         pass
 
 def OnIdling(sender, args):
+    if not _LOG_SELECTION_CHANGES:
+        return
     """
     Rastreia mudanças de seleção.
     Throttled: dispara no máximo uma vez a cada _IDLING_THROTTLE_S segundos.
@@ -400,7 +633,15 @@ def start_logger(uiapp):
         domain.SetData(_KEY_SEL_COUNT, 0)
         ok.append("Idling")
 
+    domain.SetData(_KEY_LAST_ERROR, None)
     write_log("=== LOGGER INICIADO: {} ===".format(", ".join(ok)))
+    write_log("=== CONFIG: relevant_only={} max_elements={} view={} selection={} dialogs={} log='{}' ===".format(
+        _LOG_ONLY_RELEVANT_CATEGORIES,
+        _MAX_ELEMENTS_PER_TX,
+        _LOG_VIEW_CHANGES,
+        _LOG_SELECTION_CHANGES,
+        _LOG_DIALOGS,
+        LOG_FILE))
     return True
 
 
@@ -430,6 +671,7 @@ def stop_logger(uiapp):
     # Limpa estado auxiliar do Idling
     domain.SetData(_KEY_IDLE_TIME, None)
     domain.SetData(_KEY_SEL_COUNT, 0)
+    domain.SetData(_KEY_LAST_ERROR, None)
 
     if removed:
         write_log("=== LOGGER PARADO: {} ===".format(", ".join(removed)))
@@ -439,3 +681,20 @@ def stop_logger(uiapp):
 
 def is_running():
     return System.AppDomain.CurrentDomain.GetData(_KEY_DOC_CHANGED) is not None
+
+def get_log_file():
+    return LOG_FILE
+
+def get_status_text():
+    domain = System.AppDomain.CurrentDomain
+    last_error = domain.GetData(_KEY_LAST_ERROR)
+    return "\n".join([
+        "Status: " + ("rodando" if is_running() else "parado"),
+        "Log: " + LOG_FILE,
+        "Filtro de categorias relevantes: " + str(_LOG_ONLY_RELEVANT_CATEGORIES),
+        "Limite por transacao: " + str(_MAX_ELEMENTS_PER_TX),
+        "Log de vista: " + str(_LOG_VIEW_CHANGES),
+        "Log de selecao: " + str(_LOG_SELECTION_CHANGES),
+        "Log de dialogs: " + str(_LOG_DIALOGS),
+        "Ultimo erro interno: " + (str(last_error) if last_error else "nenhum"),
+    ])

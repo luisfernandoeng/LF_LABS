@@ -21,6 +21,53 @@ log_path = os.path.join(desktop_path, "relatorio_familias_completo.txt")
 # Buffer para evitar I/O excessivo (performance)
 log_buffer = []
 
+def limpar_log_antigo():
+    """Remove o relatório anterior antes de qualquer análise."""
+    try:
+        if os.path.exists(log_path):
+            os.remove(log_path)
+    except Exception as ex:
+        forms.alert(
+            u"Não foi possível apagar o relatório antigo:\n{}\n\n{}"
+            .format(log_path, ex),
+            title="Inspecionar Tipo"
+        )
+        script.exit()
+
+def param_tem_valor_util(param):
+    """Evita despejar parâmetros vazios/sem valor no relatório."""
+    try:
+        if not param or not param.Definition:
+            return False
+        nome = param.Definition.Name
+        if not nome:
+            return False
+        try:
+            if not param.HasValue:
+                return False
+        except:
+            pass
+
+        if param.StorageType == StorageType.String:
+            valor = param.AsString()
+            return bool(valor and str(valor).strip())
+        if param.StorageType == StorageType.ElementId:
+            eid = param.AsElementId()
+            return bool(eid and eid.IntegerValue != -1)
+        return True
+    except:
+        return False
+
+def formatar_parametro(param):
+    nome = param.Definition.Name
+    valor = get_safe_param_val(param)
+    info = "  {}: {}".format(nome, valor)
+    if param.IsShared:
+        info += " [COMPARTILHADO - GUID: {}]".format(param.GUID)
+    if param.IsReadOnly:
+        info += " [SOMENTE LEITURA]"
+    return info
+
 def get_safe_param_val(param):
     try:
         if param.StorageType == StorageType.String:
@@ -649,6 +696,226 @@ def analisar_circuito(circuito):
 
 # ==================== DETECÇÃO DE TIPO DE ELEMENTO ====================
 
+def analisar_parametros(elemento, tipo_el=None):
+    """Versao enxuta: mostra somente parametros com valor util."""
+    linhas_inst = []
+    params_inst = set()
+
+    try:
+        parametros = elemento.Parameters
+    except:
+        parametros = []
+
+    for p in parametros:
+        try:
+            nome = p.Definition.Name
+            if nome:
+                params_inst.add(nome)
+            if param_tem_valor_util(p):
+                linhas_inst.append(formatar_parametro(p))
+        except Exception as ex:
+            linhas_inst.append("  <erro ao ler parametro: {}>".format(str(ex)))
+
+    if linhas_inst:
+        escrever_log("\n--- PARAMETROS DE INSTANCIA (com valor) ---")
+        for linha in linhas_inst:
+            escrever_log(linha)
+
+    if not tipo_el:
+        return
+
+    linhas_tipo = []
+    try:
+        parametros_tipo = tipo_el.Parameters
+    except:
+        parametros_tipo = []
+
+    for p in parametros_tipo:
+        try:
+            nome = p.Definition.Name
+            if nome in params_inst:
+                continue
+            if param_tem_valor_util(p):
+                linhas_tipo.append(formatar_parametro(p))
+        except Exception as ex:
+            linhas_tipo.append("  <erro ao ler parametro do tipo: {}>".format(str(ex)))
+
+    if linhas_tipo:
+        escrever_log("\n--- PARAMETROS DO TIPO (com valor) ---")
+        for linha in linhas_tipo:
+            escrever_log(linha)
+
+
+def analisar_conectores(elemento):
+    """Versao enxuta: so emite a secao quando ha conectores."""
+    linhas = []
+    try:
+        conn_manager = None
+        if isinstance(elemento, FamilyInstance) and elemento.MEPModel:
+            conn_manager = elemento.MEPModel.ConnectorManager
+        elif hasattr(elemento, "ConnectorManager"):
+            conn_manager = elemento.ConnectorManager
+
+        if not conn_manager:
+            return
+
+        conectores = conn_manager.Connectors
+        if not conectores or conectores.Size <= 0:
+            return
+
+        for conn in conectores:
+            linhas.append("  Conector ID: {}".format(conn.Id))
+            linhas.append("    Tipo: {}".format(conn.ConnectorType))
+            linhas.append("    Dominio: {}".format(conn.Domain))
+            try:
+                linhas.append("    Forma: {}".format(conn.Shape))
+                if conn.Shape == ConnectorProfileType.Round:
+                    linhas.append("    Diametro: {:.1f} mm".format(conn.Radius * 2 * 304.8))
+                elif conn.Shape == ConnectorProfileType.Rectangular:
+                    linhas.append("    Largura: {:.1f} mm".format(conn.Width * 304.8))
+                    linhas.append("    Altura: {:.1f} mm".format(conn.Height * 304.8))
+            except:
+                pass
+            linhas.append("    Conectado: {}".format("Sim" if conn.IsConnected else "Nao"))
+    except Exception as ex:
+        linhas.append("  <erro ao analisar conectores: {}>".format(str(ex)))
+
+    if linhas:
+        escrever_log("\n--- CONECTORES ---")
+        for linha in linhas:
+            escrever_log(linha)
+
+
+def analisar_geometria(elemento):
+    """Versao enxuta: ignora geometria vazia."""
+    try:
+        options = Options()
+        options.DetailLevel = ViewDetailLevel.Fine
+        geom = elemento.get_Geometry(options)
+        if not geom:
+            return
+
+        solid_count = 0
+        face_count = 0
+        volume_total = 0
+
+        for geom_obj in geom:
+            if isinstance(geom_obj, Solid) and geom_obj.Volume > 0:
+                solid_count += 1
+                volume_total += geom_obj.Volume
+                face_count += geom_obj.Faces.Size
+            elif isinstance(geom_obj, GeometryInstance):
+                inst_geom = geom_obj.GetInstanceGeometry()
+                for inst_obj in inst_geom:
+                    if isinstance(inst_obj, Solid) and inst_obj.Volume > 0:
+                        solid_count += 1
+                        volume_total += inst_obj.Volume
+                        face_count += inst_obj.Faces.Size
+
+        if solid_count <= 0 and face_count <= 0:
+            return
+
+        escrever_log("\n--- GEOMETRIA ---")
+        escrever_log("Numero de solidos: {}".format(solid_count))
+        escrever_log("Numero de faces: {}".format(face_count))
+        escrever_log("Volume total: {:.3f} m3".format(volume_total * 0.0283168))
+    except Exception as ex:
+        escrever_log("\n--- GEOMETRIA ---")
+        escrever_log("  <erro ao analisar geometria: {}>".format(str(ex)))
+
+
+def analisar_localizacao(elemento):
+    """Versao enxuta: ignora elementos sem Location."""
+    linhas = []
+    try:
+        if not hasattr(elemento, "Location"):
+            return
+        location = elemento.Location
+        if not location:
+            return
+        if isinstance(location, LocationPoint):
+            pt = location.Point
+            linhas.append("Tipo de localizacao: Ponto")
+            linhas.append("Coordenadas X: {:.3f} mm".format(pt.X * 304.8))
+            linhas.append("Coordenadas Y: {:.3f} mm".format(pt.Y * 304.8))
+            linhas.append("Coordenadas Z: {:.3f} mm".format(pt.Z * 304.8))
+
+            if link_context["is_link"] and link_context["transform"]:
+                try:
+                    pt_host = link_context["transform"].OfPoint(pt)
+                    linhas.append("--- Coordenadas no Host (apos transform) ---")
+                    linhas.append("  X (host): {:.3f} mm".format(pt_host.X * 304.8))
+                    linhas.append("  Y (host): {:.3f} mm".format(pt_host.Y * 304.8))
+                    linhas.append("  Z (host): {:.3f} mm".format(pt_host.Z * 304.8))
+                except:
+                    pass
+
+            if hasattr(location, 'Rotation'):
+                linhas.append("Rotacao: {:.2f} deg".format(location.Rotation * 57.2958))
+        elif isinstance(location, LocationCurve):
+            curve = location.Curve
+            start = curve.GetEndPoint(0)
+            end = curve.GetEndPoint(1)
+            linhas.append("Tipo de localizacao: Curva")
+            linhas.append("Comprimento: {:.3f} mm".format(curve.Length * 304.8))
+            linhas.append("Ponto inicial: ({:.2f}, {:.2f}, {:.2f})".format(
+                start.X * 304.8, start.Y * 304.8, start.Z * 304.8))
+            linhas.append("Ponto final: ({:.2f}, {:.2f}, {:.2f})".format(
+                end.X * 304.8, end.Y * 304.8, end.Z * 304.8))
+    except Exception as ex:
+        linhas.append("  <erro ao analisar localizacao: {}>".format(str(ex)))
+
+    if linhas:
+        escrever_log("\n--- LOCALIZACAO ---")
+        for linha in linhas:
+            escrever_log(linha)
+
+
+def analisar_workset(elemento):
+    """Versao enxuta: so mostra workset em arquivo colaborativo."""
+    try:
+        if not analysis_doc.IsWorkshared:
+            return
+        workset_id = elemento.WorksetId
+        if workset_id == WorksetId.InvalidWorksetId:
+            return
+        workset = analysis_doc.GetWorksetTable().GetWorkset(workset_id)
+        escrever_log("\n--- WORKSET ---")
+        escrever_log("Workset: {}".format(workset.Name))
+        escrever_log("Workset ID: {}".format(workset_id.IntegerValue))
+    except Exception as ex:
+        escrever_log("\n--- WORKSET ---")
+        escrever_log("  <erro ao analisar workset: {}>".format(str(ex)))
+
+
+def analisar_fase(elemento):
+    """Versao enxuta: evita repetir 'nao demolido' para todo elemento."""
+    linhas = []
+    try:
+        try:
+            created_phase_id = elemento.CreatedPhaseId
+        except:
+            return
+        try:
+            demolished_phase_id = elemento.DemolishedPhaseId
+        except:
+            demolished_phase_id = ElementId.InvalidElementId
+
+        fase_criacao = analysis_doc.GetElement(created_phase_id)
+        fase_demolida = analysis_doc.GetElement(demolished_phase_id)
+        if fase_criacao:
+            linhas.append("Fase de Criacao: {}".format(fase_criacao.Name))
+        if fase_demolida:
+            linhas.append("Fase de Demolicao: {}".format(fase_demolida.Name))
+    except Exception as ex:
+        linhas.append("  <erro ao analisar fases: {}>".format(str(ex)))
+
+    if linhas:
+        escrever_log("\n--- FASES ---")
+        for linha in linhas:
+            escrever_log(linha)
+
+
 def is_panel_schedule_view(el):
     """Verifica se o elemento é um PanelScheduleView."""
     try:
@@ -680,6 +947,8 @@ def is_view_schedule(el):
 
 from Autodesk.Revit.UI.Selection import ObjectType as _ObjType
 from Autodesk.Revit.DB import RevitLinkInstance as _RLI
+
+limpar_log_antigo()
 
 sel_ids = list(uidoc.Selection.GetElementIds())
 

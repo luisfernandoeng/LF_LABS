@@ -1,4 +1,4 @@
 {
-  "criteria": "Category,Phase Created", 
-  "scope": "active_view"
+  "scope": "active_view", 
+  "criteria": "Category,Family,Type"
 }

@@ -126,16 +126,72 @@ def set_highlight(view, element_ids, apply=True):
 _BLACKLIST = frozenset([u'mm\xb2', u'Fase ', u'Fase-', u'Neutro', u'Terra', u'Retorno'])
 
 
+def _to_text(value):
+    try:
+        return unicode(value)
+    except NameError:
+        return str(value)
+    except:
+        try:
+            return str(value)
+        except:
+            return u''
+
+
+def _elem_type(elem):
+    try:
+        tid = elem.GetTypeId()
+        if tid and tid != ElementId.InvalidElementId:
+            return elem.Document.GetElement(tid)
+    except:
+        pass
+    return None
+
+
+def _family_name(elem):
+    try:
+        return elem.Symbol.FamilyName
+    except:
+        pass
+    et = _elem_type(elem)
+    if et:
+        try:
+            return et.FamilyName
+        except:
+            pass
+    try:
+        return elem.Name
+    except:
+        return None
+
+
+def _type_name(elem):
+    try:
+        return elem.Symbol.Name or elem.Name
+    except:
+        pass
+    et = _elem_type(elem)
+    if et:
+        try:
+            return et.Name
+        except:
+            pass
+    try:
+        return elem.Name
+    except:
+        return None
+
+
 def get_element_parameters(element):
     params = {}
     try:
         params['Category'] = element.Category.Name if element.Category else 'Sem Categoria'
-        try:
-            params['Family'] = element.Symbol.FamilyName
-            params['Type']   = element.Symbol.Name or element.Name
-        except:
-            params['Family'] = element.Name
-            params['Type']   = element.Name
+        fam = _family_name(element)
+        typ = _type_name(element)
+        if fam:
+            params['Family'] = fam
+        if typ:
+            params['Type'] = typ
         try:
             lv = element.Document.GetElement(element.LevelId)
             if lv:
@@ -207,15 +263,9 @@ def _param_value(elem, name):
     if name == 'Category':
         return elem.Category.Name if elem.Category else None
     if name == 'Family':
-        try:
-            return elem.Symbol.FamilyName
-        except:
-            return None
+        return _family_name(elem)
     if name == 'Type':
-        try:
-            return elem.Symbol.Name
-        except:
-            return None
+        return _type_name(elem)
     if name == 'Level':
         try:
             lv = elem.Document.GetElement(elem.LevelId)
@@ -263,6 +313,35 @@ def _param_value(elem, name):
 
 # ── Filtragem otimizada ────────────────────────────────────────────────────
 
+def _has_filter_value(value):
+    if value is None:
+        return False
+    try:
+        return bool(_to_text(value).strip())
+    except:
+        return True
+
+
+def _effective_criteria(ref_elem, configured_criteria, include_standard=True):
+    """Mantem o preset salvo, mas usa so o que existe no elemento clicado."""
+    ordered = []
+    if include_standard:
+        ordered.extend(['Category', 'Family', 'Type'])
+    if configured_criteria:
+        ordered.extend(configured_criteria)
+
+    result = []
+    seen = set()
+    for c in ordered:
+        c = _to_text(c or u'').strip()
+        if not c or c in seen:
+            continue
+        if c == 'Category' or _has_filter_value(_param_value(ref_elem, c)):
+            result.append(c)
+            seen.add(c)
+    return result
+
+
 def filter_similar(target_doc, ref_elem, criteria, scope, ref_cat_id=None):
     """
     Usa filtros nativos C++ do Revit (FamilyInstanceFilter, ElementLevelFilter)
@@ -283,8 +362,9 @@ def filter_similar(target_doc, ref_elem, criteria, scope, ref_cat_id=None):
     # Família + Tipo → FamilyInstanceFilter (quick filter, roda em C++)
     if 'Family' in soft and 'Type' in soft:
         try:
+            symbol = ref_elem.Symbol
             type_id = ref_elem.GetTypeId()
-            if type_id != ElementId.InvalidElementId:
+            if symbol and type_id != ElementId.InvalidElementId:
                 coll = coll.WherePasses(FamilyInstanceFilter(target_doc, type_id))
                 soft = [c for c in soft if c not in ('Family', 'Type', 'Category')]
         except:
@@ -315,7 +395,7 @@ def filter_similar(target_doc, ref_elem, criteria, scope, ref_cat_id=None):
         try:
             p = ref_elem.LookupParameter(c)
             # Filtro nativo só funciona direto para parâmetros da instância
-            if p and p.Id != ElementId.InvalidElementId:
+            if p and p.HasValue and p.Id != ElementId.InvalidElementId:
                 provider = ParameterValueProvider(p.Id)
                 rule = None
                 st = p.StorageType
@@ -502,7 +582,7 @@ class SmartSelectSimilarWindow(forms.WPFWindow):
                 cb           = CheckBox()
                 cb.Content   = u'{} : {}'.format(p_name, display)
                 cb.Tag       = p_name
-                cb.IsChecked = p_name in ('Category', 'Family')
+                cb.IsChecked = p_name in ('Category', 'Family', 'Type')
                 cb.Checked   += self._on_criteria
                 cb.Unchecked += self._on_criteria
                 if is_custom:
@@ -771,8 +851,8 @@ try:
     cfg = _load_config()
     c_str = cfg.get('criteria')
     if c_str:
-        saved_criteria = [x for x in str(c_str).split(',') if x]
-    saved_scope = str(cfg.get('scope', 'active_view'))
+        saved_criteria = [x for x in _to_text(c_str).split(',') if x]
+    saved_scope = _to_text(cfg.get('scope', 'active_view'))
 except:
     pass
 
@@ -792,13 +872,14 @@ if shift_pressed or not saved_criteria:
     if saved_criteria:
         win.RadioProject.IsChecked    = (saved_scope == 'project')
         win.RadioActiveView.IsChecked = (saved_scope == 'active_view')
-        win._batch_checks(saved_criteria)
+        win._batch_checks(_effective_criteria(elem, saved_criteria, include_standard=True))
     win.ShowDialog()
 else:
     cat_id  = elem.Category.Id if elem.Category else None
+    effective_criteria = _effective_criteria(elem, saved_criteria, include_standard=True)
     with forms.ProgressBar(title=u"Smart Select Similar...", cancellable=False) as pb:
         pb.update_progress(0, 1)
-        matches = filter_similar(tgt_doc, elem, saved_criteria, saved_scope, cat_id)
+        matches = filter_similar(tgt_doc, elem, effective_criteria, saved_scope, cat_id)
         pb.update_progress(1, 1)
     if matches:
         if is_linked:

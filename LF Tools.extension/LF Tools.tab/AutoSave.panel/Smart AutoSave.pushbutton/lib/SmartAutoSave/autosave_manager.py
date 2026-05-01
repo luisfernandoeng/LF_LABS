@@ -4,6 +4,7 @@ import io
 import time
 import datetime
 import clr
+import ctypes
 from System import AppDomain
 clr.AddReference('PresentationFramework')
 clr.AddReference('WindowsBase')
@@ -18,6 +19,7 @@ import SmartAutoSave.countdown_bar as countdown_bar
 
 _APPDOMAIN_TIMER_KEY = "LFTools_AutoSaveTimer"
 _RETRY_DELAY_SECONDS = 30
+_USER_IDLE_SECONDS_BEFORE_SAVE = 8
 
 
 class AutoSaveManager(object):
@@ -102,6 +104,12 @@ class AutoSaveManager(object):
             return
         if self._countdown_timer is not None:
             return  # já está em countdown
+        if not self._is_revit_available_for_autosave():
+            self.log(u"Revit minimizado ou fora de foco. AutoSave adiado.")
+            return
+        if self._is_user_active():
+            self.log(u"Usuario ativo no Revit. AutoSave adiado.")
+            return
         self._start_countdown()
 
     # ------------------------------------------------------------------ #
@@ -115,7 +123,48 @@ class AutoSaveManager(object):
         except:
             return None
 
+    def _is_revit_available_for_autosave(self):
+        hwnd = self._get_hwnd()
+        if hwnd is None:
+            return False
+        try:
+            if ctypes.windll.user32.IsIconic(int(hwnd)):
+                return False
+            foreground = ctypes.windll.user32.GetForegroundWindow()
+            if int(foreground) != int(hwnd):
+                return False
+        except:
+            pass
+        return True
+
+    def _get_idle_seconds(self):
+        class LASTINPUTINFO(ctypes.Structure):
+            _fields_ = [
+                ('cbSize', ctypes.c_uint),
+                ('dwTime', ctypes.c_uint),
+            ]
+
+        try:
+            info = LASTINPUTINFO()
+            info.cbSize = ctypes.sizeof(LASTINPUTINFO)
+            if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+                tick = ctypes.windll.kernel32.GetTickCount()
+                elapsed_ms = (int(tick) - int(info.dwTime)) & 0xFFFFFFFF
+                return float(elapsed_ms) / 1000.0
+        except:
+            pass
+        return None
+
+    def _is_user_active(self):
+        idle_seconds = self._get_idle_seconds()
+        if idle_seconds is None:
+            return False
+        return idle_seconds < _USER_IDLE_SECONDS_BEFORE_SAVE
+
     def _start_countdown(self):
+        if not self._is_revit_available_for_autosave() or self._is_user_active():
+            return
+
         secs = config.get("countdown_seconds", 5)
         if secs <= 0:
             self.save_event.Raise()
@@ -131,6 +180,12 @@ class AutoSaveManager(object):
         self._countdown_timer.Start()
 
     def _on_countdown_tick(self, sender, args):
+        if not self._is_revit_available_for_autosave() or self._is_user_active():
+            self._cancel_countdown()
+            self.schedule_retry()
+            self.log(u"AutoSave adiado durante countdown.")
+            return
+
         self._countdown_remaining -= 1
         if self._countdown_remaining <= 0:
             sender.Stop()
@@ -216,7 +271,10 @@ class AutoSaveManager(object):
         sender.Stop()
         self._retry_timer = None
         if not self.is_paused and config.get("enabled"):
-            self.save_event.Raise()
+            if self._is_revit_available_for_autosave() and not self._is_user_active():
+                self.save_event.Raise()
+            else:
+                self.schedule_retry()
 
     def _cancel_retry(self):
         if self._retry_timer:
@@ -341,6 +399,10 @@ class AutoSaveHandler(IExternalEventHandler):
     def _is_safe_to_save(self, doc):
         if not config.get("wait_safe_state"):
             return True
+        if not self.manager._is_revit_available_for_autosave():
+            return False
+        if self.manager._is_user_active():
+            return False
         return not doc.IsModifiable
 
     def _is_cloud_model(self, doc):

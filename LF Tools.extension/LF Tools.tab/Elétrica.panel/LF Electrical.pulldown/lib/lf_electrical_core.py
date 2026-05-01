@@ -426,13 +426,23 @@ def is_element_connected_to_panel(elem):
 def _find_matching_dist_sys(target_voltage):
     """Find ElementId of DistributionSysType whose voltage range covers target_voltage (Volts)."""
     v_internal = float(target_voltage) * 10.7639104167
-    dbg.step('  Buscando sistema para {:.1f}V'.format(target_voltage))
+    dbg.step('  Buscando sistema para {:.1f}V'.format(float(target_voltage)))
+
+    voltage_bips = []
+    for bip_name in ["RBS_ELEC_DISTRIBUTION_SYS_VOLTAGE_L_G_PARAM",
+                     "RBS_ELEC_DISTRIBUTION_SYS_VOLTAGE_L_L_PARAM"]:
+        try:
+            voltage_bips.append(getattr(BuiltInParameter, bip_name))
+        except Exception:
+            dbg.step('  BuiltInParameter indisponivel: {}'.format(bip_name))
+    if not voltage_bips:
+        dbg.warn('  Parametros de tensao do sistema indisponiveis nesta versao do Revit')
+        return None
     
     for s in FilteredElementCollector(doc).OfClass(DistributionSysType).ToElements():
         # RBS_ELEC_DISTRIBUTION_SYS_VOLTAGE_L_G_PARAM (Fase-Neutro)
         # RBS_ELEC_DISTRIBUTION_SYS_VOLTAGE_L_L_PARAM (Fase-Fase)
-        for bip in [BuiltInParameter.RBS_ELEC_DISTRIBUTION_SYS_VOLTAGE_L_G_PARAM,
-                    BuiltInParameter.RBS_ELEC_DISTRIBUTION_SYS_VOLTAGE_L_L_PARAM]:
+        for bip in voltage_bips:
             vp = s.get_Parameter(bip)
             if not vp or not vp.HasValue: continue
             
@@ -504,6 +514,28 @@ def configure_element_for_voltage(elem, voltage, poles):
 def ensure_element_is_free(elem):
     dbg.enter('ensure_element_is_free', Id=elem.Id.IntegerValue)
     try:
+        systems_to_delete = set()
+
+        try:
+            if hasattr(elem, "MEPModel") and elem.MEPModel:
+                for prop in ["AssignedElectricalSystems", "ElectricalSystems", "GetElectricalSystems"]:
+                    try:
+                        systems = None
+                        if prop == "GetElectricalSystems":
+                            if hasattr(elem.MEPModel, "GetElectricalSystems"):
+                                systems = elem.MEPModel.GetElectricalSystems()
+                        else:
+                            systems = getattr(elem.MEPModel, prop, None)
+                        if systems:
+                            for sys_obj in systems:
+                                if sys_obj:
+                                    systems_to_delete.add(sys_obj.Id)
+                                    dbg.step('Sistema por MEPModel.{} Id={}'.format(prop, sys_obj.Id.IntegerValue))
+                    except Exception as ex:
+                        dbg.warn('Falha ao ler MEPModel.{}: {}'.format(prop, ex))
+        except Exception as ex:
+            dbg.warn('Falha ao ler sistemas do MEPModel: {}'.format(ex))
+
         mgr = None
         if hasattr(elem, "MEPModel") and elem.MEPModel:
             mgr = getattr(elem.MEPModel, "ConnectorManager", None)
@@ -515,36 +547,47 @@ def ensure_element_is_free(elem):
             except Exception:
                 all_conns = []
             dbg.step('Conectores: {}'.format(len(all_conns)))
-            systems_to_delete = set()
             for i, c in enumerate(all_conns):
                 try:
                     sys_obj = None
                     sys_id_str = "None"
                     try:
                         sys_obj = c.MEPSystem
-                        sys_id_str = str(sys_obj.Id.IntegerValue) if sys_obj else "None"
+                        if sys_obj:
+                            sys_id_str = str(sys_obj.Id.IntegerValue)
+                            systems_to_delete.add(sys_obj.Id)
                     except Exception:
                         sys_id_str = "ERRO"
                     dbg.step('  [{}] domain={} connected={} MEPSystem={}'.format(
                         i, c.Domain, c.IsConnected, sys_id_str))
-                    if c.IsConnected and sys_obj:
-                        systems_to_delete.add(sys_obj.Id)
+                    
+                    try:
+                        if c.IsConnected and c.AllRefs:
+                            for ref in c.AllRefs:
+                                if ref.Owner and hasattr(ref.Owner, "Category") and ref.Owner.Category:
+                                    if ref.Owner.Category.Id.IntegerValue == int(BuiltInCategory.OST_ElectricalCircuit):
+                                        systems_to_delete.add(ref.Owner.Id)
+                                        dbg.step('  Encontrado sistema via AllRefs Id={}'.format(ref.Owner.Id.IntegerValue))
+                    except Exception as ex:
+                        dbg.warn('  [{}] erro ao ler AllRefs: {}'.format(i, ex))
+
                 except Exception as ex:
                     dbg.warn('  [{}] erro ao ler conector: {}'.format(i, ex))
-            if systems_to_delete:
-                for sys_id in systems_to_delete:
-                    dbg.step('Deletando sistema Id={}'.format(sys_id.IntegerValue))
-                    try:
-                        doc.Delete(sys_id)
-                    except Exception as del_ex:
-                        dbg.warn('Falha ao deletar sistema {}: {}'.format(sys_id.IntegerValue, del_ex))
-                dbg.ok('Removidos {} sistema(s)'.format(len(systems_to_delete)))
-                dbg.exit('ensure_element_is_free', True)
-                return True
-            else:
-                dbg.step('Nenhum sistema eletrico conectado — elemento livre')
         else:
             dbg.step('Sem ConnectorManager')
+
+        if systems_to_delete:
+            for sys_id in systems_to_delete:
+                dbg.step('Deletando sistema Id={}'.format(sys_id.IntegerValue))
+                try:
+                    doc.Delete(sys_id)
+                except Exception as del_ex:
+                    dbg.warn('Falha ao deletar sistema {}: {}'.format(sys_id.IntegerValue, del_ex))
+            dbg.ok('Removidos {} sistema(s)'.format(len(systems_to_delete)))
+            dbg.exit('ensure_element_is_free', True)
+            return True
+
+        dbg.step('Nenhum sistema eletrico conectado - elemento livre')
     except Exception as ex:
         dbg.fail('ensure_element_is_free: {}'.format(ex))
     dbg.exit('ensure_element_is_free', False)
@@ -861,7 +904,11 @@ def _get_compatible_systems(panel):
     compatible = {}
     for name, sys in all_systems.items():
         # Lógica de Fases
-        sys_phase_p = sys.get_Parameter(BuiltInParameter.RBS_ELEC_DISTRIBUTION_SYS_PHASE_PARAM)
+        try:
+            phase_bip = getattr(BuiltInParameter, "RBS_ELEC_DISTRIBUTION_SYS_PHASE_PARAM")
+        except Exception:
+            phase_bip = None
+        sys_phase_p = sys.get_Parameter(phase_bip) if phase_bip is not None else None
         sys_phase = sys_phase_p.AsInteger() if sys_phase_p else 2
         
         # Monofásico não aceita painel de 3 fases
@@ -871,10 +918,16 @@ def _get_compatible_systems(panel):
             
         # Lógica de Tensão
         v_ok = False
-        ll_param = sys.get_Parameter(BuiltInParameter.RBS_ELEC_DISTRIBUTION_SYS_VOLTAGE_L_L_PARAM)
-        lg_param = sys.get_Parameter(BuiltInParameter.RBS_ELEC_DISTRIBUTION_SYS_VOLTAGE_L_G_PARAM)
+        voltage_params = []
+        for bip_name in ["RBS_ELEC_DISTRIBUTION_SYS_VOLTAGE_L_L_PARAM",
+                         "RBS_ELEC_DISTRIBUTION_SYS_VOLTAGE_L_G_PARAM"]:
+            try:
+                bip = getattr(BuiltInParameter, bip_name)
+                voltage_params.append(sys.get_Parameter(bip))
+            except Exception:
+                pass
         
-        for vparam in [ll_param, lg_param]:
+        for vparam in voltage_params:
             if vparam and vparam.AsElementId() != ElementId.InvalidElementId:
                 vtype = doc.GetElement(vparam.AsElementId())
                 if vtype:

@@ -240,7 +240,7 @@ def show_settings():
     xaml_path = os.path.join(__commandpath__, "settings.xaml")
     if not os.path.exists(xaml_path):
         forms.alert("Arquivo settings.xaml não encontrado!", title="Erro")
-        return False
+        return
     win = SettingsWindow(settings)
     win.show()
 
@@ -300,7 +300,7 @@ def get_default_conduit_type(doc):
 def copy_conduit_parameters(source, target):
     """Copia parâmetros de instância (texto e inteiros) do source para o target."""
     if not source or not target:
-        return False
+        return
     for p_src in source.Parameters:
         if not p_src.HasValue or p_src.IsReadOnly:
             continue
@@ -590,12 +590,8 @@ def _connect_endpoint(doc, conduit, pt_near, target_conn, label="endpoint"):
     Fallback: ConnectTo lógico sem curva.
     Tolerância: 0.2 ft (~6 cm).
     """
-    if target_conn is None:
-        dbg.debug("{}: conector destino inexistente".format(label))
-        return False
-    if target_conn.IsConnected:
-        dbg.debug("{}: conector destino ja estava conectado".format(label))
-        return True
+    if target_conn is None or target_conn.IsConnected:
+        return
     # Achar o conector livre mais próximo de pt_near
     c_near = None
     best_dist = float('inf')
@@ -672,23 +668,6 @@ def _connect_endpoint(doc, conduit, pt_near, target_conn, label="endpoint"):
         dbg.debug("{}: Falha Fatal, nenhuma conexão possível: {}".format(label, e))
 
 
-def _connect_endpoint_checked(doc, conduit, pt_near, target_conn, label="endpoint"):
-    _connect_endpoint(doc, conduit, pt_near, target_conn, label)
-    try:
-        doc.Regenerate()
-    except Exception:
-        pass
-    try:
-        ok = bool(target_conn and target_conn.IsConnected)
-    except Exception:
-        ok = False
-    if ok:
-        dbg.debug("{}: conexao confirmada apos tentativa".format(label))
-    else:
-        dbg.warn("{}: conexao NAO confirmada apos tentativa".format(label))
-    return ok
-
-
 def draw_conduit_and_connect(doc, conduit_type_id, p_start, p_end, level_id, diameter,
                               prev_cond=None, last_ref_conduit=None):
     """Cria trecho de eletroduto e tenta conectar ao anterior."""
@@ -732,13 +711,6 @@ def draw_conduit_and_connect(doc, conduit_type_id, p_start, p_end, level_id, dia
                     copy_conduit_parameters(last_ref_conduit, fitting)
             except Exception as e:
                 dbg.debug("draw_conduit fitting: {}".format(e))
-            try:
-                if c1.IsConnected and c2.IsConnected:
-                    dbg.debug("draw_conduit junta confirmada")
-                else:
-                    dbg.warn("draw_conduit junta NAO confirmada em p_start")
-            except Exception:
-                pass
         else:
             dbg.debug("draw_conduit: conectores não encontrados em p_start")
     return c_new
@@ -1421,6 +1393,7 @@ def _execute_cabletray_connection(doc, settings, cable_tray_el, cable_tray_click
         union_diam = _connector_diameter(union_conn)
         dest_diam = _connector_diameter(conn_other)
         require_dest_connection = True
+        dest_segment_diam = diameter
         other_name = __get_name__(other_el)
         try:
             if hasattr(other_el, "Symbol") and other_el.Symbol:
@@ -1431,6 +1404,7 @@ def _execute_cabletray_connection(doc, settings, cable_tray_el, cable_tray_click
             dbg.warn("Diametro do eletroduto ajustado para casar com o conector da uniao: {:.1f} -> {:.1f} mm".format(
                 diameter * 304.8, union_diam * 304.8))
             diameter = union_diam
+            dest_segment_diam = diameter
         if dest_diam and abs(diameter - dest_diam) > 0.001:
             require_dest_connection = False
             dbg.warn("Conector destino incompatível em '{}': destino {:.1f} mm x união/eletroduto {:.1f} mm.".format(
@@ -1486,8 +1460,11 @@ def _execute_cabletray_connection(doc, settings, cable_tray_el, cable_tray_click
             for idx, (pa, pb) in enumerate(draw_path):
                 if pa.DistanceTo(pb) < 0.05:
                     continue
+                seg_diam = diameter
+                if len(draw_path) > 1 and idx == len(draw_path) - 1:
+                    seg_diam = dest_segment_diam
                 c = draw_conduit_and_connect(
-                    doc, conduit_type_id, pa, pb, level_id, diameter, last, last_ref_conduit
+                    doc, conduit_type_id, pa, pb, level_id, seg_diam, last, last_ref_conduit
                 )
                 if c:
                     conds.append(c)
@@ -1525,9 +1502,9 @@ def _execute_cabletray_connection(doc, settings, cable_tray_el, cable_tray_click
 
         if created_conds:
             if union_conn:
-                _connect_endpoint_checked(doc, created_conds[0], pt_start, union_conn, "ponta-union")
+                _connect_endpoint(doc, created_conds[0], pt_start, union_conn, "ponta-union")
             if require_dest_connection:
-                _connect_endpoint_checked(doc, created_conds[-1], pt_dest, conn_other, "ponta-destino")
+                _connect_endpoint(doc, created_conds[-1], pt_dest, conn_other, "ponta-destino")
             else:
                 dbg.warn("ponta-destino: conexão ignorada por incompatibilidade de diâmetro em '{}'.".format(other_name))
 

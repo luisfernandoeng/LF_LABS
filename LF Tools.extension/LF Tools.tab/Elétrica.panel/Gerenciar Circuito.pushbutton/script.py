@@ -177,6 +177,20 @@ def _rebuild_circuit(circuit, desired_elements):
     try: old_poles = circuit.PolesNumber
     except Exception: pass
 
+    old_voltage_internal = _get_circuit_voltage_internal(circuit, desired_elements)
+    old_dist_sys_id = _get_circuit_dist_system_id(circuit)
+    if old_voltage_internal and old_voltage_internal > 0:
+        for elem in desired_elements:
+            try:
+                _configure_element_for_circuit(elem, old_voltage_internal,
+                                               old_poles, old_dist_sys_id)
+            except Exception:
+                pass
+        try:
+            doc.Regenerate()
+        except Exception:
+            pass
+
     # ── Monta IList[ElementId] — esta versão do Revit exige IList, não ConnectorSet ──
     id_list = CsList[ElementId]()
     for elem in desired_elements:
@@ -213,7 +227,23 @@ def _rebuild_circuit(circuit, desired_elements):
 
     try:
         new_circuit.PolesNumber = old_poles
-    except Exception: pass
+    except Exception:
+        try:
+            _set_param_value(
+                new_circuit.get_Parameter(BuiltInParameter.RBS_ELEC_NUMBER_OF_POLES),
+                int(old_poles)
+            )
+        except Exception:
+            pass
+
+    if old_voltage_internal and old_voltage_internal > 0:
+        try:
+            _set_param_value(
+                new_circuit.get_Parameter(BuiltInParameter.RBS_ELEC_VOLTAGE),
+                old_voltage_internal
+            )
+        except Exception:
+            pass
 
     doc.Regenerate()
 
@@ -231,6 +261,235 @@ def _rebuild_circuit(circuit, desired_elements):
 #  ADD / REMOVE via recriação
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _find_matching_dist_sys(target_voltage_volts):
+    """Encontra o DistributionSysType cujo range de tensão cobre target_voltage_volts."""
+    v_internal = float(target_voltage_volts) * 10.7639104167
+    for s in FilteredElementCollector(doc).OfClass(DistributionSysType).ToElements():
+        for bip in [BuiltInParameter.RBS_ELEC_DISTRIBUTION_SYS_VOLTAGE_L_G_PARAM,
+                    BuiltInParameter.RBS_ELEC_DISTRIBUTION_SYS_VOLTAGE_L_L_PARAM]:
+            vp = s.get_Parameter(bip)
+            if not vp or not vp.HasValue:
+                continue
+            vid = vp.AsElementId()
+            if vid == ElementId.InvalidElementId:
+                continue
+            vtype = doc.GetElement(vid)
+            if not vtype:
+                continue
+            min_p = vtype.get_Parameter(BuiltInParameter.RBS_ELEC_VOLTAGE_MIN_PARAM)
+            max_p = vtype.get_Parameter(BuiltInParameter.RBS_ELEC_VOLTAGE_MAX_PARAM)
+            if min_p and max_p:
+                if (min_p.AsDouble() - 55) <= v_internal <= (max_p.AsDouble() + 55):
+                    return s.Id
+    return None
+
+
+def _set_param_value(p, value=None, value_string=None):
+    """Seta um parametro respeitando StorageType. Retorna True se conseguiu."""
+    if p is None or p.IsReadOnly:
+        return False
+    try:
+        if value_string:
+            try:
+                if p.SetValueString(value_string):
+                    return True
+            except Exception:
+                pass
+        st = p.StorageType
+        if st == StorageType.Integer:
+            p.Set(int(round(float(value))))
+            return True
+        if st == StorageType.Double:
+            p.Set(float(value))
+            return True
+        if st == StorageType.ElementId:
+            if isinstance(value, ElementId):
+                p.Set(value)
+                return True
+            p.Set(ElementId(int(value)))
+            return True
+        if st == StorageType.String:
+            p.Set(str(value))
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _get_circuit_voltage_internal(circuit, fallback_elems=None):
+    """Le a tensao do circuito em unidades internas do Revit."""
+    try:
+        param_v = circuit.get_Parameter(BuiltInParameter.RBS_ELEC_VOLTAGE)
+        if param_v and param_v.HasValue:
+            val = param_v.AsDouble()
+            if val and val > 0:
+                return val
+    except Exception:
+        pass
+    try:
+        val = circuit.Voltage
+        if val and val > 0:
+            return val
+    except Exception:
+        pass
+    for existing_elem in (fallback_elems or []):
+        for c in _elec_connectors(existing_elem):
+            try:
+                val = c.Voltage
+                if val and val > 0:
+                    return val
+            except Exception:
+                pass
+    return None
+
+
+def _get_circuit_dist_system_id(circuit):
+    """Tenta capturar o sistema de distribuicao associado ao circuito/painel."""
+    for attr in ("DistributionSystem", "DistributionSysType"):
+        try:
+            dist = getattr(circuit, attr, None)
+            if dist and hasattr(dist, "Id"):
+                return dist.Id
+        except Exception:
+            pass
+    try:
+        panel = circuit.BaseEquipment
+    except Exception:
+        panel = None
+    if panel:
+        for name in [u"Sistema de distribuição", u"Distribution System",
+                     u"Sistema de Distribuição"]:
+            try:
+                p = panel.LookupParameter(name)
+                if p and p.HasValue and p.StorageType == StorageType.ElementId:
+                    eid = p.AsElementId()
+                    if eid != ElementId.InvalidElementId:
+                        return eid
+            except Exception:
+                pass
+    return None
+
+
+def _configure_element_for_circuit(elem, voltage_internal, poles, dist_sys_id=None):
+    """
+    Força o conector MEP do elemento a ter a tensão e polos do circuito.
+    voltage_internal = tensão em unidades internas do Revit (não Volts).
+    poles = número de polos (1, 2, 3).
+    
+    Usa 3 métodos em cascata:
+      1. BuiltInParameters no próprio elemento
+      2. Propriedades diretas do Connector (Voltage / Poles)
+      3. Atribuição do DistributionSysType correto
+    + Fallback em parâmetros customizados de família
+    """
+    voltage_volts = voltage_internal / 10.7639104167  # converter para Volts
+
+    # ── Método 1: BuiltInParameters ──────────────────────────────────────
+    try:
+        _set_param_value(elem.get_Parameter(BuiltInParameter.RBS_ELEC_VOLTAGE),
+                         voltage_internal,
+                         str(int(round(voltage_volts))) + " V")
+    except Exception:
+        pass
+    try:
+        _set_param_value(elem.get_Parameter(BuiltInParameter.RBS_ELEC_NUMBER_OF_POLES),
+                         int(poles))
+    except Exception:
+        pass
+
+    # ── Método 2: Propriedades diretas do Connector ──────────────────────
+    try:
+        mgr = None
+        mep = getattr(elem, 'MEPModel', None)
+        if mep:
+            mgr = getattr(mep, 'ConnectorManager', None)
+        if not mgr:
+            mgr = getattr(elem, 'ConnectorManager', None)
+        if mgr:
+            for c in mgr.Connectors:
+                if c.Domain == Domain.DomainElectrical:
+                    try:
+                        c.Voltage = voltage_internal
+                    except Exception:
+                        pass
+                    try:
+                        c.Poles = poles
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    # ── Método 3: DistributionSysType ────────────────────────────────────
+    try:
+        dist_id = dist_sys_id or _find_matching_dist_sys(voltage_volts)
+        if dist_id:
+            for name in [u"Sistema de distribuição", u"Distribution System",
+                         u"Sistema de Distribuição"]:
+                try:
+                    p = elem.LookupParameter(name)
+                    if _set_param_value(p, dist_id):
+                        break
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # ── Fallback: parâmetros customizados de família ─────────────────────
+    p_names_poles = [u"Pólos", u"Polos", u"Número de Polos", u"Poles",
+                     u"Número de polos", u"Fases", u"N\xb0 de Fases",
+                     u"N\xba de Fases", u"N\xfamero de Fases",
+                     u"N\xfamero de polos", u"Number of Poles"]
+    p_names_volt  = [u"Tensão", u"Tensão Numérica", u"Voltagem", u"Voltage",
+                     u"Tensão (V)"]
+
+    # Polos — instância
+    for p_name in p_names_poles:
+        try:
+            p = elem.LookupParameter(p_name)
+            if _set_param_value(p, int(poles)):
+                break
+        except Exception:
+            pass
+
+    # Tensão — instância (usando SetValueString para Volts)
+    for p_name in p_names_volt:
+        try:
+            p = elem.LookupParameter(p_name)
+            if p and not p.IsReadOnly:
+                # Tenta com ValueString primeiro (ex: "220 V")
+                if _set_param_value(p, voltage_internal,
+                                    str(int(round(voltage_volts))) + " V"):
+                    break
+                if _set_param_value(p, voltage_internal,
+                                    str(int(round(voltage_volts)))):
+                    break
+        except Exception:
+            pass
+
+    # Tenta também no Type (alguns families guardam tensão no tipo)
+    try:
+        elem_type = doc.GetElement(elem.GetTypeId()) if hasattr(elem, "GetTypeId") else None
+        if elem_type:
+            for p_name in p_names_poles:
+                try:
+                    p = elem_type.LookupParameter(p_name)
+                    if _set_param_value(p, int(poles)):
+                        break
+                except Exception:
+                    pass
+            for p_name in p_names_volt:
+                try:
+                    p = elem_type.LookupParameter(p_name)
+                    if p and not p.IsReadOnly:
+                        if _set_param_value(p, voltage_internal,
+                                            str(int(round(voltage_volts))) + " V"):
+                            break
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 def _add_elements(circuit, elems_to_add):
     """
     Adiciona uma lista de elementos ao circuito de uma vez (1 rebuild só).
@@ -247,62 +506,58 @@ def _add_elements(circuit, elems_to_add):
         return circuit, True, u"todos já eram membros"
 
     # ── ADAPTAÇÃO DOS NOVOS ELEMENTOS AO CIRCUITO ───────────────────────
-    # O novo elemento deve se adequar ao circuito existente, e não o contrário.
+    # O novo elemento DEVE ter conector configurado com a mesma tensão/polos
+    # do circuito ANTES do rebuild, senão o Revit usa o valor pré-configurado
+    # da família (ex: 127V) e quebra o circuito todo.
     try:
         old_poles = 1
-        try: old_poles = circuit.PolesNumber
-        except Exception: pass
-        
-        old_voltage_val = None
+        try:
+            old_poles = circuit.PolesNumber
+        except Exception:
+            pass
+
+        # Tensão em unidades internas do Revit
+        old_voltage_internal = None
         try:
             param_v = circuit.get_Parameter(BuiltInParameter.RBS_ELEC_VOLTAGE)
-            if param_v: old_voltage_val = param_v.AsDouble()
-        except Exception: pass
+            if param_v and param_v.HasValue:
+                old_voltage_internal = param_v.AsDouble()
+        except Exception:
+            pass
 
-        p_names_poles = ["Pólos", "Polos", "Número de Polos", "Poles", "Número de polos", "Fases"]
-        p_names_volt  = ["Tensão", "Tensão Numérica", "Voltagem", "Voltage"]
-
-        for elem in novos:
-            # Tenta adaptar o número de polos
-            p_poles = None
-            for p_name in p_names_poles:
-                p = elem.LookupParameter(p_name)
-                if p and not p.IsReadOnly:
-                    p_poles = p
-                    break
-            if p_poles:
-                try: p_poles.Set(old_poles)
-                except Exception: pass
-            else:
-                elem_type = doc.GetElement(elem.GetTypeId()) if hasattr(elem, "GetTypeId") else None
-                if elem_type:
-                    for p_name in p_names_poles:
-                        p = elem_type.LookupParameter(p_name)
-                        if p and not p.IsReadOnly:
-                            try: p.Set(old_poles)
-                            except Exception: pass
-                            break
-
-            # Tenta adaptar a tensão
-            if old_voltage_val is not None:
-                p_volt = None
-                for p_name in p_names_volt:
-                    p = elem.LookupParameter(p_name)
-                    if p and not p.IsReadOnly:
-                        p_volt = p
+        # Fallback: ler tensão diretamente do conector do primeiro membro
+        if old_voltage_internal is None or old_voltage_internal <= 0:
+            for existing_elem in current_elems:
+                try:
+                    cm = None
+                    mep = getattr(existing_elem, 'MEPModel', None)
+                    if mep:
+                        cm = getattr(mep, 'ConnectorManager', None)
+                    if cm:
+                        for c in cm.Connectors:
+                            if c.Domain == Domain.DomainElectrical:
+                                try:
+                                    v = c.Voltage
+                                    if v and v > 0:
+                                        old_voltage_internal = v
+                                        break
+                                except Exception:
+                                    pass
+                    if old_voltage_internal and old_voltage_internal > 0:
                         break
-                if p_volt:
-                    try: p_volt.Set(old_voltage_val)
-                    except Exception: pass
-                else:
-                    elem_type = doc.GetElement(elem.GetTypeId()) if hasattr(elem, "GetTypeId") else None
-                    if elem_type:
-                        for p_name in p_names_volt:
-                            p = elem_type.LookupParameter(p_name)
-                            if p and not p.IsReadOnly:
-                                try: p.Set(old_voltage_val)
-                                except Exception: pass
-                                break
+                except Exception:
+                    pass
+
+        old_voltage_internal = _get_circuit_voltage_internal(circuit, current_elems) or old_voltage_internal
+        old_dist_sys_id = _get_circuit_dist_system_id(circuit)
+
+        if old_voltage_internal and old_voltage_internal > 0:
+            doc.Regenerate()
+            for elem in novos:
+                _configure_element_for_circuit(elem, old_voltage_internal,
+                                               old_poles, old_dist_sys_id)
+            doc.Regenerate()
+
     except Exception:
         pass
     # ─────────────────────────────────────────────────────────────────────
