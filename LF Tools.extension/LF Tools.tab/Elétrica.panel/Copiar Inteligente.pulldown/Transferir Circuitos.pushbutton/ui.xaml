@@ -107,7 +107,8 @@
         <Grid Grid.Row="2" Margin="0,0,0,4">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="95"/>
+                <ColumnDefinition Width="90"/>
+                <ColumnDefinition Width="80"/>
             </Grid.ColumnDefinitions>
             <StackPanel Orientation="Horizontal" Grid.Column="0">
                 <Button x:Name="btn_SelectAll"  Content="Todos"  Style="{StaticResource BtnSmall}"/>
@@ -116,7 +117,10 @@
                            VerticalAlignment="Center" Margin="6,0,0,0"
                            FontStyle="Italic" Foreground="#999" FontSize="12"/>
             </StackPanel>
-            <TextBlock Text="Nº Polos" Grid.Column="1"
+            <TextBlock Text="Tensão" Grid.Column="1"
+                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                       FontWeight="SemiBold" Foreground="#0078D7" FontSize="12"/>
+            <TextBlock Text="Nº Polos" Grid.Column="2"
                        HorizontalAlignment="Center" VerticalAlignment="Center"
                        FontWeight="SemiBold" Foreground="#0078D7" FontSize="12"/>
         </Grid>
@@ -142,9 +146,12 @@
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
 
-            <TextBlock x:Name="lbl_Info" Text="Selecione o quadro de origem."
-                       VerticalAlignment="Center" FontStyle="Italic"
-                       Foreground="#0078D7" TextWrapping="Wrap"/>
+            <StackPanel Grid.Column="0" Orientation="Vertical" VerticalAlignment="Center">
+                <TextBlock x:Name="lbl_Info" Text="Selecione o quadro de origem."
+                           FontStyle="Italic" Foreground="#0078D7" TextWrapping="Wrap"/>
+                <CheckBox x:Name="cb_Debug" Content="Ativar Debug Log detalhado" 
+                          Foreground="#777" FontSize="11" Margin="0,4,0,0"/>
+            </StackPanel>
 
             <StackPanel Orientation="Horizontal" Grid.Column="1" HorizontalAlignment="Right">
                 <Button x:Name="btn_Cancel"   Content="Cancelar"

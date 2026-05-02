@@ -20,6 +20,7 @@ clr.AddReference("RevitAPIUI")
 clr.AddReference("System")
 
 import System
+from collections import OrderedDict
 from Autodesk.Revit.DB import *
 from Autodesk.Revit.DB.Electrical import *
 from Autodesk.Revit.UI import *
@@ -63,6 +64,34 @@ def _elec_connectors(elem):
 
 def _has_elec_conn(elem):
     return len(_elec_connectors(elem)) > 0
+
+
+def _wait_for_launcher_click():
+    """Evita que o mouse-up que abriu o pushbutton feche o menu do plugin."""
+    try:
+        System.Threading.Thread.Sleep(250)
+    except Exception:
+        pass
+
+
+def _show_manage_action(circ_num, panel_info, member_count):
+    """Mostra o menu no mesmo padrao estavel usado pelo plugin Dados."""
+    _wait_for_launcher_click()
+    status = u"Circuito: {}{} | {} membro(s)".format(
+        circ_num, panel_info, member_count
+    )
+    opcoes = OrderedDict([
+        (u"1. Adicionar elemento", u"Adicionar elemento"),
+        (u"2. Remover elemento", u"Remover elemento"),
+        (u"3. Deletar circuito", u"Deletar circuito"),
+        (u"4. Sair", u"Sair"),
+    ])
+    escolha = forms.CommandSwitchWindow.show(
+        opcoes.keys(),
+        message=status,
+        title=u"Gerenciar Circuito - " + status
+    )
+    return opcoes.get(escolha) if escolha else None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -164,6 +193,8 @@ def _rebuild_circuit(circuit, desired_elements):
     panel = None
     try: panel = circuit.BaseEquipment
     except Exception: pass
+    old_param_values = _snapshot_writable_params(circuit)
+    old_load_name = _get_circuit_load_name(circuit)
 
     # Tensão: ElementId que aponta para a definição de VoltageType
     old_voltage_id = ElementId.InvalidElementId
@@ -217,6 +248,9 @@ def _rebuild_circuit(circuit, desired_elements):
     if new_circuit is None:
         return None, u"ElectricalSystem.Create retornou None"
 
+    _restore_params_by_name(new_circuit, old_param_values)
+    _set_circuit_load_name(new_circuit, old_load_name)
+
     # ── Restaura tensão e polos do circuito original ─────────────────────
     if old_voltage_id != ElementId.InvalidElementId:
         try:
@@ -253,6 +287,10 @@ def _rebuild_circuit(circuit, desired_elements):
             new_circuit.SelectPanel(panel)
             doc.Regenerate()
         except Exception: pass
+
+    _restore_params_by_name(new_circuit, old_param_values)
+    _set_circuit_load_name(new_circuit, old_load_name)
+    doc.Regenerate()
 
     return new_circuit, u""
 
@@ -314,6 +352,115 @@ def _set_param_value(p, value=None, value_string=None):
     except Exception:
         pass
     return False
+
+
+def _snapshot_writable_params(elem):
+    """Captura parametros editaveis para restaurar apos recriar o circuito."""
+    values = {}
+    try:
+        for p in elem.Parameters:
+            try:
+                if p is None or p.IsReadOnly or not p.HasValue:
+                    continue
+                name = p.Definition.Name
+                if not name or name in values:
+                    continue
+                st = p.StorageType
+                value = None
+                value_string = None
+                if st == StorageType.Integer:
+                    value = p.AsInteger()
+                elif st == StorageType.Double:
+                    value = p.AsDouble()
+                    try:
+                        value_string = p.AsValueString()
+                    except Exception:
+                        value_string = None
+                elif st == StorageType.ElementId:
+                    value = p.AsElementId()
+                    if value == ElementId.InvalidElementId:
+                        continue
+                elif st == StorageType.String:
+                    value = p.AsString()
+                    if value is None:
+                        continue
+                else:
+                    continue
+                values[name] = (st, value, value_string)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return values
+
+
+def _restore_params_by_name(elem, values):
+    """Restaura parametros pelo nome quando o novo circuito expuser o mesmo campo."""
+    if not values:
+        return
+    try:
+        for name, data in values.items():
+            try:
+                st, value, value_string = data
+                candidates = []
+                p = elem.LookupParameter(name)
+                if p:
+                    candidates.append(p)
+                try:
+                    for param in elem.Parameters:
+                        if param and param.Definition.Name == name:
+                            candidates.append(param)
+                except Exception:
+                    pass
+                for p in candidates:
+                    if p is None or p.IsReadOnly or p.StorageType != st:
+                        continue
+                    if _set_param_value(p, value, value_string):
+                        break
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _get_circuit_load_name(circuit):
+    """Le o nome da carga do circuito por propriedade ou parametros localizados."""
+    try:
+        value = getattr(circuit, "LoadName", None)
+        if value:
+            return value
+    except Exception:
+        pass
+    for name in [u"Nome da carga", u"Nome da Carga", u"Load Name",
+                 u"Circuit Load Name", u"Nome da carga do circuito"]:
+        try:
+            p = circuit.LookupParameter(name)
+            if p and p.HasValue:
+                value = p.AsString()
+                if value:
+                    return value
+        except Exception:
+            pass
+    return None
+
+
+def _set_circuit_load_name(circuit, load_name):
+    """Restaura o nome da carga quando o Revit recalcula o circuito recriado."""
+    if not load_name:
+        return
+    try:
+        setattr(circuit, "LoadName", load_name)
+        return
+    except Exception:
+        pass
+    for name in [u"Nome da carga", u"Nome da Carga", u"Load Name",
+                 u"Circuit Load Name", u"Nome da carga do circuito"]:
+        try:
+            p = circuit.LookupParameter(name)
+            if _set_param_value(p, load_name):
+                return
+        except Exception:
+            pass
 
 
 def _get_circuit_voltage_internal(circuit, fallback_elems=None):
@@ -746,15 +893,7 @@ def manage_circuit():
                 if base: panel_info = u" | {}".format(base.Name)
             except Exception: pass
 
-            action = forms.CommandSwitchWindow.show(
-                [u"➕  Adicionar elemento",
-                 u"➖  Remover elemento",
-                 u"🗑️  Deletar circuito",
-                 u"✖  Sair"],
-                message=u"Circuito: {}{} | {} membro(s)".format(
-                    circ_num, panel_info, len(member_ids)),
-                title=u"Gerenciar Circuito"
-            )
+            action = _show_manage_action(circ_num, panel_info, len(member_ids))
 
             if not action or u"Sair" in action or u"✖" in action:
                 break

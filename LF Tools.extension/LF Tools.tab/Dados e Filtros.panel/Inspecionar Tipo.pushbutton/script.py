@@ -663,8 +663,10 @@ def analisar_circuito(circuito):
         escrever_log("Tensão (Voltage): {:.2f} V".format(circuito.Voltage))
         escrever_log("Carga Aparente (ApparentLoad): {:.2f} VA".format(circuito.ApparentLoad))
         escrever_log("Polos (PolesNumber): {}".format(circuito.PolesNumber))
-        if circuito.LoadClassification:
+        if hasattr(circuito, 'LoadClassification') and circuito.LoadClassification:
             escrever_log("Classificação de Carga: {}".format(circuito.LoadClassification.Name))
+        elif hasattr(circuito, 'LoadClassifications'):
+            escrever_log("Classificações de Carga: {}".format(circuito.LoadClassifications))
         escrever_log("Painel (PanelName): {}".format(circuito.PanelName))
         escrever_log("Disjuntor (Rating): {} A".format(circuito.Rating))
         comprimento_ft = circuito.Length

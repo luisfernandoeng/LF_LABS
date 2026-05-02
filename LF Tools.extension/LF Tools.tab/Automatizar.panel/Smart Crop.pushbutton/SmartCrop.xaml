@@ -405,10 +405,6 @@
                                   Content="Mostrar Annotation Crop"
                                   Style="{StaticResource ModernCheckBox}" IsChecked="False"
                                   Margin="0,3,0,12"/>
-
-                        <Button x:Name="Button_ApplyCopy"
-                                Content="Copiar para 0 Vistas"
-                                Style="{StaticResource PrimaryActionButton}"/>
                     </StackPanel>
                 </Border>
 
@@ -417,9 +413,19 @@
 
         <!-- ── Footer ────────────────────────────────────────────────── -->
         <Grid Grid.Row="4">
-            <Button x:Name="Button_Cancel" Content="Fechar"
-                    Style="{StaticResource SecondaryActionButton}"
-                    Width="90" HorizontalAlignment="Right"/>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <Button x:Name="Button_Cancel" Content="Cancelar"
+                        Style="{StaticResource SecondaryActionButton}"
+                        Width="90" Margin="0,0,10,0"/>
+                <Button x:Name="Button_ApplyCopy"
+                        Content="Copiar para 0 Vistas"
+                        Style="{StaticResource PrimaryActionButton}"
+                        Visibility="Collapsed"/>
+            </StackPanel>
         </Grid>
     </Grid>
 </Window>

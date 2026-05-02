@@ -83,6 +83,31 @@ EXTRA_INSTANCE_PARAMS = [
     "Código Planilha Custo",
 ]
 
+# Nomes comuns usados por familias de fabricante e parametros nativos/localizados.
+# O objetivo e preparar a familia criada antes do AddToCircuit, quando possivel.
+ELECTRICAL_PARAM_ALIASES = [
+    "Potência Aparente (VA)",
+    "Potência aparente",
+    "Apparent Load",
+    "Potência Ativa (W)",
+    "Potência real",
+    "Fator de Potência",
+    "Power Factor",
+    "Tipo de Carga",
+    "Classificação de carga",
+    "Load Classification",
+    "Tensão (V)",
+    "Tensão",
+    "Voltage",
+    "N° de Fases",
+    "Número de polos",
+    "Poles",
+    "Nome da carga",
+    "Load Name",
+    "Tipo de Sistema",
+    "Tipo de sistema",
+]
+
 # ═══════════════════════════════════════════════════════════════════════
 # FILTRO DE SELEÇÃO — Apenas FamilyInstance elétrico
 # ═══════════════════════════════════════════════════════════════════════
@@ -198,6 +223,166 @@ def transfer_extra_params(src_elem, dst_elem, logs):
         if dst_p and not dst_p.IsReadOnly:
             if set_param_value(dst_p, val):
                 dbg.ok("Extra param '{}' transferido".format(pname))
+
+
+def collect_named_param_values(elem, names):
+    """Coleta valores por nome no elemento e no tipo."""
+    values = {}
+    search_elems = [elem]
+    try:
+        if hasattr(elem, 'Symbol') and elem.Symbol:
+            search_elems.append(elem.Symbol)
+    except Exception:
+        pass
+
+    for search_elem in search_elems:
+        for pname in names:
+            if pname in values:
+                continue
+            try:
+                p = search_elem.LookupParameter(pname)
+                val = read_param_value(p)
+                if val is not None:
+                    values[pname] = val
+            except Exception:
+                continue
+    return values
+
+
+def apply_named_param_values(elem, values, logs, label):
+    """Aplica valores em parametros gravaveis no elemento e no tipo."""
+    if not values:
+        return
+
+    search_elems = [elem]
+    try:
+        if hasattr(elem, 'Symbol') and elem.Symbol:
+            search_elems.append(elem.Symbol)
+    except Exception:
+        pass
+
+    applied = set()
+    for target_elem in search_elems:
+        for pname, val in values.items():
+            if pname in applied:
+                continue
+            try:
+                p = target_elem.LookupParameter(pname)
+                if p and set_param_value(p, val):
+                    applied.add(pname)
+                    logs.append("  {} preservado: '{}'".format(label, pname))
+            except Exception:
+                continue
+
+
+def capture_instance_param_values(elem):
+    """
+    Captura valores de instancia antes de trocar o tipo.
+    ChangeTypeId preserva o elemento/circuito, mas alguns parametros podem
+    ser recriados conforme a familia de destino.
+    """
+    values = {}
+    for pname in list(SHARED_PARAM_GUIDS.keys()) + EXTRA_INSTANCE_PARAMS:
+        try:
+            p = elem.LookupParameter(pname)
+            val = read_param_value(p)
+            if val is not None:
+                values[pname] = val
+        except Exception:
+            continue
+    return values
+
+
+def restore_instance_param_values(elem, values, logs):
+    """Restaura no elemento os valores capturados antes do ChangeTypeId."""
+    for pname, val in values.items():
+        try:
+            p = elem.LookupParameter(pname)
+            if p is None:
+                logs.append("  Parametro ausente no destino: '{}'".format(pname))
+                continue
+            if set_param_value(p, val):
+                logs.append("  Parametro preservado: '{}'".format(pname))
+            elif not p.IsReadOnly:
+                logs.append("  Falha ao restaurar parametro: '{}'".format(pname))
+        except Exception as ex:
+            logs.append("  Falha ao restaurar '{}': {}".format(pname, ex))
+
+
+def same_category(elem, symbol):
+    """Retorna True quando elemento e tipo destino pertencem a mesma categoria."""
+    try:
+        return (elem.Category and symbol.Category and
+                elem.Category.Id.IntegerValue == symbol.Category.Id.IntegerValue)
+    except Exception:
+        return False
+
+
+def is_hosted_instance(elem):
+    """Indica se a instancia tem hospedeiro e deve evitar ChangeTypeId."""
+    try:
+        return hasattr(elem, 'Host') and elem.Host is not None
+    except Exception:
+        return False
+
+
+def replace_element_in_place(src_elem, new_symbol, logs):
+    """
+    Troca o tipo do proprio elemento com ChangeTypeId.
+    Este caminho preserva ElementId, circuito, painel e relacoes MEP quando
+    a familia destino e da mesma categoria.
+    """
+    dbg.section("Substituicao in-place - Alvo: {}".format(src_elem.Id))
+
+    before_circuit = find_circuit(src_elem)
+    saved_values = capture_instance_param_values(src_elem)
+
+    if not new_symbol.IsActive:
+        dbg.step("Ativando simbolo destino")
+        new_symbol.Activate()
+        doc.Regenerate()
+
+    logs.append("Modo: troca de tipo no mesmo elemento (preserva circuito/ID)")
+    if before_circuit:
+        try:
+            logs.append("Circuito antes: {} | Painel: {}".format(
+                before_circuit.CircuitNumber,
+                before_circuit.PanelId
+            ))
+        except Exception:
+            logs.append("Circuito antes: {}".format(before_circuit.Id))
+
+    changed_id = src_elem.ChangeTypeId(new_symbol.Id)
+    doc.Regenerate()
+
+    current_elem = src_elem
+    try:
+        if changed_id and changed_id != ElementId.InvalidElementId and changed_id != src_elem.Id:
+            changed_elem = doc.GetElement(changed_id)
+            if changed_elem:
+                current_elem = changed_elem
+    except Exception:
+        pass
+
+    restore_instance_param_values(current_elem, saved_values, logs)
+    doc.Regenerate()
+
+    after_circuit = find_circuit(current_elem)
+    if before_circuit and after_circuit:
+        try:
+            logs.append("Circuito preservado: {}".format(after_circuit.CircuitNumber))
+        except Exception:
+            logs.append("Circuito preservado: {}".format(after_circuit.Id))
+    elif before_circuit and not after_circuit:
+        logs.append("Atencao: circuito foi perdido apos ChangeTypeId; tentando reincluir.")
+        if add_to_circuit(before_circuit, current_elem):
+            logs.append("Circuito reincluido com AddToCircuit.")
+        else:
+            logs.append("Falha ao reincluir no circuito. Verifique o conector eletrico da familia destino.")
+    else:
+        logs.append("Elemento sem circuito antes da substituicao.")
+
+    return True, current_elem.Id
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -515,19 +700,29 @@ def create_replacement(snap, new_symbol, src_elem):
 def replace_element(src_elem, new_symbol, logs):
     """
     Substitui src_elem pela família new_symbol:
-      1. Snapshot geométrico + circuito
-      2. Cria nova instância no mesmo local
-      3. Transfere parâmetros
+      1. Se a categoria for a mesma, troca o tipo no proprio elemento
+      2. Caso contrario, usa o fluxo legado de criar nova instancia
+      3. Transfere parametros
       4. Adiciona ao circuito
       5. Deleta src_elem
 
     Retorna (True, novo_elem_id) ou (False, None).
     """
     dbg.section("Iniciando Substituição - Alvo: {}".format(src_elem.Id))
+
+    if same_category(src_elem, new_symbol) and not is_hosted_instance(src_elem):
+        try:
+            return replace_element_in_place(src_elem, new_symbol, logs)
+        except Exception as ex:
+            logs.append("Falha na troca direta de tipo; tentando recriar elemento: {}".format(ex))
+            dbg.warn("Falha ChangeTypeId; fallback create/delete: {}".format(ex))
+    elif is_hosted_instance(src_elem):
+        logs.append("Elemento hospedado: usando recriacao para contornar restricao de hospedeiro do Revit.")
     
     # Fase A: Snapshot
     snap = get_snapshot(src_elem)
     circuit = snap['circuit']
+    electrical_values = collect_named_param_values(src_elem, ELECTRICAL_PARAM_ALIASES)
 
     # Capturar conexões físicas antes de deletar
     phys_conns = get_physical_connections(src_elem)
@@ -554,21 +749,33 @@ def replace_element(src_elem, new_symbol, logs):
     new_inst = create_replacement(snap, new_symbol, src_elem)
     doc.Regenerate()
 
+    # Parametros eletricos por nome (inclusive familias de fabricante)
+    apply_named_param_values(new_inst, electrical_values, logs, "Parametro eletrico")
+
     # Parâmetros compartilhados
     transfer_shared_params(src_elem, new_inst, logs)
     # Parâmetros extras
     transfer_extra_params(src_elem, new_inst, logs)
+    doc.Regenerate()
 
     # Fase C: Reconexão ao circuito (antes de deletar — circuito ainda válido)
     if circuit:
         dbg.step("Restaurando circuito {}".format(circuit.Id))
         ok = add_to_circuit(circuit, new_inst)
-        if ok:
+        new_circuit = find_circuit(new_inst) if ok else None
+        if ok and new_circuit:
             logs.append("✅ Adicionado ao circuito {}".format(circuit.CircuitNumber))
             dbg.ok("Conectado ao circuito")
         else:
-            logs.append("⚠️ Não foi possível adicionar ao circuito automaticamente")
+            logs.append("⚠️ Não foi possível adicionar ao circuito automaticamente.")
+            logs.append("🛑 Substituição cancelada para este elemento; original mantido para não perder circuito/carga.")
             dbg.fail("Falha reintegração ao circuito")
+            try:
+                doc.Delete(new_inst.Id)
+                doc.Regenerate()
+            except Exception:
+                pass
+            return False, None
 
     # Deleta o elemento original — libera os conectores dos conduítes
     src_id = src_elem.Id
@@ -818,10 +1025,11 @@ def main():
     confirm = forms.alert(
         "Substituir {} elemento(s) por:\n\n  ▶ {}\n\n"
         "Esta operação irá:\n"
-        "  • Criar novo elemento no mesmo local\n"
+        "  • Trocar o tipo no mesmo elemento quando a categoria for igual\n"
+        "  • Criar novo elemento apenas se a troca direta falhar\n"
         "  • Transferir parâmetros elétricos\n"
         "  • Manter o circuito existente\n"
-        "  • Deletar o elemento original\n\n"
+        "  • Deletar o elemento original apenas no modo de recriação\n\n"
         "Continuar?".format(len(src_elements), target_label),
         yes=True, no=True, title="Confirmar Substituição"
     )
@@ -854,7 +1062,7 @@ def main():
 
                 ok, new_id = replace_element(src_elem, new_symbol, elem_logs)
                 if ok:
-                    elem_logs.append("🆕 Novo elemento: ID {}".format(new_id.IntegerValue))
+                    elem_logs.append("🆕 Elemento resultante: ID {}".format(new_id.IntegerValue))
                     success_count += 1
                 else:
                     fail_count += 1

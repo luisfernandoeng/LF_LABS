@@ -104,6 +104,7 @@ class SmartCropWindow(forms.WPFWindow):
 
             if has_active_crop:
                 self.Panel_CopyMode.Visibility = Visibility.Visible
+                self.Button_ApplyCopy.Visibility = Visibility.Visible
                 self._collect_views()
                 self.ListBox_Views.ItemsSource = self.view_items
                 self.Button_FilterSameLevel.Click      += self.filter_same_level
@@ -245,7 +246,27 @@ class SmartCropWindow(forms.WPFWindow):
             tg.Assimilate()
             
             forms.alert(u"✅ Crop ajustado para a seleção!", title="Sucesso")
-            self.Close()
+            
+            # Atualizar info do crop na interface
+            crop = self.current_view.CropBox
+            self.TextBlock_CropBoxInfo.Text = u"({:.2f}, {:.2f}) até ({:.2f}, {:.2f})".format(
+                crop.Min.X, crop.Min.Y, crop.Max.X, crop.Max.Y
+            )
+            
+            # Mostrar o painel de cópia se estava escondido
+            if self.Panel_CopyMode.Visibility != Visibility.Visible:
+                self.Panel_CopyMode.Visibility = Visibility.Visible
+                self.Button_ApplyCopy.Visibility = Visibility.Visible
+                self._collect_views()
+                self.ListBox_Views.ItemsSource = self.view_items
+                self.Button_FilterSameLevel.Click      += self.filter_same_level
+                self.Button_FilterSameDiscipline.Click += self.filter_same_discipline
+                self.Button_FilterAll.Click            += self.filter_all
+                self.Button_ApplyCopy.Click            += self.apply_copy_click
+                self.TextBox_SearchViews.TextChanged   += self.on_search_changed
+                for item in self.view_items:
+                    item.add_PropertyChanged(self.on_selection_changed)
+                self.update_counter()
             
         except:
             tg.RollBack()

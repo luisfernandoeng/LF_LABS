@@ -5,6 +5,11 @@ Criação de circuitos e interruptores (Industrial)"""
 __title__ = "Industrial"
 __author__ = "Luís Fernando"
 
+# DEBUG DO INDUSTRIAL
+# True  = gera log passo a passo no console/arquivo
+# False = desliga o debug deste comando
+INDUSTRIAL_DEBUG = True
+
 from pyrevit import forms
 from System.Collections.Generic import List
 from Autodesk.Revit.DB import *
@@ -16,6 +21,7 @@ import re
 from Autodesk.Revit.Exceptions import OperationCanceledException
 
 import lf_electrical_core
+lf_electrical_core.DEBUG_MODE = INDUSTRIAL_DEBUG
 from lf_electrical_core import (
     doc, uidoc, get_current_panel, set_current_panel, get_panel_name, set_param,
     ConnectorDomainFilter, get_valid_electrical_elements,
@@ -390,11 +396,165 @@ def _get_first_electrical_connector(elem):
         dbg.warn('Falha ao obter conector eletrico Id={}: {}'.format(elem.Id.IntegerValue, ex))
     return None
 
+def _param_guid_text(param):
+    try:
+        return str(param.GUID).lower()
+    except Exception:
+        return ""
+
+def _param_name_text(param):
+    try:
+        return (param.Definition.Name or "").strip().lower()
+    except Exception:
+        return ""
+
+def _find_param_by_name_or_guid(elem, names, guid_prefixes=None):
+    guid_prefixes = [(g or "").lower() for g in (guid_prefixes or [])]
+    names = [(n or "").strip().lower() for n in names]
+    matches = []
+    try:
+        for p in elem.Parameters:
+            pname = _param_name_text(p)
+            pguid = _param_guid_text(p)
+            by_name = pname in names
+            by_guid = pguid and any(pguid.startswith(g) for g in guid_prefixes)
+            if by_name or by_guid:
+                score = (4 if by_guid else 0) + (2 if by_name else 0) + (1 if not p.IsReadOnly else 0)
+                matches.append((score, p))
+    except Exception:
+        pass
+    if matches:
+        matches.sort(key=lambda item: item[0], reverse=True)
+        return matches[0][1]
+    for name in names:
+        try:
+            p = elem.LookupParameter(name)
+            if p:
+                return p
+        except Exception:
+            pass
+    return None
+
+def _force_shared_voltage_phase(elem, phase_config):
+    """Forca parametros compartilhados que alimentam o conector antes do Create."""
+    voltage_internal = float(phase_config["voltage"]) * VOLTAGE_FACTOR
+    voltage_text = str(int(round(phase_config["voltage"]))) + " V"
+    poles = int(phase_config["poles"])
+    changed = False
+
+    p_v = _find_param_by_name_or_guid(
+        elem,
+        [u"Tensão (V)", u"Tensao (V)", u"Tensão", u"Tensao", "Voltage", "Voltagem"],
+        ["2bf202e8"]
+    )
+    if p_v:
+        try:
+            if not p_v.IsReadOnly:
+                if p_v.StorageType == StorageType.Double:
+                    p_v.Set(voltage_internal)
+                elif p_v.StorageType == StorageType.Integer:
+                    p_v.Set(int(round(phase_config["voltage"])))
+                elif p_v.StorageType == StorageType.String:
+                    p_v.Set(voltage_text)
+                changed = True
+                dbg.ok('Shared tensão Id={} -> {}'.format(elem.Id.IntegerValue, voltage_text))
+            else:
+                dbg.step('Shared tensão Id={} RO=True'.format(elem.Id.IntegerValue))
+        except Exception as ex:
+            dbg.warn('Falha shared tensão Id={}: {}'.format(elem.Id.IntegerValue, ex))
+
+    p_f = _find_param_by_name_or_guid(
+        elem,
+        [u"N° de Fases", u"Nº de Fases", u"Número de Fases", u"Numero de Fases", "Fases", "Polos", u"Pólos"],
+        ["d1d0c4b4-47d8-45bc-a138-06f76d6f0beb", "d1d0c4b4"]
+    )
+    if p_f:
+        try:
+            if not p_f.IsReadOnly:
+                if p_f.StorageType == StorageType.Integer:
+                    p_f.Set(poles)
+                elif p_f.StorageType == StorageType.Double:
+                    p_f.Set(float(poles))
+                elif p_f.StorageType == StorageType.String:
+                    p_f.Set(str(poles))
+                changed = True
+                dbg.ok('Shared fases Id={} -> {}'.format(elem.Id.IntegerValue, poles))
+            else:
+                dbg.step('Shared fases Id={} RO=True'.format(elem.Id.IntegerValue))
+        except Exception as ex:
+            dbg.warn('Falha shared fases Id={}: {}'.format(elem.Id.IntegerValue, ex))
+    return changed
+
+def _get_available_electrical_connector(elem):
+    fallback = None
+    for target in _get_industrial_config_targets(elem):
+        try:
+            mgr = None
+            mep = getattr(target, "MEPModel", None)
+            if mep:
+                mgr = getattr(mep, "ConnectorManager", None)
+            if not mgr:
+                mgr = getattr(target, "ConnectorManager", None)
+            if not mgr:
+                continue
+            for c in mgr.Connectors:
+                if c.Domain != Domain.DomainElectrical:
+                    continue
+                if fallback is None:
+                    fallback = (c, target)
+                try:
+                    if c.MEPSystem is None:
+                        return c, target
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    return fallback if fallback else (None, None)
+
+def _create_power_circuit_from_batch_ids(b_ids, phase_config, panel):
+    """Cria circuito usando primeiro conector eletrico e adiciona os demais elementos."""
+    first_conn = None
+    first_owner = None
+    for eid in b_ids:
+        elem = doc.GetElement(eid)
+        if elem is None:
+            continue
+        _configure_industrial_element_for_circuit(elem, phase_config, panel)
+        _force_shared_voltage_phase(elem, phase_config)
+    doc.Regenerate()
+
+    for eid in b_ids:
+        elem = doc.GetElement(eid)
+        first_conn, first_owner = _get_available_electrical_connector(elem)
+        if first_conn:
+            break
+
+    if first_conn:
+        dbg.step('ElectricalSystem.Create por Connector Id={}'.format(first_owner.Id.IntegerValue))
+        circuit = ElectricalSystem.Create(first_conn, ElectricalSystemType.PowerCircuit)
+        doc.Regenerate()
+        for eid in b_ids:
+            try:
+                elem = doc.GetElement(eid)
+                if first_owner is not None and elem is not None and elem.Id == first_owner.Id:
+                    continue
+                add_ids = List[ElementId]()
+                add_ids.Add(eid)
+                circuit.AddToCircuit(add_ids)
+            except Exception as ex:
+                dbg.warn('Falha ao adicionar Id={} ao circuito: {}'.format(eid.IntegerValue, ex))
+        return circuit
+
+    dbg.warn('Nenhum conector eletrico disponivel; fallback Create por ElementId')
+    return ElectricalSystem.Create(doc, b_ids, ElectricalSystemType.PowerCircuit)
+
 def _configure_industrial_target_for_circuit(elem, phase_config, panel):
     voltage_internal = float(phase_config["voltage"]) * VOLTAGE_FACTOR
     voltage_text = str(int(round(phase_config["voltage"]))) + " V"
     poles = int(phase_config["poles"])
     dist_id = _get_panel_distribution_id(panel)
+
+    _force_shared_voltage_phase(elem, phase_config)
 
     try:
         _set_param_value(elem.get_Parameter(BuiltInParameter.RBS_ELEC_VOLTAGE), voltage_internal, voltage_text)
@@ -1080,27 +1240,40 @@ def _unlock_family_electrical_params(unique_types):
 def create_tomada_circuit_industrial(selection_category=BuiltInCategory.OST_ElectricalFixtures,
                                      selection_prompt="Selecione as tomadas",
                                      transaction_name="Circuitos Tomadas Industrial"):
+    dbg.section('INDUSTRIAL - Criar Circuito Tomadas')
+    dbg.step('01/09 - Lendo quadro ativo')
     panel = get_current_panel()
     if not panel:
         forms.alert("Selecione o quadro primeiro!")
         return
+    dbg.ok('Quadro ativo: Id={} Nome={}'.format(panel.Id.IntegerValue, get_panel_name(panel)))
 
+    dbg.step('02/09 - Escolhendo tensao/polos permitidos pelo quadro')
     phase_config = prompt_industrial_tomada_voltage(panel)
     if not phase_config: return
+    dbg.ok('Circuito escolhido: {} polo(s), {}V'.format(phase_config["poles"], phase_config["voltage"]))
+
+    dbg.step('03/09 - Aguardando selecao dos elementos')
     refs = uidoc.Selection.PickObjects(ObjectType.Element, CategoryFilter(selection_category), selection_prompt)
     if not refs: return
+    dbg.ok('Elementos selecionados: {}'.format([r.ElementId.IntegerValue for r in refs]))
+
+    dbg.step('04/09 - Pedindo Nome da carga')
     circuit_desc = _ask_circuit_description()
     if circuit_desc is None: return
+    dbg.ok('Nome da carga informado: {}'.format(circuit_desc if circuit_desc else '(vazio)'))
 
     refs_list = list(refs)
     refs_list.reverse()
 
+    dbg.step('05/09 - Detectando amperagem e limite por circuito')
     detected_amp = 10
     for r in refs_list:
         amp = _detect_amperage_from_family(doc.GetElement(r.ElementId))
         if amp > detected_amp: detected_amp = amp
     
     limite_w = 4000 if detected_amp >= 20 else 2200
+    dbg.ok('Amperagem detectada: {}A | limite: {}W'.format(detected_amp, limite_w))
 
     batches = []
     current_batch = List[ElementId]()
@@ -1108,8 +1281,9 @@ def create_tomada_circuit_industrial(selection_category=BuiltInCategory.OST_Elec
     current_rooms = set()
     reconnect_state = {"choice": None}
 
-    # Unlock read-only family parameters BEFORE starting the main transaction
+    dbg.step('06/09 - Preparando tipos/familias relacionados')
     unique_types = set()
+    dbg.step('07/09 - Varrendo conectores eletricos e montando lotes')
     for r in refs_list:
         host = doc.GetElement(r.ElementId)
         if hasattr(host, "GetTypeId"):
@@ -1185,12 +1359,13 @@ def create_tomada_circuit_industrial(selection_category=BuiltInCategory.OST_Elec
     if current_batch.Count > 0:
         batches.append((current_batch, current_watts, set(current_rooms)))
 
-    dbg.step('Batches tomada: {} | Limite {}W'.format(len(batches), limite_w))
+    dbg.step('08/09 - Lotes prontos: {} | Limite {}W'.format(len(batches), limite_w))
     created = 0
     unassigned_ids = []
     with Transaction(doc, transaction_name) as t:
         t.Start()
         try:
+            dbg.step('09/09 - Abrindo transaction e criando circuitos')
             for bi, (b_ids, b_watts, b_rooms) in enumerate(batches):
                 dbg.step('Batch {}: {} elemento(s) {:.0f}W'.format(bi+1, b_ids.Count, b_watts))
                 for eid in b_ids:
@@ -1214,17 +1389,7 @@ def create_tomada_circuit_industrial(selection_category=BuiltInCategory.OST_Elec
                 sub = SubTransaction(doc)
                 sub.Start()
                 try:
-                    with suppress_elec_dialog():
-                        if b_ids.Count == 1:
-                            first_elem = doc.GetElement(b_ids[0])
-                            first_conn = _get_first_electrical_connector(first_elem)
-                            if first_conn:
-                                dbg.step('ElectricalSystem.Create por Connector Id={}'.format(first_elem.Id.IntegerValue))
-                                circuit = ElectricalSystem.Create(first_conn, ElectricalSystemType.PowerCircuit)
-                            else:
-                                circuit = ElectricalSystem.Create(doc, b_ids, ElectricalSystemType.PowerCircuit)
-                        else:
-                            circuit = ElectricalSystem.Create(doc, b_ids, ElectricalSystemType.PowerCircuit)
+                    circuit = _create_power_circuit_from_batch_ids(b_ids, phase_config, panel)
                     dbg.ok('Create OK Id={}'.format(circuit.Id.IntegerValue))
                     _select_panel_checked(circuit, panel, phase_config)
                     sub.Commit()
@@ -1244,16 +1409,7 @@ def create_tomada_circuit_industrial(selection_category=BuiltInCategory.OST_Elec
                         sub2 = SubTransaction(doc)
                         sub2.Start()
                         try:
-                            if b_ids.Count == 1:
-                                first_elem = doc.GetElement(b_ids[0])
-                                first_conn = _get_first_electrical_connector(first_elem)
-                                if first_conn:
-                                    dbg.step('ElectricalSystem.Create por Connector Id={} (sem suppress)'.format(first_elem.Id.IntegerValue))
-                                    circuit = ElectricalSystem.Create(first_conn, ElectricalSystemType.PowerCircuit)
-                                else:
-                                    circuit = ElectricalSystem.Create(doc, b_ids, ElectricalSystemType.PowerCircuit)
-                            else:
-                                circuit = ElectricalSystem.Create(doc, b_ids, ElectricalSystemType.PowerCircuit)
+                            circuit = _create_power_circuit_from_batch_ids(b_ids, phase_config, panel)
                             dbg.ok('Create (sem suppress) OK Id={}'.format(circuit.Id.IntegerValue))
                             _select_panel_checked(circuit, panel, phase_config)
                             sub2.Commit()
@@ -1272,15 +1428,7 @@ def create_tomada_circuit_industrial(selection_category=BuiltInCategory.OST_Elec
                             sub3 = SubTransaction(doc)
                             sub3.Start()
                             try:
-                                if b_ids.Count == 1:
-                                    first_elem = doc.GetElement(b_ids[0])
-                                    first_conn = _get_first_electrical_connector(first_elem)
-                                    if first_conn:
-                                        circuit = ElectricalSystem.Create(first_conn, ElectricalSystemType.PowerCircuit)
-                                    else:
-                                        circuit = ElectricalSystem.Create(doc, b_ids, ElectricalSystemType.PowerCircuit)
-                                else:
-                                    circuit = ElectricalSystem.Create(doc, b_ids, ElectricalSystemType.PowerCircuit)
+                                circuit = _create_power_circuit_from_batch_ids(b_ids, phase_config, panel)
                                 dbg.ok('Create (sem panel) OK Id={}'.format(circuit.Id.IntegerValue))
                                 dbg.warn('Circuito Id={} criado SEM quadro (atribuir manualmente)'.format(circuit.Id.IntegerValue))
                                 sub3.Commit()
