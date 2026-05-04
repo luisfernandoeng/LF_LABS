@@ -1105,6 +1105,7 @@ def select_and_configure_panel_industrial():
         forms.alert("Erro:\n" + str(e))
 
 def create_ilum_circuit_industrial():
+    dbg.section('INDUSTRIAL - Criar Circuito Iluminacao')
     panel = get_current_panel()
     if not panel:
         forms.alert("Selecione o quadro primeiro!")
@@ -1112,13 +1113,8 @@ def create_ilum_circuit_industrial():
 
     phase_config = prompt_industrial_phase_voltage(panel)
     if not phase_config: return
-    refs = uidoc.Selection.PickObjects(ObjectType.Element, CategoryFilter(BuiltInCategory.OST_LightingFixtures), "Selecione as luminarias (2400W cada circuito)")
-    if not refs: return
-    circuit_desc = _ask_circuit_description()
-    if circuit_desc is None: return
-
-    refs_list = list(refs)
-    refs_list.reverse()
+    limite_w = 1200 if int(phase_config["voltage"]) == 127 else 2400
+    dbg.ok('Limite iluminacao: {}W para {}V'.format(limite_w, phase_config["voltage"]))
 
     batches = []
     current_batch = List[ElementId]()
@@ -1127,7 +1123,18 @@ def create_ilum_circuit_industrial():
     skipped = []
     reconnect_state = {"choice": None}
 
-    for r in refs_list:
+    forms.toast("Selecione luminarias uma a uma. ESC finaliza.", title="Industrial")
+    while True:
+        try:
+            r = uidoc.Selection.PickObject(
+                ObjectType.Element,
+                CategoryFilter(BuiltInCategory.OST_LightingFixtures),
+                "Selecione uma luminaria (ESC para finalizar)"
+            )
+        except OperationCanceledException:
+            dbg.step('Selecao de iluminacao finalizada por ESC')
+            break
+
         elem = doc.GetElement(r.ElementId)
         if _should_skip_connected_element(elem, panel, reconnect_state):
             skipped.append(str(r.ElementId.IntegerValue))
@@ -1135,7 +1142,14 @@ def create_ilum_circuit_industrial():
             
         watts = _get_element_wattage(elem)
         rm = get_room_name(elem)
-        if current_watts + watts > 2400 and current_batch.Count > 0:
+        if current_watts + watts > limite_w and current_batch.Count > 0:
+            forms.alert(
+                "Limite de {}W atingido.\n\n"
+                "Circuito atual: {:.0f}W\n"
+                "Nova carga: {:.0f}W\n\n"
+                "Vou criar outro circuito a partir desta selecao.".format(limite_w, current_watts, watts),
+                title="Novo circuito de iluminacao"
+            )
             batches.append((current_batch, current_watts, set(current_rooms)))
             current_batch = List[ElementId]()
             current_watts = 0.0
@@ -1149,6 +1163,18 @@ def create_ilum_circuit_industrial():
         batches.append((current_batch, current_watts, set(current_rooms)))
 
     dbg.step('Batches: {} | Elementos totais: {}'.format(len(batches), sum(b[0].Count for b in batches)))
+    if not batches:
+        forms.toast("Nenhuma luminaria valida selecionada.", title="Industrial")
+        return
+
+    batch_descs = []
+    for bi, (b_ids, b_watts, b_rooms) in enumerate(batches):
+        default_desc = "Ilum {} ({:.0f}W)".format(bi + 1, b_watts)
+        desc = _ask_circuit_description(default_desc)
+        if desc is None:
+            return
+        batch_descs.append(desc)
+
     created = 0
     with Transaction(doc, "Circuitos Ilum Industrial") as t:
         t.Start()
@@ -1165,7 +1191,7 @@ def create_ilum_circuit_industrial():
                     circuit = ElectricalSystem.Create(doc, b_ids, ElectricalSystemType.PowerCircuit)
                 _select_panel_checked(circuit, panel, phase_config)
                 room_str = " / ".join(sorted(b_rooms)) if b_rooms else "Ilum Industrial"
-                set_param(circuit, LOAD_NAME_PARAMS, _circuit_description(circuit_desc, "{} ({:.0f}W)".format(room_str, b_watts)))
+                set_param(circuit, LOAD_NAME_PARAMS, _circuit_description(batch_descs[bi], "{} ({:.0f}W)".format(room_str, b_watts)))
                 dbg.ok('Circuito ilum criado Id={}'.format(circuit.Id.IntegerValue))
                 created += 1
             except Exception as ex:
@@ -1239,27 +1265,35 @@ def _unlock_family_electrical_params(unique_types):
 
 def create_tomada_circuit_industrial(selection_category=BuiltInCategory.OST_ElectricalFixtures,
                                      selection_prompt="Selecione as tomadas",
-                                     transaction_name="Circuitos Tomadas Industrial"):
+                                     transaction_name="Circuitos Tomadas Industrial",
+                                     panel_override=None,
+                                     phase_config_override=None,
+                                     refs_override=None,
+                                     circuit_desc_override=None):
     dbg.section('INDUSTRIAL - Criar Circuito Tomadas')
     dbg.step('01/09 - Lendo quadro ativo')
-    panel = get_current_panel()
+    panel = panel_override or get_current_panel()
     if not panel:
         forms.alert("Selecione o quadro primeiro!")
         return
     dbg.ok('Quadro ativo: Id={} Nome={}'.format(panel.Id.IntegerValue, get_panel_name(panel)))
 
     dbg.step('02/09 - Escolhendo tensao/polos permitidos pelo quadro')
-    phase_config = prompt_industrial_tomada_voltage(panel)
+    phase_config = phase_config_override or prompt_industrial_tomada_voltage(panel)
     if not phase_config: return
     dbg.ok('Circuito escolhido: {} polo(s), {}V'.format(phase_config["poles"], phase_config["voltage"]))
 
     dbg.step('03/09 - Aguardando selecao dos elementos')
-    refs = uidoc.Selection.PickObjects(ObjectType.Element, CategoryFilter(selection_category), selection_prompt)
+    refs = refs_override
+    if refs is None:
+        refs = uidoc.Selection.PickObjects(ObjectType.Element, CategoryFilter(selection_category), selection_prompt)
     if not refs: return
     dbg.ok('Elementos selecionados: {}'.format([r.ElementId.IntegerValue for r in refs]))
 
     dbg.step('04/09 - Pedindo Nome da carga')
-    circuit_desc = _ask_circuit_description()
+    circuit_desc = circuit_desc_override
+    if circuit_desc is None:
+        circuit_desc = _ask_circuit_description()
     if circuit_desc is None: return
     dbg.ok('Nome da carga informado: {}'.format(circuit_desc if circuit_desc else '(vazio)'))
 
@@ -1477,6 +1511,43 @@ def create_tomada_circuit_industrial(selection_category=BuiltInCategory.OST_Elec
         else:
             forms.toast("Sucesso! {} circuito(s) de tomada criado(s).".format(created), title="Industrial")
 
+def create_tomada_circuit_individual_loop_industrial():
+    panel = get_current_panel()
+    if not panel:
+        forms.alert("Selecione o quadro primeiro!")
+        return
+
+    phase_config = prompt_industrial_tomada_voltage(panel)
+    if not phase_config:
+        return
+
+    forms.toast("Selecione uma carga por vez. ESC finaliza.", title="Industrial")
+    while True:
+        try:
+            ref = uidoc.Selection.PickObject(
+                ObjectType.Element,
+                CategoryFilter(BuiltInCategory.OST_ElectricalFixtures),
+                "Selecione uma tomada/carga (ESC para finalizar)"
+            )
+        except OperationCanceledException:
+            dbg.step('Selecao individual de tomadas finalizada por ESC')
+            break
+
+        elem = doc.GetElement(ref.ElementId)
+        default_desc = get_room_name(elem) or get_family_name(elem) or "Tomada"
+        circuit_desc = _ask_circuit_description(default_desc)
+        if circuit_desc is None:
+            dbg.step('Descricao cancelada para Id={}'.format(ref.ElementId.IntegerValue))
+            continue
+
+        create_tomada_circuit_industrial(
+            panel_override=panel,
+            phase_config_override=phase_config,
+            refs_override=[ref],
+            circuit_desc_override=circuit_desc,
+            transaction_name="Circuito Tomada Individual Industrial"
+        )
+
 def create_tomada_conduit_circuit_industrial():
     return create_tomada_circuit_industrial(
         BuiltInCategory.OST_ConduitFitting,
@@ -1683,11 +1754,12 @@ def main_menu():
             ("1. Selecionar/Configurar Quadro", select_and_configure_panel_industrial),
             ("2. Criar Circuito Iluminação (max 2400W)", create_ilum_circuit_industrial),
             ("3. Comando Interruptor (a, b, c...)", name_switch_industrial),
-            ("4. Criar Circuito Tomadas (220V, 10A/20A)", create_tomada_circuit_industrial),
-            ("5. Criar Circuitos Individuais (1 por elemento)", create_individual_circuits_industrial),
-            ("6. Criar Circuito Agrupado (1 para muitos)", create_grouped_circuit_industrial),
-            ("7. Queda de Tensão", call_queda_tensao),
-            ("8. Sair", lambda: None),
+            ("4. Criar Circuito Tomadas (1 carga por vez)", create_tomada_circuit_individual_loop_industrial),
+            ("5. Criar Circuito Tomadas (multiplas cargas)", create_tomada_circuit_industrial),
+            ("6. Criar Circuitos Individuais (1 por elemento)", create_individual_circuits_industrial),
+            ("7. Criar Circuito Agrupado (1 para muitos)", create_grouped_circuit_industrial),
+            ("8. Queda de Tensão", call_queda_tensao),
+            ("9. Sair", lambda: None),
         ])
 
         escolha = forms.CommandSwitchWindow.show(opcoes.keys(), message=status, title="🏭 Industrial - " + status)
