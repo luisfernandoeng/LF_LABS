@@ -470,6 +470,7 @@
                             <StackPanel IsEnabled="{Binding ElementName=chk_ExportDWG, Path=IsChecked}">
                                 <TextBlock Text="Setup de Exportação (Revit)" Style="{StaticResource FieldLabel}"/>
                                 <ComboBox Name="cb_DWGSetups" Margin="0,0,0,5" IsEditable="True"/>
+                                <CheckBox Name="chk_DeleteDWGImages" Content="Apagar imagens vinculadas geradas no DWG" IsChecked="True" Margin="0,8,0,0"/>
                             </StackPanel>
                         </StackPanel>
                     </GroupBox>
@@ -510,6 +511,7 @@
                     <TextBox Name="txt_OutputFolder" IsReadOnly="True" Background="#F8F8F8"/>
                     <Button Name="btn_SelectFolder" Content="..." Grid.Column="1" Margin="8,0,0,0" Style="{StaticResource SecondaryActionButton}"/>
                 </Grid>
+                <CheckBox Name="chk_SeparateFolders" Content="Separar em pastas DWG e PDF" IsChecked="True" Margin="0,10,0,0"/>
                 <CheckBox Name="chk_OpenFolderAfter" Content="Abrir pasta automaticamente" IsChecked="True" Margin="0,10,0,0"/>
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">

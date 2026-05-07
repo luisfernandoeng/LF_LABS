@@ -348,6 +348,138 @@ def sanitize_filename(name):
     """Remove caracteres invalidos para nome de arquivo e abas Excel."""
     return re.sub(r'[\\/*?:"<>|\[\]]', "", name)
 
+def _get_builtin_parameter(element, builtin_names):
+    """Busca parametros BuiltInParameter sem quebrar em versoes diferentes do Revit."""
+    for builtin_name in builtin_names:
+        try:
+            builtin_param = getattr(DB.BuiltInParameter, builtin_name)
+            param = element.get_Parameter(builtin_param)
+            if param and param.HasValue:
+                return param
+        except:
+            pass
+    return None
+
+def _get_lookup_parameter(element, lookup_names):
+    """Busca parametros por nome em PT/EN como fallback."""
+    for lookup_name in lookup_names:
+        try:
+            param = element.LookupParameter(lookup_name)
+            if param and param.HasValue:
+                return param
+        except:
+            pass
+    return None
+
+def _parameter_display_value(param):
+    if not param:
+        return ""
+    try:
+        vs = param.AsValueString()
+        if vs not in (None, ""):
+            return vs
+    except:
+        pass
+    try:
+        s = param.AsString()
+        if s not in (None, ""):
+            return s
+    except:
+        pass
+    try:
+        if param.StorageType == DB.StorageType.Double:
+            return param.AsDouble()
+        if param.StorageType == DB.StorageType.Integer:
+            return param.AsInteger()
+    except:
+        pass
+    return ""
+
+def _parse_excel_number(value, default=None):
+    """Converte textos do Revit como '1.250,5 W' ou '0,92' para numero."""
+    if value in (None, ""):
+        return default
+    try:
+        if isinstance(value, (int, float)):
+            return float(value)
+    except:
+        pass
+    try:
+        text = str(value).strip()
+        if not text:
+            return default
+        text = text.replace(u"\xa0", " ")
+        matches = re.findall(r"[-+]?\d[\d.,]*", text)
+        if not matches:
+            return default
+        num = matches[0]
+        if "," in num and "." in num:
+            num = num.replace(".", "").replace(",", ".")
+        elif "," in num:
+            num = num.replace(",", ".")
+        elif "." in num:
+            parts = num.split(".")
+            if len(parts[-1]) == 3 and len(parts) > 1:
+                num = "".join(parts)
+        parsed = float(num)
+        if "%" in text:
+            parsed = parsed / 100.0
+        return parsed
+    except:
+        return default
+
+def _clean_number(value, default=None):
+    num = _parse_excel_number(value, default)
+    if num is None:
+        return default
+    try:
+        if abs(num - int(num)) < 0.000001:
+            return int(num)
+    except:
+        pass
+    return num
+
+def _get_panel_param_value(element, builtin_names, lookup_names, default=""):
+    param = _get_builtin_parameter(element, builtin_names)
+    if not param:
+        param = _get_lookup_parameter(element, lookup_names)
+    value = _parameter_display_value(param)
+    if value in (None, ""):
+        return default
+    return value
+
+def _get_circuit_element_count(electrical_system):
+    """Conta os elementos ligados ao circuito; volta 1 quando a API nao expuser a lista."""
+    candidates = []
+    try:
+        candidates = list(electrical_system.Elements)
+    except:
+        pass
+    if not candidates:
+        try:
+            candidates = list(electrical_system.GetCircuitElements())
+        except:
+            pass
+    if not candidates:
+        try:
+            candidates = list(electrical_system.GetElements())
+        except:
+            pass
+
+    count = 0
+    seen = set()
+    for element in candidates:
+        try:
+            eid = element.Id.IntegerValue
+            if eid in seen:
+                continue
+            seen.add(eid)
+        except:
+            pass
+        count += 1
+
+    return count if count > 0 else 1
+
 def get_parameter_data_type(param_def):
     try: 
         return param_def.GetDataType()
@@ -378,9 +510,9 @@ def get_excel_format(workbook, properties):
     return _format_pool[key]
 
 # ==================== FUNÇÕES DE EXTRAÇÃO OTIMIZADAS ====================
-def get_panel_schedule_data(schedule_view):
+def get_panel_schedule_data(schedule_view, use_element_quantity=False):
     """Extrai dados dos paineis com cache seguro."""
-    cache_key = ("panel_schedule", schedule_view.Id.IntegerValue)
+    cache_key = ("panel_schedule", schedule_view.Id.IntegerValue, bool(use_element_quantity))
     cached = _param_def_cache.get(cache_key)
     if cached:
         return cached
@@ -412,13 +544,32 @@ def get_panel_schedule_data(schedule_view):
             return [], []
 
         if not assigned_systems:
-            dummy = {'Tipo': 'PAINEL', 'Nome do Quadro': panel_name, 'Descricao': 'Sem circuitos'}
-            result = [dummy], ['Tipo', 'Nome do Quadro', 'Descricao']
+            dummy = {
+                'Nome do Quadro': panel_name,
+                u'Ítem': "",
+                u'Descrição equipamento': 'Sem circuitos',
+                'Quant.': "",
+                u'Carga Unitária (W)': "",
+                u'Carga Total (W)': "",
+                'Fator de Demanda': "",
+                u'Fator de Potência': "",
+                u'Carga Dem. (VA)': "",
+                u'Seção do Condutor Adotado': "",
+                u'Proteção Adotada': "",
+            }
+            result = [dummy], [u'Ítem', u'Descrição equipamento', 'Quant.',
+                               u'Carga Unitária (W)', u'Carga Total (W)',
+                               'Fator de Demanda', u'Fator de Potência',
+                               u'Carga Dem. (VA)', u'Seção do Condutor Adotado',
+                               u'Proteção Adotada']
             _param_def_cache[cache_key] = result
             return result
 
-        headers = ['Nome do Quadro', 'Numero do Circuito', 'Nome da Carga', 'Classificacao (A)', 
-                  'Tensao (V)', 'Polos', 'Carga Aparente (VA)', 'Fio']
+        headers = [u'Ítem', u'Descrição equipamento', 'Quant.',
+                   u'Carga Unitária (W)', u'Carga Total (W)',
+                   'Fator de Demanda', u'Fator de Potência',
+                   u'Carga Dem. (VA)', u'Seção do Condutor Adotado',
+                   u'Proteção Adotada']
         
         # Mapear BuiltInParameters
         param_map = {
@@ -445,6 +596,82 @@ def get_panel_schedule_data(schedule_view):
                             row_data[header] = ""
                     except:
                         row_data[header] = ""
+
+                item = row_data.get('Numero do Circuito', "")
+                description = row_data.get('Nome da Carga', "")
+                apparent_load = row_data.get('Carga Aparente (VA)', "")
+
+                true_load = _get_panel_param_value(
+                    sys,
+                    ['RBS_ELEC_TRUE_LOAD', 'RBS_ELEC_TRUE_LOAD_PARAM',
+                     'RBS_ELEC_CIRCUIT_TRUE_LOAD'],
+                    ['Carga Real', 'Potência Real', 'Potencia Real',
+                     'True Load', 'Real Power', 'Carga em Watts',
+                     'Carga (W)', 'Potência (W)', 'Potencia (W)'],
+                    ""
+                )
+                power_factor = _get_panel_param_value(
+                    sys,
+                    ['RBS_ELEC_POWER_FACTOR', 'RBS_ELEC_CIRCUIT_POWER_FACTOR',
+                     'RBS_ELEC_POWER_FACTOR_PARAM'],
+                    [u'Fator de Potência', 'Fator de Potencia',
+                     'Power Factor', 'FP'],
+                    1
+                )
+                demand_factor = _get_panel_param_value(
+                    sys,
+                    ['RBS_ELEC_DEMAND_FACTOR', 'RBS_ELEC_CIRCUIT_DEMAND_FACTOR',
+                     'RBS_ELEC_DEMAND_FACTOR_PARAM'],
+                    ['Fator de Demanda', 'Demand Factor', 'FD', 'FCA'],
+                    1
+                )
+                conductor = _get_panel_param_value(
+                    sys,
+                    ['RBS_ELEC_CIRCUIT_WIRE_SIZE_PARAM', 'RBS_ELEC_WIRE_SIZE'],
+                    [u'Seção do Condutor Adotado (mm²)', u'Seção do Condutor Adotado',
+                     'Secao do Condutor Adotado (mm2)', 'Secao do Condutor Adotado',
+                     u'Seção do condutor adotado', 'Secao do condutor adotado',
+                     u'Seção Condutor Adotado', 'Secao Condutor Adotado',
+                     'Condutor Adotado', 'Fio', 'Wire Size'],
+                    row_data.get('Fio', "")
+                )
+                protection = _get_panel_param_value(
+                    sys,
+                    [],
+                    [u'Proteção do circuito', u'Proteção do Circuito',
+                     'Protecao do circuito', 'Protecao do Circuito',
+                     u'Proteção Adotada', 'Protecao Adotada',
+                     u'Proteção adotada', 'Protecao adotada',
+                     'Disjuntor', 'Disjuntor Adotado', 'Circuit Breaker',
+                     'Circuit Rating', 'Rating'],
+                    ""
+                )
+                if protection in (None, ""):
+                    protection = _get_panel_param_value(
+                        sys,
+                        ['RBS_ELEC_CIRCUIT_RATING_PARAM', 'RBS_ELEC_CIRCUIT_FRAME_PARAM',
+                         'RBS_ELEC_CIRCUIT_TRIP_PARAM'],
+                        ['Disjuntor', 'Circuit Rating', 'Rating'],
+                        row_data.get('Classificacao (A)', "")
+                    )
+
+                apparent_num = _parse_excel_number(apparent_load, None)
+                pf_num = _parse_excel_number(power_factor, 1)
+                watts_num = _parse_excel_number(true_load, None)
+
+                if watts_num is None and apparent_num is not None:
+                    watts_num = apparent_num * (pf_num or 1)
+
+                row_data[u'Ítem'] = item
+                row_data[u'Descrição equipamento'] = description
+                row_data['Quant.'] = _get_circuit_element_count(sys) if use_element_quantity else 1
+                row_data[u'Carga Unitária (W)'] = _clean_number(watts_num, "")
+                row_data[u'Carga Total (W)'] = ""
+                row_data['Fator de Demanda'] = _clean_number(demand_factor, 1)
+                row_data[u'Fator de Potência'] = _clean_number(power_factor, 1)
+                row_data[u'Carga Dem. (VA)'] = ""
+                row_data[u'Seção do Condutor Adotado'] = conductor
+                row_data[u'Proteção Adotada'] = protection
                 
                 data_rows.append(row_data)
             except: 
@@ -792,8 +1019,9 @@ def export_xls(targets, file_path, formatted=False):
     workbook = None
     try:
         # Configurar workbook com otimizações
+        has_panel_schedule = any([t.get('is_panel', False) for t in targets])
         workbook_options = {
-            'constant_memory': True,
+            'constant_memory': not has_panel_schedule,
             'use_zip64': True,
         }
         
@@ -808,6 +1036,29 @@ def export_xls(targets, file_path, formatted=False):
             "align": "center"
         })
         fmt_data_panel = get_excel_format(workbook, {"border": 1, "align": "left"})
+        fmt_panel_title = get_excel_format(workbook, {
+            "bold": True, "font_size": 14, "bg_color": "#D9EAD3",
+            "border": 1, "align": "center", "valign": "vcenter",
+        })
+        fmt_panel_info = get_excel_format(workbook, {
+            "bold": True, "bg_color": "#E2F0D9", "border": 1,
+            "align": "left", "valign": "vcenter",
+        })
+        fmt_panel_header = get_excel_format(workbook, {
+            "bold": True, "bg_color": "#B7E1A1", "border": 1,
+            "align": "center", "valign": "vcenter", "text_wrap": True,
+        })
+        fmt_panel_text = get_excel_format(workbook, {
+            "border": 1, "align": "left", "valign": "vcenter",
+        })
+        fmt_panel_num = get_excel_format(workbook, {
+            "border": 1, "align": "center", "valign": "vcenter",
+            "num_format": "#,##0.00",
+        })
+        fmt_panel_int = get_excel_format(workbook, {
+            "border": 1, "align": "center", "valign": "vcenter",
+            "num_format": "0",
+        })
         
         fmt_bold = get_excel_format(workbook, {"bold": True})
         fmt_lock_ro = get_excel_format(workbook, {
@@ -855,19 +1106,72 @@ def export_xls(targets, file_path, formatted=False):
             ws = workbook.add_worksheet(sheet_name)
 
             if is_panel_schedule:
-                # Escrever headers
-                for i, p in enumerate(selected_params):
-                    ws.write(0, i, p.name, fmt_head_panel)
-                    ws.set_column(i, i, 20)
+                ws.set_tab_color("#70AD47")
+                ws.freeze_panes(5, 0)
+                ws.set_column(0, 0, 3)
+                ws.set_column(1, 1, 8)
+                ws.set_column(2, 5, 12)
+                ws.set_column(6, 6, 8)
+                ws.set_column(7, 7, 13)
+                ws.set_column(8, 8, 12)
+                ws.set_column(9, 9, 12)
+                ws.set_column(10, 10, 12)
+                ws.set_column(11, 11, 12)
+                ws.set_column(12, 12, 22)
+                ws.set_column(13, 13, 18)
 
-                # Escrever dados
-                for r, el in enumerate(src_elements, 1):
-                    if hasattr(el, 'row_data'):
-                        for c, p in enumerate(selected_params):
-                            ws.write(r, c, str(el.row_data.get(p.name, "")), fmt_data_panel)
+                ws.merge_range(0, 1, 0, 13, "ESTUDO DE CARGAS", fmt_panel_title)
+                ws.write(1, 1, "OBRA: " + sanitize_filename(os.path.splitext(os.path.basename(file_path))[0]), fmt_panel_text)
+                ws.write(2, 1, u"Responsável: ", fmt_panel_text)
+                ws.write(3, 1, "Representa a carga total do(a): " + sheet_name, fmt_panel_text)
 
-                if src_elements:
-                    ws.autofilter(0, 0, len(src_elements), len(selected_params)-1)
+                headers_panel = [
+                    u"Ítem", u"Descrição equipamento", "Quant.",
+                    u"Carga \nUnitária\n(W)", u"Carga\nTotal\n(W)",
+                    u"Fator de \nDemanda", u"Fator de \nPotência",
+                    u"Carga \nDem.\n(VA)", u"Seção do Condutor\nAdotado",
+                    u"Proteção\nAdotada"
+                ]
+                ws.write(4, 1, headers_panel[0], fmt_panel_header)
+                ws.merge_range(4, 2, 4, 5, headers_panel[1], fmt_panel_header)
+                for col, label in [(6, headers_panel[2]), (7, headers_panel[3]),
+                                   (8, headers_panel[4]), (9, headers_panel[5]),
+                                   (10, headers_panel[6]), (11, headers_panel[7]),
+                                   (12, headers_panel[8]), (13, headers_panel[9])]:
+                    ws.write(4, col, label, fmt_panel_header)
+                ws.set_row(4, 42)
+
+                current_panel = None
+                row = 5
+                for el in src_elements:
+                    if not hasattr(el, 'row_data'):
+                        continue
+                    data = el.row_data
+                    panel_name = data.get('Nome do Quadro', sheet_name)
+                    if panel_name != current_panel:
+                        current_panel = panel_name
+                        ws.merge_range(row, 2, row, 5, "Painel: " + str(panel_name), fmt_panel_info)
+                        for col in [1, 6, 7, 8, 9, 10, 11, 12, 13]:
+                            ws.write(row, col, "", fmt_panel_info)
+                        row += 1
+
+                    excel_row = row + 1
+                    qty = _clean_number(data.get('Quant.'), 1)
+                    unit_w = _clean_number(data.get(u'Carga Unitária (W)'), "")
+                    demand = _clean_number(data.get('Fator de Demanda'), 1)
+                    power_factor = _clean_number(data.get(u'Fator de Potência'), 1)
+
+                    ws.write(row, 1, data.get(u'Ítem', ""), fmt_panel_text)
+                    ws.merge_range(row, 2, row, 5, data.get(u'Descrição equipamento', ""), fmt_panel_text)
+                    ws.write(row, 6, qty, fmt_panel_int)
+                    ws.write(row, 7, unit_w, fmt_panel_num)
+                    ws.write_formula(row, 8, "=H{0}*G{0}".format(excel_row), fmt_panel_num)
+                    ws.write(row, 9, demand, fmt_panel_num)
+                    ws.write(row, 10, power_factor, fmt_panel_num)
+                    ws.write_formula(row, 11, "=IF(K{0}=0,0,(G{0}*H{0}*J{0})/K{0})".format(excel_row), fmt_panel_num)
+                    ws.write(row, 12, data.get(u'Seção do Condutor Adotado', ""), fmt_panel_text)
+                    ws.write(row, 13, data.get(u'Proteção Adotada', ""), fmt_panel_text)
+                    row += 1
 
             elif formatted:
                 # ── Modo formatado: visual idêntico ao Revit, sem ElementId ─────
@@ -1207,6 +1511,7 @@ class ExportImportWindow(forms.WPFWindow):
         self.btn_DropdownToggle.MouseLeftButtonDown += self._toggle_dropdown
         self.chk_SelectAllSchedules.Click   += self._on_select_all_changed
         self.CheckBox_KeepFormat.Click      += self._on_keep_format_changed
+        self.CheckBox_PanelElementQuantity.Click += self._on_panel_quantity_changed
         
         self.cmb_ExportPreviewSelect.SelectionChanged += lambda s, e: self._update_export_preview(from_combo=True)
         self.cmb_ImportPreviewSelect.SelectionChanged += lambda s, e: self._update_import_preview(from_combo=True)
@@ -1227,6 +1532,8 @@ class ExportImportWindow(forms.WPFWindow):
         """Gera nome sugerido baseado na seleção atual."""
         proj_name = sanitize_filename(doc.Title.replace(".rvt", ""))
         selected = self._get_selected_schedules()
+        if selected and all([s.get('is_panel', False) for s in selected]):
+            return proj_name + "_Quadros_de_Cargas"
         if len(selected) == 1:
             return proj_name + "_" + sanitize_filename(selected[0]['display_name'])
         elif len(selected) > 1:
@@ -1308,6 +1615,12 @@ class ExportImportWindow(forms.WPFWindow):
         """Troca o modo (Schedule / Quadro) e repopula a checklist."""
         idx = self.ComboBox_ExportMode.SelectedIndex
         schedule_list = self.view_schedules if idx == 0 else self.panel_schedules
+        try:
+            self.CheckBox_PanelElementQuantity.Visibility = (
+                Visibility.Visible if idx == 1 else Visibility.Collapsed
+            )
+        except:
+            pass
         self._populate_checklist(schedule_list)
 
     def _populate_checklist(self, schedule_list):
@@ -1370,6 +1683,10 @@ class ExportImportWindow(forms.WPFWindow):
             Visibility.Visible if checked else Visibility.Collapsed
         )
 
+    def _on_panel_quantity_changed(self, _sender, _args):
+        """Atualiza preview quando a quantidade do quadro muda para elementos do circuito."""
+        self._update_export_preview()
+
     def _on_checklist_changed(self, sender, args):
         """Chamado quando qualquer checkbox da lista muda."""
         enabled = [(cb, d) for cb, d in self._schedule_checkboxes if cb.IsEnabled]
@@ -1399,7 +1716,10 @@ class ExportImportWindow(forms.WPFWindow):
                 self.update_stats("1 tabela selecionada")
         else:
             self.txt_DropdownDisplay.Text = "{} tabelas selecionadas".format(len(selected))
-            self.update_stats("{} tabelas serão exportadas como abas separadas".format(len(selected)))
+            if all([s.get('is_panel', False) for s in selected]):
+                self.update_stats("{} quadros serao exportados na mesma aba".format(len(selected)))
+            else:
+                self.update_stats("{} tabelas serão exportadas como abas separadas".format(len(selected)))
 
     def browse_export(self, sender, args):
         suggested_name = self._build_suggested_name()
@@ -1456,7 +1776,8 @@ class ExportImportWindow(forms.WPFWindow):
             max_preview_rows = 50
 
             if is_panel:
-                rows, headers = get_panel_schedule_data(schedule)
+                use_qty = bool(self.CheckBox_PanelElementQuantity.IsChecked)
+                rows, headers = get_panel_schedule_data(schedule, use_qty)
                 for h in headers:
                     dt.Columns.Add(h)
                 
@@ -1688,7 +2009,8 @@ class ExportImportWindow(forms.WPFWindow):
                     sch     = sch_dict['schedule']
 
                     if is_panel:
-                        rows, headers = get_panel_schedule_data(sch)
+                        use_qty = bool(self.CheckBox_PanelElementQuantity.IsChecked)
+                        rows, headers = get_panel_schedule_data(sch, use_qty)
                         class RowObj:
                             def __init__(self, d):
                                 self.row_data = d
@@ -1704,6 +2026,18 @@ class ExportImportWindow(forms.WPFWindow):
                                         'params': params, 'is_panel': is_panel})
                     else:
                         skipped_names.append(name)
+
+                if targets and all([t.get('is_panel', False) for t in targets]):
+                    combined_src = []
+                    combined_params = targets[0]['params']
+                    for target in targets:
+                        combined_src.extend(target['src'])
+                    targets = [{
+                        'name': 'Quadros de Cargas',
+                        'src': combined_src,
+                        'params': combined_params,
+                        'is_panel': True
+                    }]
 
                 if not targets:
                     self.update_status("Nada para exportar.")

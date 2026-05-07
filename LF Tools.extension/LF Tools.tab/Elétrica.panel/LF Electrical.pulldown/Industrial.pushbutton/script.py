@@ -141,6 +141,49 @@ def _get_voltage_value_from_dist_system(system, bip_name):
         pass
     return None
 
+def _get_voltage_type_value(vtype):
+    param_ids = []
+    try: param_ids.append(BuiltInParameter.RBS_ELEC_VOLTAGE_VALUE)
+    except Exception: pass
+    param_ids.extend([
+        BuiltInParameter.RBS_ELEC_VOLTAGE_MIN_PARAM,
+        BuiltInParameter.RBS_ELEC_VOLTAGE_MAX_PARAM
+    ])
+    for param_id in param_ids:
+        try:
+            p = vtype.get_Parameter(param_id)
+            if p and p.HasValue:
+                return int(round(p.AsDouble() / VOLTAGE_FACTOR))
+        except Exception:
+            pass
+    return None
+
+def _find_voltage_type(voltage):
+    target = int(round(float(voltage)))
+    try:
+        for vtype in FilteredElementCollector(doc).OfClass(VoltageType).ToElements():
+            val = _get_voltage_type_value(vtype)
+            if val and abs(val - target) <= 2:
+                return vtype
+    except Exception as ex:
+        dbg.warn('Falha ao buscar VoltageType {}V: {}'.format(target, ex))
+    return None
+
+def _force_circuit_voltage_type(circuit, phase_config):
+    if not phase_config:
+        return False
+    vt = _find_voltage_type(phase_config["voltage"])
+    if not vt:
+        dbg.warn('VoltageType {}V nao encontrado'.format(phase_config["voltage"]))
+        return False
+    try:
+        circuit.VoltageType = vt
+        dbg.ok('Circuit VoltageType definido para {}V ({})'.format(phase_config["voltage"], vt.Name))
+        return True
+    except Exception as ex:
+        dbg.warn('Circuito nao aceitou VoltageType {}V: {}'.format(phase_config["voltage"], ex))
+        return False
+
 def _dist_system_matches_rule(system, rule):
     name = _norm_name(_get_dist_system_name(system))
     if not _dist_system_has_neutral_ground_name(system):
@@ -803,6 +846,7 @@ def _force_circuit_distribution(circuit, panel):
 def _configure_circuit_for_phase(circuit, panel, phase_config):
     if not phase_config:
         return
+    _force_circuit_voltage_type(circuit, phase_config)
     set_param(circuit, [u"N° de Fases", u"Nº de Fases", u"Número de Fases", u"Número de polos", "Number of Poles", "Polos"], phase_config["poles"])
     set_param(circuit, [u"Tensão (V)", u"Tensão", "Voltage", "Voltagem", u"Tensão Nominal", "Volts"], phase_config["voltage"])
     try:

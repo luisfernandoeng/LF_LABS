@@ -1,4 +1,4 @@
 {
-  "debug": false, 
-  "face_placement": true
+  "face_placement": false, 
+  "debug": false
 }

@@ -1,13 +1,19 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Configurações — Conectar Eletrocalha"
-        Width="480" Height="500"
+        Title="Configuracoes - Conectar Eletrocalha"
+        Width="500" Height="580"
         WindowStartupLocation="CenterScreen"
         ResizeMode="NoResize"
         Background="#F2F2F2"
         FontFamily="Segoe UI" FontSize="13">
 
     <Window.Resources>
+        <Style TargetType="GroupBox">
+            <Setter Property="Margin"       Value="0,10,0,0"/>
+            <Setter Property="Padding"      Value="10,6,10,10"/>
+            <Setter Property="BorderBrush"  Value="#C8C8C8"/>
+            <Setter Property="Background"   Value="White"/>
+        </Style>
 
         <Style TargetType="GroupBox" x:Key="Gb">
             <Setter Property="Margin"       Value="0,10,0,0"/>
@@ -60,7 +66,6 @@
             <Setter Property="BorderThickness"  Value="0"/>
             <Setter Property="Cursor"           Value="Hand"/>
         </Style>
-
     </Window.Resources>
 
     <Grid Margin="16,14,16,12">
@@ -69,61 +74,83 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" Background="#F2F2F2">
-            <StackPanel Margin="4,6,4,10">
+        <TabControl Grid.Row="0" Background="Transparent" BorderBrush="#C8C8C8">
+            <TabItem Padding="14,7">
+                <TabItem.Header>
+                    <TextBlock Text="Familia / Tipo" FontSize="13" FontWeight="SemiBold"/>
+                </TabItem.Header>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Background="#F2F2F2">
+                    <StackPanel Margin="4,6,4,10">
+                        <GroupBox Header="Familia/Tipo de Eletrocalha" Style="{StaticResource Gb}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource Hint}"
+                                    Text="Escolha o tipo que sera usado nos trechos criados. Use 'Ultima Desenhada' para repetir a eletrocalha mais recente do modelo."/>
+                                <ComboBox x:Name="cb_type"/>
+                            </StackPanel>
+                        </GroupBox>
 
-                <GroupBox Header="Tipo de Eletrocalha" Style="{StaticResource Gb}">
-                    <StackPanel>
-                        <TextBlock Style="{StaticResource Hint}"
-                            Text="Tipo de eletrocalha que será modelada (ex: Perfurada, Leito, etc.)."/>
-                        <ComboBox x:Name="cb_type"/>
+                        <GroupBox Header="Dimensionamento automatico" Style="{StaticResource Gb}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource Hint}"
+                                    Text="Quando ativado, a largura e altura vem do conector do equipamento. Se nao houver conector valido, usa os valores da aba Dimensoes."/>
+                                <CheckBox x:Name="chk_use_connector" Content="Ler dimensoes do conector automaticamente"/>
+                            </StackPanel>
+                        </GroupBox>
                     </StackPanel>
-                </GroupBox>
+                </ScrollViewer>
+            </TabItem>
 
-                <GroupBox Header="Dimensionamento" Style="{StaticResource Gb}">
-                    <StackPanel>
-                        <TextBlock Style="{StaticResource Hint}"
-                            Text="Se ativado, lê as dimensões (largura/altura) direto do conector do equipamento. Caso contrário, usa os valores padrão abaixo."/>
-                        <CheckBox x:Name="chk_use_connector" Content="Ler dimensões do conector automaticamente"/>
+            <TabItem Padding="14,7">
+                <TabItem.Header>
+                    <TextBlock Text="Dimensoes" FontSize="13" FontWeight="SemiBold"/>
+                </TabItem.Header>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Background="#F2F2F2">
+                    <StackPanel Margin="4,6,4,10">
+                        <GroupBox Header="Largura Padrao (mm)" Style="{StaticResource Gb}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource Hint}"
+                                    Text="Exemplos: 100, 200, 300. Usado quando a dimensao nao puder ser lida do conector."/>
+                                <TextBox x:Name="tb_width"/>
+                            </StackPanel>
+                        </GroupBox>
+
+                        <GroupBox Header="Altura Padrao (mm)" Style="{StaticResource Gb}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource Hint}"
+                                    Text="Exemplos: 50, 100. Usado quando a dimensao nao puder ser lida do conector."/>
+                                <TextBox x:Name="tb_height"/>
+                            </StackPanel>
+                        </GroupBox>
+
+                        <GroupBox Header="Elevacao/Deslocamento (m)" Style="{StaticResource Gb}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource Hint}"
+                                    Text="Deslocamento base em relacao ao nivel atual. Usado em elementos sem conector."/>
+                                <TextBox x:Name="tb_offset"/>
+                            </StackPanel>
+                        </GroupBox>
                     </StackPanel>
-                </GroupBox>
+                </ScrollViewer>
+            </TabItem>
 
-                <GroupBox Header="Largura (mm)" Style="{StaticResource Gb}">
-                    <StackPanel>
-                        <TextBlock Style="{StaticResource Hint}"
-                            Text="Em mm — ex: 100, 200, 300 (Usado se falhar ao ler do conector)."/>
-                        <TextBox x:Name="tb_width"/>
+            <TabItem Padding="14,7">
+                <TabItem.Header>
+                    <TextBlock Text="Geral" FontSize="13" FontWeight="SemiBold"/>
+                </TabItem.Header>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Background="#F2F2F2">
+                    <StackPanel Margin="4,6,4,10">
+                        <GroupBox Header="Desenvolvedor" Style="{StaticResource Gb}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource Hint}"
+                                    Text="Modo de depuracao avancada."/>
+                                <CheckBox x:Name="chk_debug" Content="Ativar modo Debug (Logs detalhados)"/>
+                            </StackPanel>
+                        </GroupBox>
                     </StackPanel>
-                </GroupBox>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
 
-                <GroupBox Header="Altura (mm)" Style="{StaticResource Gb}">
-                    <StackPanel>
-                        <TextBlock Style="{StaticResource Hint}"
-                            Text="Em mm — ex: 50, 100."/>
-                        <TextBox x:Name="tb_height"/>
-                    </StackPanel>
-                </GroupBox>
-
-                <GroupBox Header="Elevação/Deslocamento (m)" Style="{StaticResource Gb}">
-                    <StackPanel>
-                        <TextBlock Style="{StaticResource Hint}"
-                            Text="Deslocamento base em metros — ex: 2.80, 3.00. Em relação ao nível atual."/>
-                        <TextBox x:Name="tb_offset"/>
-                    </StackPanel>
-                </GroupBox>
-                
-                <GroupBox Header="Desenvolvedor" Style="{StaticResource Gb}">
-                    <StackPanel>
-                        <TextBlock Style="{StaticResource Hint}"
-                            Text="Modo de depuração avançada (Logging detalhado)."/>
-                        <CheckBox x:Name="chk_debug" Content="Ativar modo Debug"/>
-                    </StackPanel>
-                </GroupBox>
-
-            </StackPanel>
-        </ScrollViewer>
-
-        <!-- BOTÕES -->
         <StackPanel Grid.Row="1" Orientation="Horizontal"
                     HorizontalAlignment="Right" Margin="0,12,0,0">
             <Button x:Name="btn_cancel" Content="Cancelar"
@@ -131,6 +158,5 @@
             <Button x:Name="btn_save"   Content="  Salvar  "
                     Style="{StaticResource BtnPrimary}"/>
         </StackPanel>
-
     </Grid>
 </Window>

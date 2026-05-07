@@ -29,6 +29,11 @@ output = script.get_output()
 
 BREAKERS = [16, 20, 25, 32, 40, 50, 63, 70, 80, 100, 125, 160, 200, 225, 250, 300, 400]
 SECTIONS = [1.5, 2.5, 4, 6, 10, 16, 25, 35, 50, 70, 95, 120, 150, 185, 240]
+PANEL_PREFIXES = ("QD", "QDE", "QDG", "QGBT", "QDL", "QF", "QM", "QP")
+PANEL_BREAKER_FACTOR = 1.15
+PANEL_MIN_BREAKER = 32
+PANEL_MIN_SECTION = 6.0
+EPR_90_WIRE_TYPE_NAME = "[Cu/EPR-XLPE/0,6-1kV/90°]-Un-D-3Cc"
 
 # Ampacidade (Iz) NBR 5410 - Método B1, 2 condutores, PVC 70°C
 AMPACITIES = {
@@ -75,25 +80,66 @@ def get_panel_name(panel):
         return "Quadro"
 
 
+def set_parameter_value(p, value):
+    if not p or p.IsReadOnly:
+        return False
+    if isinstance(value, ElementId):
+        p.Set(value)
+    elif p.StorageType == StorageType.String:
+        p.Set(str(value))
+    elif p.StorageType == StorageType.Integer:
+        p.Set(int(value))
+    elif p.StorageType == StorageType.ElementId:
+        p.Set(value if isinstance(value, ElementId) else ElementId(int(value)))
+    else:
+        p.Set(float(value))
+    return True
+
+
 def write_param(elem, builtin=None, names=None, value=None):
     if builtin:
         try:
-            p = elem.get_Parameter(builtin)
-            if p and not p.IsReadOnly:
-                p.Set(float(value)) if not isinstance(value, str) else p.Set(value)
+            if set_parameter_value(elem.get_Parameter(builtin), value):
                 return True
         except:
             pass
     if names:
         for n in names:
             try:
-                p = elem.LookupParameter(n)
-                if p and not p.IsReadOnly:
-                    p.Set(float(value)) if not isinstance(value, str) else p.Set(value)
+                if set_parameter_value(elem.LookupParameter(n), value):
                     return True
             except:
                 continue
     return False
+
+
+def get_param_text(elem, builtin=None, names=None):
+    params = []
+    if builtin:
+        try:
+            params.append(elem.get_Parameter(builtin))
+        except:
+            pass
+    if names:
+        for n in names:
+            try:
+                params.append(elem.LookupParameter(n))
+            except:
+                pass
+
+    for p in params:
+        try:
+            if p and p.HasValue:
+                val = p.AsString() or p.AsValueString()
+                if val:
+                    return val
+        except:
+            continue
+    return ""
+
+
+def normalize_text(value):
+    return re.sub(r"[^A-Z0-9]", "", (value or "").upper())
 
 
 def get_standard_breaker(target):
@@ -101,6 +147,126 @@ def get_standard_breaker(target):
         if b >= target:
             return b
     return BREAKERS[-1]
+
+
+def get_next_standard_breaker(current):
+    for b in BREAKERS:
+        if b > current:
+            return b
+    return BREAKERS[-1]
+
+
+def get_param_double(elem, builtin=None, names=None, default=0.0):
+    params = []
+    if builtin:
+        try:
+            params.append(elem.get_Parameter(builtin))
+        except:
+            pass
+    if names:
+        for n in names:
+            try:
+                params.append(elem.LookupParameter(n))
+            except:
+                pass
+
+    for p in params:
+        try:
+            if p and p.HasValue:
+                txt = p.AsValueString()
+                if txt:
+                    m = re.search(r"[-+]?\d+(?:[,.]\d+)?", txt)
+                    if m:
+                        return float(m.group(0).replace(",", "."))
+                return float(p.AsDouble())
+        except:
+            continue
+    return default
+
+
+def get_circuit_label(circuit):
+    return get_param_text(
+        circuit,
+        builtin=BuiltInParameter.RBS_ELEC_CIRCUIT_NAME,
+        names=["Nome da carga", "Load Name"]
+    )
+
+
+def is_panel_feeder(circuit):
+    circuit_number = normalize_text(circuit.CircuitNumber or "")
+    load_name = normalize_text(get_circuit_label(circuit))
+    prefix = normalize_text(get_param_text(circuit, names=["Préfixo Circuito", "Prefixo Circuito", "Circuit Prefix"]))
+
+    names_to_check = [load_name, prefix, circuit_number]
+    looks_like_panel = any(
+        any(name.startswith(p) for p in PANEL_PREFIXES)
+        for name in names_to_check if name
+    )
+    if not looks_like_panel:
+        return False
+
+    if load_name and circuit_number.startswith(load_name):
+        return True
+    if prefix and circuit_number.startswith(prefix):
+        return True
+    return False
+
+
+def get_element_name(elem):
+    try:
+        return elem.Name
+    except:
+        try:
+            return Element.Name.GetValue(elem)
+        except:
+            return ""
+
+
+def find_epr_90_wire_type():
+    exact = None
+    fallback = None
+    try:
+        for wt in FilteredElementCollector(doc).OfClass(WireType):
+            name = get_element_name(wt)
+            if name == EPR_90_WIRE_TYPE_NAME:
+                exact = wt
+                break
+            n = normalize_text(name)
+            if "EPR" in n and "90" in n:
+                fallback = wt
+        return exact or fallback
+    except:
+        return None
+
+
+def write_wire_type(circuit, wire_type):
+    if not wire_type:
+        return False
+    try:
+        return write_param(
+            circuit,
+            builtin=BuiltInParameter.RBS_ELEC_CIRCUIT_WIRE_TYPE_PARAM,
+            names=["Tipo de fiação", "Wire Type"],
+            value=wire_type.Id
+        )
+    except:
+        return write_param(circuit, names=["Tipo de fiação", "Wire Type"], value=wire_type.Id)
+
+
+def write_breaker(circuit, rating):
+    wrote = write_param(
+        circuit,
+        builtin=BuiltInParameter.RBS_ELEC_CIRCUIT_RATING_PARAM,
+        names=["Proteção do circuito"],
+        value=rating
+    )
+    actual = get_param_double(
+        circuit,
+        builtin=BuiltInParameter.RBS_ELEC_CIRCUIT_RATING_PARAM,
+        names=["Proteção do circuito"],
+        default=0.0
+    )
+    return wrote, actual
 
 
 def calculate_vd(length_m, current, voltage, section_mm2, phases=1):
@@ -163,6 +329,7 @@ def sync_circuits(circuits):
       3. Cabo: par mínimo do disjuntor → sobe SEÇÃO enquanto VD > 3% ou Iz < In
     """
     ok, erros = [], []
+    epr_90_wire_type = find_epr_90_wire_type()
 
     with Transaction(doc, "Sincronizar Circuitos") as t:
         t.Start()
@@ -174,6 +341,9 @@ def sync_circuits(circuits):
             num = c.CircuitNumber or "?"
             updated = []
             err = []
+            panel_feeder = is_panel_feeder(c)
+            if panel_feeder:
+                updated.append("Alimentador")
 
             # 1. DISTÂNCIA
             dist_m = 0.0
@@ -189,8 +359,12 @@ def sync_circuits(circuits):
             # 2. CORRENTE E TENSÃO
             try:
                 i_proj = (c.ApparentLoad / c.Voltage) if c.Voltage > 0 else 0.0
-                p_volt = c.get_Parameter(BuiltInParameter.RBS_ELEC_VOLTAGE)
-                v_nominal = p_volt.AsDouble() if p_volt else 127.0
+                v_nominal = get_param_double(
+                    c,
+                    builtin=BuiltInParameter.RBS_ELEC_VOLTAGE,
+                    names=["Tensão", "TensÃ£o", "Voltage"],
+                    default=127.0
+                )
                 poles = c.PolesNumber
 
                 fca, fct = 1.0, 1.0
@@ -214,7 +388,13 @@ def sync_circuits(circuits):
             # 3. DIMENSIONAMENTO
             try:
                 rating = get_standard_breaker(i_corr)
+                if panel_feeder:
+                    rating = get_standard_breaker(i_corr * PANEL_BREAKER_FACTOR)
+                    rating = max(rating, get_next_standard_breaker(get_standard_breaker(i_corr)))
+                    rating = max(rating, PANEL_MIN_BREAKER)
                 section = PAIRED_SECTIONS.get(rating, 2.5)
+                if panel_feeder:
+                    section = max(section, PANEL_MIN_SECTION)
 
                 for _ in range(len(SECTIONS)):
                     vd = calculate_vd(dist_m, i_proj, v_nominal, section, phases=poles)
@@ -226,10 +406,24 @@ def sync_circuits(circuits):
                         break
                     section = SECTIONS[idx + 1]
 
-                if write_param(c, builtin=BuiltInParameter.RBS_ELEC_CIRCUIT_RATING_PARAM, value=rating):
-                    updated.append("Disj: {}A".format(int(rating)))
+                breaker_written, actual_rating = write_breaker(c, rating)
+                if breaker_written:
+                    if actual_rating and abs(actual_rating - rating) > 0.1:
+                        updated.append("Disj pedido: {}A (ficou {}A)".format(
+                            int(rating), int(round(actual_rating))))
+                    else:
+                        updated.append("Disj: {}A".format(int(rating)))
+                else:
+                    err.append("Disjuntor: parametro bloqueado ou tabela recusou {}A".format(int(rating)))
                 if write_param(c, names=["Seção do Condutor Adotado (mm²)", "Condutor Adotado"], value=section):
                     updated.append("Cabo: {}mm²".format(section))
+                if panel_feeder:
+                    if write_wire_type(c, epr_90_wire_type):
+                        updated.append("Tipo: EPR 90")
+                    elif epr_90_wire_type:
+                        err.append("Tipo de fiacao: parametro bloqueado")
+                    else:
+                        err.append("Tipo de fiacao: EPR 90 nao encontrado no projeto")
             except Exception as ex:
                 err.append("Dimensionamento: " + str(ex))
 

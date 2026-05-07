@@ -46,6 +46,7 @@ if not doc:
     forms.alert("Erro Crítico de Inicialização:\nNão foi possível localizar nenhum projeto aberto no Revit.\n\nPor favor, feche e abra o Revit ou verifique se há um arquivo (.rvt) ativo.", exitscript=True)
 
 HAS_PDF_SUPPORT = REVIT_YEAR >= 2022
+DWG_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".gif")
 
 # --- CAMINHO DE CONFIGURACAO ---
 CONFIG_DIR = os.path.join(os.getenv('APPDATA'), 'LFTools')
@@ -144,7 +145,7 @@ class SheetItem(object):
         self.name_pattern = new_pattern
         self.FileName = self._generate_filename(self.Element, new_pattern)
 
-    def update_status(self, folder_path):
+    def update_status(self, folder_path, pdf_folder=None, dwg_folder=None):
         self.StatusIcon = ""
         self.StatusColor = "Transparent"
         self.StatusToolTip = ""
@@ -154,9 +155,12 @@ class SheetItem(object):
             self.StatusColor = "#FF888888"
             self.StatusToolTip = "Folha vazia (sem vistas)"
 
+        pdf_folder = pdf_folder or folder_path
+        dwg_folder = dwg_folder or folder_path
+
         if folder_path and os.path.exists(folder_path):
-            exists_pdf = os.path.exists(os.path.join(folder_path, "{}.pdf".format(self.PdfFileName)))
-            exists_dwg = os.path.exists(os.path.join(folder_path, "{}.dwg".format(self.FileName)))
+            exists_pdf = pdf_folder and os.path.exists(os.path.join(pdf_folder, "{}.pdf".format(self.PdfFileName)))
+            exists_dwg = dwg_folder and os.path.exists(os.path.join(dwg_folder, "{}.dwg".format(self.FileName)))
             if exists_pdf or exists_dwg:
                 # Usa sinal de warning padrao texto sem "Variacao Emoji" (\uFE0F) para permitir customizacao de cor 
                 self.StatusIcon = "\u26A0"
@@ -206,6 +210,8 @@ def load_config():
     default_config = {
         "last_folder": "",
         "open_folder_after": True,
+        "separate_folders": True,
+        "delete_dwg_images": True,
         "profiles": {},
         "last_profile": "",
         "debug_mode": False
@@ -277,6 +283,8 @@ class LuisExporterWindow(forms.WPFWindow):
         self.config = load_config()
         self.txt_OutputFolder.Text = self.config.get("last_folder", "")
         self.chk_OpenFolderAfter.IsChecked = self.config.get("open_folder_after", True)
+        self.chk_SeparateFolders.IsChecked = self.config.get("separate_folders", True)
+        self.chk_DeleteDWGImages.IsChecked = self.config.get("delete_dwg_images", True)
         self.chk_DebugMode.IsChecked = self.config.get("debug_mode", False)
         
         # Inicializa o Logger de Debug (integrado com o log da UI)
@@ -375,6 +383,42 @@ class LuisExporterWindow(forms.WPFWindow):
 
 
     # --- LOGICA DE VERIFICACAO DE ARQUIVOS ---
+    def get_export_folders(self, root_folder, create=False):
+        """Retorna as pastas efetivas de saida para DWG e PDF."""
+        use_subfolders = bool(self.chk_SeparateFolders.IsChecked) if hasattr(self, 'chk_SeparateFolders') else False
+        dwg_folder = os.path.join(root_folder, "DWG") if use_subfolders else root_folder
+        pdf_folder = os.path.join(root_folder, "PDF") if use_subfolders else root_folder
+
+        if create:
+            for path in set([dwg_folder, pdf_folder]):
+                if path and not os.path.exists(path):
+                    os.makedirs(path)
+
+        return dwg_folder, pdf_folder
+
+    def list_dwg_image_files(self, folder):
+        try:
+            if not folder or not os.path.exists(folder):
+                return set()
+            return set(f for f in os.listdir(folder) if os.path.splitext(f)[1].lower() in DWG_IMAGE_EXTENSIONS)
+        except:
+            return set()
+
+    def cleanup_new_dwg_images(self, folder, before_images):
+        deleted = 0
+        failed = 0
+        if not bool(self.chk_DeleteDWGImages.IsChecked):
+            return deleted, failed
+
+        after_images = self.list_dwg_image_files(folder)
+        for file_name in sorted(after_images - before_images):
+            try:
+                os.remove(os.path.join(folder, file_name))
+                deleted += 1
+            except:
+                failed += 1
+        return deleted, failed
+
     def check_existing_files(self, folder=None):
         """Verifica quais arquivos ja existem na pasta de destino"""
         try:
@@ -384,8 +428,10 @@ class LuisExporterWindow(forms.WPFWindow):
             if not folder or not os.path.exists(folder):
                 return
 
+            dwg_folder, pdf_folder = self.get_export_folders(folder, create=False)
+
             for item in self.sheet_items:
-                item.update_status(folder)
+                item.update_status(folder, pdf_folder, dwg_folder)
             
             self._hard_refresh()
         except:
@@ -432,6 +478,8 @@ class LuisExporterWindow(forms.WPFWindow):
                 self.chk_ExportDWG.IsChecked = data["export_dwg"]
             if "export_pdf" in data:
                 self.chk_ExportPDF.IsChecked = data["export_pdf"]
+            if "delete_dwg_images" in data:
+                self.chk_DeleteDWGImages.IsChecked = data["delete_dwg_images"]
                 
             # DWG Setup
             if "dwg_setup" in data:
@@ -458,6 +506,8 @@ class LuisExporterWindow(forms.WPFWindow):
                 self.txt_OutputFolder.Text = data["output_folder"]
             if "open_folder" in data:
                 self.chk_OpenFolderAfter.IsChecked = data["open_folder"]
+            if "separate_folders" in data:
+                self.chk_SeparateFolders.IsChecked = data["separate_folders"]
             if "debug_mode" in data:
                 self.chk_DebugMode.IsChecked = data["debug_mode"]
 
@@ -483,6 +533,7 @@ class LuisExporterWindow(forms.WPFWindow):
         return {
             "export_dwg": bool(self.chk_ExportDWG.IsChecked),
             "export_pdf": bool(self.chk_ExportPDF.IsChecked),
+            "delete_dwg_images": bool(self.chk_DeleteDWGImages.IsChecked),
             "debug_mode": bool(self.chk_DebugMode.IsChecked),
             "dwg_setup": self.cb_DWGSetups.Text,
             "pdf_hide_crop": bool(self.chk_HideCrop.IsChecked),
@@ -491,6 +542,7 @@ class LuisExporterWindow(forms.WPFWindow):
             "name_pattern": self.txt_NamePattern.Text,
             "output_folder": self.txt_OutputFolder.Text,
             "open_folder": bool(self.chk_OpenFolderAfter.IsChecked),
+            "separate_folders": bool(self.chk_SeparateFolders.IsChecked),
             "selected_sheets": selected_sheet_numbers
         }
 
@@ -908,6 +960,12 @@ class LuisExporterWindow(forms.WPFWindow):
             else:
                 return
 
+        try:
+            dwg_folder, pdf_folder = self.get_export_folders(folder, create=True)
+        except Exception as ex:
+            forms.alert("Erro ao criar pastas de saida: " + str(ex))
+            return
+
         selected_items = [i for i in self.sheet_items if i.IsSelected]
         if not selected_items:
             forms.alert("Selecione pelo menos uma folha.")
@@ -953,6 +1011,11 @@ class LuisExporterWindow(forms.WPFWindow):
         self.log_message("INICIANDO EXPORTAÇÃO...")
         self.log_message("Total de folhas: {}".format(total_items))
         self.log_message("Pasta: {}".format(folder))
+        if bool(self.chk_SeparateFolders.IsChecked):
+            self.log_message("Pasta DWG: {}".format(dwg_folder))
+            self.log_message("Pasta PDF: {}".format(pdf_folder))
+        if do_dwg and bool(self.chk_DeleteDWGImages.IsChecked):
+            self.log_message("Limpeza de imagens vinculadas do DWG ATIVADA")
         
         # Merge PDF Info
         do_merge_pdf = do_pdf and self.chk_CombinePDF.IsChecked
@@ -1022,11 +1085,12 @@ class LuisExporterWindow(forms.WPFWindow):
                 # --- DWG ---
                 if do_dwg:
                     try:
-                        doc.Export(folder, item.FileName, view_ids, dwg_opts)
+                        before_dwg_images = self.list_dwg_image_files(dwg_folder)
+                        doc.Export(dwg_folder, item.FileName, view_ids, dwg_opts)
                         self.log_message("  [DWG] OK: {}".format(item.FileName))
 
                         # Verificar Renomear DWG (Revit as vezes poe prefixo)
-                        dwg_path = os.path.join(folder, "{}.dwg".format(item.FileName))
+                        dwg_path = os.path.join(dwg_folder, "{}.dwg".format(item.FileName))
                         for _ in range(15):
                             if self.is_cancelled or os.path.exists(dwg_path): break
                             time.sleep(0.3)
@@ -1034,10 +1098,16 @@ class LuisExporterWindow(forms.WPFWindow):
                         
                         if not os.path.exists(dwg_path):
                             # Tenta achar arquivo similar com sufixo -Sheet ou _Sheet
-                            alt = os.path.join(folder, "{}_Sheet.dwg".format(item.FileName))
+                            alt = os.path.join(dwg_folder, "{}_Sheet.dwg".format(item.FileName))
                             if os.path.exists(alt):
                                 self.safe_rename_file(alt, dwg_path)
                                 self.log_message("  > DWG Renomeado de _Sheet")
+
+                        deleted_images, failed_images = self.cleanup_new_dwg_images(dwg_folder, before_dwg_images)
+                        if deleted_images:
+                            self.log_message("  > Imagens vinculadas apagadas: {}".format(deleted_images))
+                        if failed_images:
+                            self.log_message("  > AVISO: falha ao apagar {} imagem(ns) vinculada(s)".format(failed_images))
                         
                         self.add_export_item(item.Number, item.FileName, "success", "DWG")
                         success_count += 1
@@ -1062,23 +1132,23 @@ class LuisExporterWindow(forms.WPFWindow):
                             pdf_opts = self.create_pdf_options()
                             pdf_opts.FileName = item.PdfFileName
 
-                            expected_path = os.path.join(folder, "{}.pdf".format(item.PdfFileName))
+                            expected_path = os.path.join(pdf_folder, "{}.pdf".format(item.PdfFileName))
                             try:
                                 if os.path.exists(expected_path): os.remove(expected_path)
                             except: pass
 
                             # Revit ignora pdf_opts.FileName e gera com nome próprio,
                             # então detectamos o arquivo novo pela diferença de listagem.
-                            before_files = set(f for f in os.listdir(folder) if f.lower().endswith(".pdf"))
-                            doc.Export(folder, view_ids, pdf_opts)
+                            before_files = set(f for f in os.listdir(pdf_folder) if f.lower().endswith(".pdf"))
+                            doc.Export(pdf_folder, view_ids, pdf_opts)
 
                             final_path = None
                             for _ in range(30):  # até 10s
                                 if self.is_cancelled: break
-                                current_files = set(f for f in os.listdir(folder) if f.lower().endswith(".pdf"))
+                                current_files = set(f for f in os.listdir(pdf_folder) if f.lower().endswith(".pdf"))
                                 new_files = current_files - before_files
                                 if new_files:
-                                    generated = os.path.join(folder, next(iter(new_files)))
+                                    generated = os.path.join(pdf_folder, next(iter(new_files)))
                                     if self.safe_rename_file(generated, expected_path):
                                         final_path = expected_path
                                     break
@@ -1133,7 +1203,7 @@ class LuisExporterWindow(forms.WPFWindow):
                 pdf_opts.Combine = True
                 
                 merge_ids = List[DB.ElementId](pdf_merge_list)
-                doc.Export(folder, merge_ids, pdf_opts)
+                doc.Export(pdf_folder, merge_ids, pdf_opts)
                 
                 self.log_message("="*30)
                 self.log_message("[PDF MERGE] ARQUIVO GERADO: {}.pdf".format(merge_name))
@@ -1154,6 +1224,8 @@ class LuisExporterWindow(forms.WPFWindow):
         self.update_counters(success_count, error_count)
         
         self.config["open_folder_after"] = self.chk_OpenFolderAfter.IsChecked
+        self.config["separate_folders"] = bool(self.chk_SeparateFolders.IsChecked)
+        self.config["delete_dwg_images"] = bool(self.chk_DeleteDWGImages.IsChecked)
         save_config(self.config)
 
         self.log_message("="*50)

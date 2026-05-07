@@ -207,11 +207,25 @@ def _get_3d_view(doc):
 
 
 def _is_luminaire_sym(symbol):
-    """Retorna True se o símbolo for da categoria Luminárias (OST_LightingFixtures)."""
+    """Retorna True para luminárias reais ou pontos/tipos nomeados como luminária."""
     try:
-        return symbol.Category.Id.IntegerValue == int(BuiltInCategory.OST_LightingFixtures)
+        if symbol.Category.Id.IntegerValue == int(BuiltInCategory.OST_LightingFixtures):
+            return True
     except:
-        return False
+        pass
+    parts = []
+    for getter in (
+            lambda: symbol.Category.Name,
+            lambda: symbol.FamilyName,
+            lambda: symbol.Family.Name,
+            lambda: symbol.Name):
+        try:
+            val = getter()
+            if val:
+                parts.append(val)
+        except:
+            pass
+    return "lumin" in _normalize(u" ".join(parts))
 
 
 # ==================== Circuit helper ====================
@@ -284,7 +298,10 @@ class PontosVinculoWindow(forms.WPFWindow):
         )
         self._elec_symbols = self._collect_symbols(ELEC_CATS)
         self._data_symbols = self._collect_symbols(DATA_CATS)
-        self._elec_face_symbols = [s for s in self._elec_symbols if s.get('is_face')]
+        self._elec_face_symbols = [
+            s for s in self._elec_symbols
+            if s.get('is_face') or s.get('is_luminaire')
+        ]
         self._data_face_symbols = [s for s in self._data_symbols if s.get('is_face')]
         self._family_rows = []
         self._filter_non_electric = True
@@ -353,8 +370,10 @@ class PontosVinculoWindow(forms.WPFWindow):
                                                   FamilyPlacementType.OneLevelBasedHosted)
                             except:
                                 pass
+                            is_luminaire = _is_luminaire_sym(s)
                             result.append({"full_name": full_name, "display": sym_name,
-                                           "symbol": s, "is_face": is_face})
+                                           "symbol": s, "is_face": is_face,
+                                           "is_luminaire": is_luminaire})
                     except Exception as e:
                         dbg.error("Erro no simbolo {}: {}".format(getattr(s, 'Id', '?'), e))
             except Exception as e:
@@ -439,10 +458,7 @@ class PontosVinculoWindow(forms.WPFWindow):
                 for p in phases:
                     net_phases.Add(p.Name)
                 self.cb_Phase.ItemsSource = net_phases
-                if phases:
-                    self.cb_Phase.SelectedIndex = len(phases)
-                else:
-                    self.cb_Phase.SelectedIndex = 0
+                self.cb_Phase.SelectedIndex = 0
             except:
                 self.cb_Phase.ItemsSource = None
 

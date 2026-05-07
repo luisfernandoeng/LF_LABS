@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 Conectar Eletrocalha - Roteamento sequencial automático entre elementos.
 
@@ -52,6 +52,17 @@ def __get_name__(obj):
     except: pass
     return ""
 
+def __get_family_name__(obj):
+    try: return obj.FamilyName
+    except: pass
+    try: return Element.Name.GetValue(obj.Family)
+    except: pass
+    try:
+        p = obj.get_Parameter(BuiltInParameter.SYMBOL_FAMILY_NAME_PARAM)
+        if p and p.HasValue: return p.AsString()
+    except: pass
+    return ""
+
 # =====================================================================
 #  CONFIGURAÇÕES
 # =====================================================================
@@ -95,7 +106,8 @@ class SettingsWindow(forms.WPFWindow):
             n = __get_name__(t)
             if n:
                 names.append(n)
-        return ['(Padrão do Revit)'] + sorted(names, key=lambda x: x.lower())
+        options = ['(Usar Ultima Desenhada)', '(Padrao do Revit)']
+        return options + sorted(names, key=lambda x: x.lower())
 
     def _populate_combo(self, combo, items, selected):
         combo.Items.Clear()
@@ -205,6 +217,16 @@ def get_default_cabletray_type():
         pass
     col = FilteredElementCollector(doc).OfClass(clr.GetClrType(CableTrayType))
     return col.FirstElementId()
+
+def get_last_cabletray(doc):
+    try:
+        all_ids = FilteredElementCollector(doc).OfClass(CableTray).ToElementIds()
+        if all_ids:
+            max_val = max(eid.IntegerValue for eid in all_ids)
+            return doc.GetElement(ElementId(System.Int64(max_val)))
+    except Exception:
+        pass
+    return None
 
 # WarningSwallower vem de lf_utils.make_warning_swallower() — importado no topo
 
@@ -317,14 +339,19 @@ def execute_connection():
     dbg.section("Fase 2: Parâmetros")
 
     pref_type_name = settings.get('cabletray_type', '')
+    last_ref_tray = get_last_cabletray(doc)
     ct_type_id = None
-    if pref_type_name and pref_type_name != "(Padrão do Revit)":
+    if pref_type_name and pref_type_name not in ("(Usar Ultima Desenhada)", "(Padrao do Revit)", "(Padrão do Revit)"):
         for t in FilteredElementCollector(doc).OfClass(clr.GetClrType(CableTrayType)):
             if __get_name__(t) == pref_type_name:
                 ct_type_id = t.Id
                 break
         dbg.result(ct_type_id is not None,
                    "Tipo '{}' encontrado: Id={}".format(pref_type_name, ct_type_id))
+
+    if not ct_type_id and pref_type_name not in ("(Padrao do Revit)", "(Padrão do Revit)") and last_ref_tray:
+        ct_type_id = last_ref_tray.GetTypeId()
+        dbg.debug("Usando tipo da última eletrocalha desenhada: Id={}".format(ct_type_id))
 
     if not ct_type_id:
         ct_type_id = get_default_cabletray_type()

@@ -609,6 +609,11 @@
                                           Content="Manter formatação do Revit"
                                           Style="{StaticResource ModernCheckBox}"
                                           Margin="0,6,0,0"/>
+                                <CheckBox x:Name="CheckBox_PanelElementQuantity"
+                                          Content="Em quadros, usar quantidade de elementos no circuito"
+                                          Style="{StaticResource ModernCheckBox}"
+                                          Margin="0,6,0,0"
+                                          Visibility="Collapsed"/>
                                 <StackPanel x:Name="pnl_FormatWarning"
                                             Orientation="Horizontal"
                                             Margin="24,4,0,0"
