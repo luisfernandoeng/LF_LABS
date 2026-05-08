@@ -4,17 +4,24 @@ Criação de circuitos e redes de dados"""
 
 __title__ = "Dados"
 __author__ = "Luís Fernando"
+__persistentengine__ = True
+
+DATA_DEBUG = False
 
 from pyrevit import forms
 from System.Collections.Generic import List
 from Autodesk.Revit.DB import *
 from Autodesk.Revit.DB.Electrical import *
+from Autodesk.Revit.UI import IExternalEventHandler, ExternalEvent
 from Autodesk.Revit.UI.Selection import ObjectType, ISelectionFilter
 from Autodesk.Revit.Exceptions import OperationCanceledException
 from collections import OrderedDict
 import traceback
+import os
+import System
 
 import lf_electrical_core
+lf_electrical_core.DEBUG_MODE = DATA_DEBUG
 from lf_electrical_core import (
     doc, uidoc, get_current_panel, set_current_panel, get_panel_name, set_param,
     ConnectorDomainFilter, get_valid_electrical_elements,
@@ -91,9 +98,13 @@ _DATA_SYS_TYPE = _resolve_data_sys_type()
 class DataCategoryFilter(ISelectionFilter):
     """Filtro de seleção restrito às categorias de dados/telecom."""
     def AllowElement(self, e):
-        if not e.Category:
+        try:
+            if not e or not e.Category:
+                return False
+            return e.Category.Id.IntegerValue in DATA_CATS
+        except Exception:
             return False
-        return e.Category.Id.IntegerValue in DATA_CATS
+
     def AllowReference(self, ref, pos):
         return False
 
@@ -210,6 +221,11 @@ def select_and_configure_panel_data():
 
 def create_grouped_circuit_data():
     dbg.section('DADOS - Criar Circuito Agrupado')
+    if _DATA_SYS_TYPE is None:
+        forms.alert("Esta versao/configuracao do Revit nao expos um ElectricalSystemType de dados compativel.", title="Dados")
+        dbg.exit('create_grouped_circuit_data', 'SEM DATA SYS TYPE')
+        return
+
     panel = get_current_panel()
     if not panel:
         forms.alert("Selecione o rack de telecom primeiro!")
@@ -352,6 +368,11 @@ def create_grouped_circuit_data():
 
 def create_individual_circuits_data():
     dbg.section('DADOS - Criar Circuitos Individuais')
+    if _DATA_SYS_TYPE is None:
+        forms.alert("Esta versao/configuracao do Revit nao expos um ElectricalSystemType de dados compativel.", title="Dados")
+        dbg.exit('create_individual_circuits_data', 'SEM DATA SYS TYPE')
+        return
+
     panel = get_current_panel()
     if not panel:
         forms.alert("Selecione o rack de telecom primeiro!")
@@ -494,6 +515,97 @@ def main_menu():
             forms.alert("Erro:\n" + traceback.format_exc())
 
 
+class _DataActionHandler(IExternalEventHandler):
+    """Executa acoes da janela Dados dentro do contexto da API do Revit."""
+    def __init__(self):
+        self._action = None
+        self._window = None
+
+    def Execute(self, _uiapp):
+        action = self._action
+        self._action = None
+        if action is None:
+            return
+        try:
+            action()
+        except OperationCanceledException:
+            pass
+        except Exception as ex:
+            dbg.fail("Erro na janela Dados: {}".format(ex))
+            dbg.fail(traceback.format_exc())
+            forms.alert("Erro. Veja o console do pyRevit.", title="Dados")
+        finally:
+            win = self._window
+            if win:
+                try:
+                    win._refresh_status()
+                    win.Topmost = True
+                except Exception:
+                    pass
+
+    def GetName(self):
+        return "LF Dados Action"
+
+
+_action_handler = _DataActionHandler()
+_ext_event = ExternalEvent.Create(_action_handler)
+
+
+class DataWindow(forms.WPFWindow):
+    def __init__(self):
+        xaml_path = os.path.join(os.path.dirname(__file__), "DataWindow.xaml")
+        forms.WPFWindow.__init__(self, xaml_path)
+        self.DebugToggle.IsChecked = bool(lf_electrical_core.DEBUG_MODE)
+        _action_handler._window = self
+        self._refresh_status()
+
+    def _refresh_status(self):
+        try:
+            quadro = get_current_panel()
+            self.StatusText.Text = "Rack/Quadro: " + (get_panel_name(quadro) if quadro else "NENHUM")
+        except Exception:
+            self.StatusText.Text = "Rack/Quadro: NENHUM"
+
+    def _run_action(self, action):
+        try:
+            self.Topmost = False
+        except Exception:
+            pass
+        _action_handler._action = action
+        _ext_event.Raise()
+
+    def debug_toggle_click(self, sender, args):
+        global DATA_DEBUG
+        DATA_DEBUG = bool(self.DebugToggle.IsChecked)
+        lf_electrical_core.DEBUG_MODE = DATA_DEBUG
+        try:
+            self.DebugToggle.Content = "Debug ligado" if DATA_DEBUG else "Debug desligado"
+        except Exception:
+            pass
+
+    def refresh_click(self, sender, args):
+        self._refresh_status()
+
+    def close_click(self, sender, args):
+        self.Close()
+
+    def select_panel_click(self, sender, args):
+        self._run_action(select_and_configure_panel_data)
+
+    def individual_click(self, sender, args):
+        self._run_action(create_individual_circuits_data)
+
+    def grouped_click(self, sender, args):
+        self._run_action(create_grouped_circuit_data)
+
+
+def show_data_window():
+    System.Threading.Thread.Sleep(250)
+    win = DataWindow()
+    win.show(modal=False)
+    return win
+
+
 if __name__ == "__main__":
     try:
         is_shift = __shiftclick__
@@ -503,4 +615,8 @@ if __name__ == "__main__":
     if is_shift:
         lf_electrical_core.show_settings()
     else:
-        main_menu()
+        try:
+            show_data_window()
+        except Exception as ex:
+            dbg.warn("Falha ao abrir janela persistente; usando menu antigo: {}".format(ex))
+            main_menu()

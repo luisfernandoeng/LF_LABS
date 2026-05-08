@@ -448,8 +448,100 @@ def _get_panel_param_value(element, builtin_names, lookup_names, default=""):
         return default
     return value
 
+def _find_numeric_parameter_containing(element, include_terms, exclude_terms=None, min_value=None, max_value=None):
+    """Procura um parametro numerico por partes do nome."""
+    if exclude_terms is None:
+        exclude_terms = []
+    try:
+        parameters = list(element.Parameters)
+    except:
+        parameters = []
+
+    for param in parameters:
+        try:
+            pname = param.Definition.Name.lower()
+        except:
+            continue
+
+        matched = True
+        for term in include_terms:
+            if term.lower() not in pname:
+                matched = False
+                break
+        if not matched:
+            continue
+
+        blocked = False
+        for term in exclude_terms:
+            if term.lower() in pname:
+                blocked = True
+                break
+        if blocked:
+            continue
+
+        value = _parse_excel_number(_parameter_display_value(param), None)
+        if value is None:
+            continue
+        if min_value is not None and value < min_value:
+            continue
+        if max_value is not None and value > max_value:
+            continue
+        return value
+
+    return None
+
+def _find_demand_factor_for_circuit(element, load_classification=""):
+    """Prioriza o fator de demanda por tipo de carga; ignora parametros FD zerados."""
+    class_text = (str(load_classification or "")).lower()
+    search_sets = []
+
+    if class_text:
+        normalized = class_text.replace(u"ç", "c").replace(u"ã", "a").replace(u"é", "e")
+        if "tue" in normalized:
+            search_sets.append(['tue', 'demand factor'])
+            search_sets.append(['tue', 'fator de demanda'])
+        if "ilumin" in normalized:
+            search_sets.append(['ilumin', 'fator de demanda'])
+            search_sets.append(['lighting', 'demand factor'])
+        if "equipamentos" in normalized or "rede" in normalized:
+            search_sets.append(['equipamentos', 'fator de demanda'])
+            search_sets.append(['equipamentos', 'demand factor'])
+        if "hvac" in normalized:
+            search_sets.append(['hvac', 'demand factor'])
+            search_sets.append(['hvac', 'fator de demanda'])
+
+    search_sets.extend([
+        ['demand factor'],
+        [u'fator de demanda'],
+        ['fd'],
+    ])
+
+    for terms in search_sets:
+        value = _find_numeric_parameter_containing(
+            element, terms, ['total'], 0.000001, 1
+        )
+        if value not in (None, ""):
+            return value
+
+    return 1
+
 def _get_circuit_element_count(electrical_system):
     """Conta os elementos ligados ao circuito; volta 1 quando a API nao expuser a lista."""
+    param_qty = _get_panel_param_value(
+        electrical_system,
+        [],
+        [u'Número de elementos', 'Numero de elementos', u'Nº de elementos',
+         'N de elementos', 'Number of Elements', 'Number of elements'],
+        ""
+    )
+    qty = _parse_excel_number(param_qty, None)
+    if qty is not None and qty > 0:
+        return int(qty)
+
+    qty = _find_numeric_parameter_containing(electrical_system, ['elementos'], [], 1, None)
+    if qty is not None and qty > 0:
+        return int(qty)
+
     candidates = []
     try:
         candidates = list(electrical_system.Elements)
@@ -510,7 +602,7 @@ def get_excel_format(workbook, properties):
     return _format_pool[key]
 
 # ==================== FUNÇÕES DE EXTRAÇÃO OTIMIZADAS ====================
-def get_panel_schedule_data(schedule_view, use_element_quantity=False):
+def get_panel_schedule_data(schedule_view, use_element_quantity=True):
     """Extrai dados dos paineis com cache seguro."""
     cache_key = ("panel_schedule", schedule_view.Id.IntegerValue, bool(use_element_quantity))
     cached = _param_def_cache.get(cache_key)
@@ -600,6 +692,13 @@ def get_panel_schedule_data(schedule_view, use_element_quantity=False):
                 item = row_data.get('Numero do Circuito', "")
                 description = row_data.get('Nome da Carga', "")
                 apparent_load = row_data.get('Carga Aparente (VA)', "")
+                load_classification = _get_panel_param_value(
+                    sys,
+                    ['RBS_ELEC_CIRCUIT_LOAD_CLASSIFICATION_PARAM'],
+                    [u'Classificação de carga', 'Classificacao de carga',
+                     'Load Classification'],
+                    ""
+                )
 
                 true_load = _get_panel_param_value(
                     sys,
@@ -623,8 +722,14 @@ def get_panel_schedule_data(schedule_view, use_element_quantity=False):
                     ['RBS_ELEC_DEMAND_FACTOR', 'RBS_ELEC_CIRCUIT_DEMAND_FACTOR',
                      'RBS_ELEC_DEMAND_FACTOR_PARAM'],
                     ['Fator de Demanda', 'Demand Factor', 'FD', 'FCA'],
-                    1
+                    ""
                 )
+                if demand_factor in (None, ""):
+                    demand_factor = _find_demand_factor_for_circuit(sys, load_classification)
+                else:
+                    demand_num = _parse_excel_number(demand_factor, None)
+                    if demand_num is None or demand_num <= 0:
+                        demand_factor = _find_demand_factor_for_circuit(sys, load_classification)
                 conductor = _get_panel_param_value(
                     sys,
                     ['RBS_ELEC_CIRCUIT_WIRE_SIZE_PARAM', 'RBS_ELEC_WIRE_SIZE'],
@@ -662,10 +767,24 @@ def get_panel_schedule_data(schedule_view, use_element_quantity=False):
                 if watts_num is None and apparent_num is not None:
                     watts_num = apparent_num * (pf_num or 1)
 
+                qty = _get_circuit_element_count(sys) if use_element_quantity else 1
+                try:
+                    if qty < 1:
+                        qty = 1
+                except:
+                    qty = 1
+
+                unit_watts = watts_num
+                if use_element_quantity and watts_num not in (None, ""):
+                    try:
+                        unit_watts = float(watts_num) / float(qty)
+                    except:
+                        unit_watts = watts_num
+
                 row_data[u'Ítem'] = item
                 row_data[u'Descrição equipamento'] = description
-                row_data['Quant.'] = _get_circuit_element_count(sys) if use_element_quantity else 1
-                row_data[u'Carga Unitária (W)'] = _clean_number(watts_num, "")
+                row_data['Quant.'] = qty
+                row_data[u'Carga Unitária (W)'] = _clean_number(unit_watts, "")
                 row_data[u'Carga Total (W)'] = ""
                 row_data['Fator de Demanda'] = _clean_number(demand_factor, 1)
                 row_data[u'Fator de Potência'] = _clean_number(power_factor, 1)
@@ -1511,7 +1630,6 @@ class ExportImportWindow(forms.WPFWindow):
         self.btn_DropdownToggle.MouseLeftButtonDown += self._toggle_dropdown
         self.chk_SelectAllSchedules.Click   += self._on_select_all_changed
         self.CheckBox_KeepFormat.Click      += self._on_keep_format_changed
-        self.CheckBox_PanelElementQuantity.Click += self._on_panel_quantity_changed
         
         self.cmb_ExportPreviewSelect.SelectionChanged += lambda s, e: self._update_export_preview(from_combo=True)
         self.cmb_ImportPreviewSelect.SelectionChanged += lambda s, e: self._update_import_preview(from_combo=True)
@@ -1615,12 +1733,6 @@ class ExportImportWindow(forms.WPFWindow):
         """Troca o modo (Schedule / Quadro) e repopula a checklist."""
         idx = self.ComboBox_ExportMode.SelectedIndex
         schedule_list = self.view_schedules if idx == 0 else self.panel_schedules
-        try:
-            self.CheckBox_PanelElementQuantity.Visibility = (
-                Visibility.Visible if idx == 1 else Visibility.Collapsed
-            )
-        except:
-            pass
         self._populate_checklist(schedule_list)
 
     def _populate_checklist(self, schedule_list):
@@ -1683,10 +1795,6 @@ class ExportImportWindow(forms.WPFWindow):
             Visibility.Visible if checked else Visibility.Collapsed
         )
 
-    def _on_panel_quantity_changed(self, _sender, _args):
-        """Atualiza preview quando a quantidade do quadro muda para elementos do circuito."""
-        self._update_export_preview()
-
     def _on_checklist_changed(self, sender, args):
         """Chamado quando qualquer checkbox da lista muda."""
         enabled = [(cb, d) for cb, d in self._schedule_checkboxes if cb.IsEnabled]
@@ -1708,10 +1816,15 @@ class ExportImportWindow(forms.WPFWindow):
             self.update_stats("Nenhuma tabela selecionada")
         elif len(selected) == 1:
             self.txt_DropdownDisplay.Text = selected[0]['display_name']
+            is_panel_sel = selected[0].get('is_panel', False)
             try:
                 sch = selected[0]['schedule']
-                count = sch.GetTableData().GetSectionData(DB.SectionType.Body).NumberOfRows
-                self.update_stats("Tabela com aprox. {} linhas".format(count))
+                if is_panel_sel:
+                    rows_p, _ = get_panel_schedule_data(sch)
+                    self.update_stats("Quadro com {} circuitos".format(len(rows_p)))
+                else:
+                    count = sch.GetTableData().GetSectionData(DB.SectionType.Body).NumberOfRows
+                    self.update_stats("Tabela com aprox. {} linhas".format(count))
             except:
                 self.update_stats("1 tabela selecionada")
         else:
@@ -1776,14 +1889,18 @@ class ExportImportWindow(forms.WPFWindow):
             max_preview_rows = 50
 
             if is_panel:
-                use_qty = bool(self.CheckBox_PanelElementQuantity.IsChecked)
-                rows, headers = get_panel_schedule_data(schedule, use_qty)
+                rows, headers = get_panel_schedule_data(schedule)
                 for h in headers:
                     dt.Columns.Add(h)
                 
                 for i, r in enumerate(rows):
                     if i >= max_preview_rows:
                         break
+                    try:
+                        if not r.get('Quant.') or str(r.get('Quant.')).strip() in ("", "0"):
+                            r['Quant.'] = 1
+                    except:
+                        pass
                     row = dt.NewRow()
                     for j, h in enumerate(headers):
                         row[j] = str(r.get(h, ""))
@@ -1824,12 +1941,12 @@ class ExportImportWindow(forms.WPFWindow):
                 pass
 
     def _update_import_preview(self, from_combo=False, first_load=False):
-        """Lê o Excel e mostra preview das alterações sem aplicá-las."""
+        """Le o Excel e mostra preview tabular preservando linhas e colunas."""
         try:
             if first_load:
                 self.cmb_ImportPreviewSelect.Items.Clear()
                 self.cmb_ImportPreviewSelect.Visibility = Visibility.Collapsed
-                
+
             self.dg_ImportPreview.ItemsSource = None
             self.dg_ImportPreview.Columns.Clear()
             self.dg_ImportPreview.Visibility = Visibility.Collapsed
@@ -1838,118 +1955,108 @@ class ExportImportWindow(forms.WPFWindow):
                 return
 
             self.lbl_ImportStatus.Text = "Lendo arquivo..."
-
-            dt = DataTable()
-            dt.Columns.Add("Parâmetro")
-            dt.Columns.Add("Elemento")
-            dt.Columns.Add("Valor Atual")
-            dt.Columns.Add("Novo Valor")
-            dt.Columns.Add("Status")
-
             MAX_ROWS = 200
-            row_count = 0
-            modif_count = 0
 
             wb = _XlsxReader(self.import_path)
             try:
-                valid_sheets = []
+                sheet_rows = []
                 for s_name in wb.sheetnames:
                     if s_name.startswith('_'):
                         continue
                     rows = wb.read_sheet(s_name)
-                    if rows and str(rows[0][0] if rows[0] else "").strip() == "ElementId":
-                        valid_sheets.append((s_name, rows))
-                
-                if not valid_sheets:
-                    self.lbl_ImportStatus.Text = "Nenhuma aba importável encontrada."
+                    if rows:
+                        sheet_rows.append((s_name, rows))
+
+                if not sheet_rows:
+                    self.lbl_ImportStatus.Text = "Nenhuma aba com dados encontrada."
                     return
-                
+
                 if first_load:
-                    for s_name, _ in valid_sheets:
+                    for s_name, _ in sheet_rows:
                         self.cmb_ImportPreviewSelect.Items.Add(s_name)
-                    if valid_sheets:
+                    if sheet_rows:
                         self.cmb_ImportPreviewSelect.SelectedIndex = 0
-                        
+
                 if self.cmb_ImportPreviewSelect.Items.Count > 1:
                     self.cmb_ImportPreviewSelect.Visibility = Visibility.Visible
                 else:
                     self.cmb_ImportPreviewSelect.Visibility = Visibility.Collapsed
-                    
+
                 idx = self.cmb_ImportPreviewSelect.SelectedIndex
-                if idx < 0 or idx >= len(valid_sheets):
-                    self.lbl_ImportStatus.Text = "Nenhuma aba importável selecionada."
+                if idx < 0 or idx >= len(sheet_rows):
+                    self.lbl_ImportStatus.Text = "Nenhuma aba selecionada."
                     return
-                    
-                selected_sheet_name, rows = valid_sheets[idx]
 
-                headers = [str(h).strip() if h is not None else "" for h in rows[0]]
-                pnames  = [unit_postfix_pattern.sub("", h).strip() for h in headers[1:]]
-                elem_cache = {}
+                selected_sheet_name, rows = sheet_rows[idx]
+                is_importable = bool(rows and rows[0] and str(rows[0][0]).strip() == "ElementId")
 
-                for row in rows[1:]:
+                header_index = 0
+                selected_cols = []
+                if is_importable:
+                    selected_cols = [i for i, h in enumerate(rows[0]) if str(h if h is not None else "").strip()]
+                else:
+                    for r_index, values in enumerate(rows[:20]):
+                        row_text = " | ".join([str(v) for v in values if v not in (None, "")])
+                        if (u"Ítem" in row_text or "Item" in row_text) and "Quant" in row_text:
+                            header_index = r_index
+                            selected_cols = [i for i, h in enumerate(values) if str(h if h is not None else "").strip()]
+                            break
+                    if not selected_cols:
+                        max_cols = 0
+                        for values in rows[:MAX_ROWS]:
+                            if len(values) > max_cols:
+                                max_cols = len(values)
+                        selected_cols = list(range(min(max_cols, 60)))
+
+                dt = DataTable()
+                used_names = {}
+                for col_index in selected_cols:
+                    header = ""
+                    if header_index < len(rows) and col_index < len(rows[header_index]):
+                        header = rows[header_index][col_index]
+                    header = str(header).strip() if header not in (None, "") else ""
+                    if not header:
+                        col_num = col_index + 1
+                        letters = ""
+                        while col_num:
+                            col_num, rem = divmod(col_num - 1, 26)
+                            letters = chr(65 + rem) + letters
+                        header = letters
+                    base = header
+                    if base in used_names:
+                        used_names[base] += 1
+                        header = "{} {}".format(base, used_names[base])
+                    else:
+                        used_names[base] = 1
+                    dt.Columns.Add(header)
+
+                start_row = header_index + 1
+                row_count = 0
+                for values in rows[start_row:]:
                     if row_count >= MAX_ROWS:
                         break
-                    if row[0] is None:
-                        continue
-                    try:
-                        eid = int(float(row[0]))
-                        el  = elem_cache.get(eid)
-                        if not el:
-                            el = doc.GetElement(DB.ElementId(eid))
-                            if el:
-                                elem_cache[eid] = el
-                        if not el:
-                            continue
-
-                        try:
-                            elem_name = el.Name or str(eid)
-                        except:
-                            elem_name = str(eid)
-
-                        for cx, pname in enumerate(pnames):
-                            val = row[cx + 1] if cx + 1 < len(row) else None
-                            if val is None or val == "":
-                                continue
-
-                            param = get_param_robust(el, pname)
-                            if not param:
-                                status = "Não Encontrado"
-                                current = ""
-                            elif param.IsReadOnly:
-                                status  = "Somente Leitura"
-                                current = get_parameter_value(param)
-                            else:
-                                current = get_parameter_value(param)
-                                new_str = str(int(val)) if isinstance(val, float) and val == int(val) else str(val)
-                                if str(current) != new_str:
-                                    status = "Modificar"
-                                    modif_count += 1
-                                else:
-                                    status = "Igual"
-
-                            row_dt = dt.NewRow()
-                            row_dt[0] = pname
-                            row_dt[1] = elem_name
-                            row_dt[2] = str(current)
-                            row_dt[3] = str(val)
-                            row_dt[4] = status
-                            dt.Rows.Add(row_dt)
-
-                            row_count += 1
-                            if row_count >= MAX_ROWS:
-                                break
-                    except:
-                        pass
+                    row_dt = dt.NewRow()
+                    has_value = False
+                    for out_col, source_col in enumerate(selected_cols):
+                        value = values[source_col] if source_col < len(values) else ""
+                        if value not in (None, ""):
+                            has_value = True
+                        row_dt[out_col] = str(value) if value is not None else ""
+                    if has_value:
+                        dt.Rows.Add(row_dt)
+                        row_count += 1
             finally:
                 wb.close()
 
             self.dg_ImportPreview.ItemsSource = dt.DefaultView
-            self.dg_ImportPreview.Visibility  = Visibility.Collapsed # Começa colapsado e expande se tiver dados
-            if dt.Rows.Count > 0:
-                self.dg_ImportPreview.Visibility = Visibility.Visible
+            self.dg_ImportPreview.Visibility = Visibility.Visible if dt.Rows.Count > 0 else Visibility.Collapsed
 
-            msg = "{} alterações detectadas".format(modif_count)
-            if row_count >= MAX_ROWS:
+            msg = "Preview da aba '{}': {} colunas, {} linhas".format(
+                selected_sheet_name, dt.Columns.Count, dt.Rows.Count
+            )
+            if not is_importable:
+                msg += " (somente visualizacao)"
+            if dt.Rows.Count >= MAX_ROWS:
                 msg += " (exibindo primeiras {})".format(MAX_ROWS)
             self.lbl_ImportStatus.Text = msg
         except Exception as ex:
@@ -2009,8 +2116,7 @@ class ExportImportWindow(forms.WPFWindow):
                     sch     = sch_dict['schedule']
 
                     if is_panel:
-                        use_qty = bool(self.CheckBox_PanelElementQuantity.IsChecked)
-                        rows, headers = get_panel_schedule_data(sch, use_qty)
+                        rows, headers = get_panel_schedule_data(sch)
                         class RowObj:
                             def __init__(self, d):
                                 self.row_data = d

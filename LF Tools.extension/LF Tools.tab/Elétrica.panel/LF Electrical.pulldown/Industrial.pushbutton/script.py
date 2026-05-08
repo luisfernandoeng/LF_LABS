@@ -4,21 +4,25 @@ Criação de circuitos e interruptores (Industrial)"""
 
 __title__ = "Industrial"
 __author__ = "Luís Fernando"
+__persistentengine__ = True
 
 # DEBUG DO INDUSTRIAL
 # True  = gera log passo a passo no console/arquivo
 # False = desliga o debug deste comando
-INDUSTRIAL_DEBUG = True
+INDUSTRIAL_DEBUG = False
 
 from pyrevit import forms
 from System.Collections.Generic import List
 from Autodesk.Revit.DB import *
 from Autodesk.Revit.DB.Electrical import *
+from Autodesk.Revit.UI import IExternalEventHandler, ExternalEvent
 from Autodesk.Revit.UI.Selection import ObjectType
 from collections import OrderedDict
 import traceback
 import re
+import os
 from Autodesk.Revit.Exceptions import OperationCanceledException
+import System
 
 import lf_electrical_core
 lf_electrical_core.DEBUG_MODE = INDUSTRIAL_DEBUG
@@ -143,12 +147,11 @@ def _get_voltage_value_from_dist_system(system, bip_name):
 
 def _get_voltage_type_value(vtype):
     param_ids = []
-    try: param_ids.append(BuiltInParameter.RBS_ELEC_VOLTAGE_VALUE)
-    except Exception: pass
-    param_ids.extend([
-        BuiltInParameter.RBS_ELEC_VOLTAGE_MIN_PARAM,
-        BuiltInParameter.RBS_ELEC_VOLTAGE_MAX_PARAM
-    ])
+    for bip_name in ['RBS_ELEC_VOLTAGE_VALUE', 'RBS_ELEC_VOLTAGE_MIN_PARAM', 'RBS_ELEC_VOLTAGE_MAX_PARAM']:
+        try:
+            param_ids.append(getattr(BuiltInParameter, bip_name))
+        except AttributeError:
+            pass
     for param_id in param_ids:
         try:
             p = vtype.get_Parameter(param_id)
@@ -156,6 +159,13 @@ def _get_voltage_type_value(vtype):
                 return int(round(p.AsDouble() / VOLTAGE_FACTOR))
         except Exception:
             pass
+    # Fallback: extrair tensao do nome do VoltageType (ex: "220 V", "220V", "Fase-Neutro 220V")
+    try:
+        m = re.search(r'\b(\d{2,3})\b', vtype.Name or '')
+        if m:
+            return int(m.group(1))
+    except Exception:
+        pass
     return None
 
 def _find_voltage_type(voltage):
@@ -165,6 +175,13 @@ def _find_voltage_type(voltage):
             val = _get_voltage_type_value(vtype)
             if val and abs(val - target) <= 2:
                 return vtype
+            try:
+                name_nums = [int(x) for x in re.findall(r"\d+", vtype.Name or "")]
+                if any(abs(n - target) <= 2 for n in name_nums):
+                    dbg.step('VoltageType {}V encontrado por nome: {}'.format(target, vtype.Name))
+                    return vtype
+            except Exception:
+                pass
     except Exception as ex:
         dbg.warn('Falha ao buscar VoltageType {}V: {}'.format(target, ex))
     return None
@@ -356,12 +373,23 @@ def prompt_industrial_tomada_voltage(panel):
     return None
 
 def _get_panel_distribution_id(panel):
-    try:
-        p = panel.LookupParameter("Sistema de distribuição") or panel.LookupParameter("Distribution System")
-        if p and p.HasValue and p.AsElementId() != ElementId.InvalidElementId:
-            return p.AsElementId()
-    except Exception:
-        pass
+    for bip_name in ['RBS_FAMILY_CONTENT_DISTRIBUTION_SYSTEM', 'RBS_ELEC_PANEL_DISTRIBUTION_SYSTEM']:
+        bip = _get_bip(bip_name)
+        if bip is None:
+            continue
+        try:
+            p = panel.get_Parameter(bip)
+            if p and p.HasValue and p.AsElementId() != ElementId.InvalidElementId:
+                return p.AsElementId()
+        except Exception:
+            pass
+    for name in [u"Sistema de distribuição", "Distribution System", u"Sistema de Distribuição"]:
+        try:
+            p = panel.LookupParameter(name)
+            if p and p.HasValue and p.AsElementId() != ElementId.InvalidElementId:
+                return p.AsElementId()
+        except Exception:
+            pass
     return None
 
 def _set_param_value(p, value=None, value_string=None):
@@ -393,6 +421,68 @@ def _set_param_value(p, value=None, value_string=None):
     except Exception:
         pass
     return False
+
+def _set_binary_param(param, value):
+    if param is None or param.IsReadOnly:
+        return False
+    try:
+        if param.StorageType == StorageType.Integer:
+            param.Set(1 if value else 0)
+            return True
+        if param.StorageType == StorageType.Double:
+            param.Set(1.0 if value else 0.0)
+            return True
+        if param.StorageType == StorageType.String:
+            param.Set("1" if value else "0")
+            return True
+    except Exception:
+        pass
+    return False
+
+def _force_voltage_option_flags(elem, phase_config):
+    """Liga/desliga flags de tipo/instancia como STD-TOMADA 2P+T 220V/127V."""
+    target_voltage = int(round(float(phase_config["voltage"])))
+    if target_voltage not in (127, 220):
+        return False
+
+    changed = False
+    targets = [elem]
+    try:
+        elem_type = doc.GetElement(elem.GetTypeId()) if hasattr(elem, "GetTypeId") else None
+        if elem_type:
+            targets.append(elem_type)
+    except Exception:
+        pass
+
+    for target in targets:
+        try:
+            for p in target.Parameters:
+                pdef = p.Definition
+                pname = pdef.Name if pdef else ""
+                key = _norm_name(pname)
+                if not key:
+                    continue
+                looks_like_voltage_option = (
+                    ("127" in key or "220" in key) and
+                    any(token in key for token in ["tomada", "toma", "2p", "220v", "127v", "std"])
+                )
+                if not looks_like_voltage_option:
+                    continue
+
+                desired = None
+                if str(target_voltage) in key:
+                    desired = True
+                elif ("127" in key or "220" in key):
+                    desired = False
+
+                if desired is not None and _set_binary_param(p, desired):
+                    changed = True
+                    dbg.ok('Flag tensao [{}] Id={} -> {}'.format(
+                        pname, target.Id.IntegerValue, 1 if desired else 0))
+        except Exception as ex:
+            dbg.warn('Falha ao ajustar flags de tensao Id={}: {}'.format(
+                getattr(target.Id, "IntegerValue", "?"), ex))
+    return changed
 
 def _apply_panel_distribution(elem, panel):
     dist_id = _get_panel_distribution_id(panel)
@@ -555,17 +645,33 @@ def _get_available_electrical_connector(elem):
     return fallback if fallback else (None, None)
 
 def _create_power_circuit_from_batch_ids(b_ids, phase_config, panel):
-    """Cria circuito usando primeiro conector eletrico e adiciona os demais elementos."""
-    first_conn = None
-    first_owner = None
+    """Cria circuito passando o DistributionSysType do painel direto no Create (4-arg),
+    com fallback para conector e depois por ElementId."""
     for eid in b_ids:
         elem = doc.GetElement(eid)
         if elem is None:
             continue
         _configure_industrial_element_for_circuit(elem, phase_config, panel)
         _force_shared_voltage_phase(elem, phase_config)
+        _force_voltage_option_flags(elem, phase_config)
     doc.Regenerate()
 
+    # Tentativa preferencial: 4-arg Create com dist_id do painel.
+    # O circuito nasce ja com o DistributionSysType correto, evitando o mismatch no SelectPanel.
+    dist_id = _get_panel_distribution_id(panel)
+    if dist_id:
+        try:
+            with suppress_elec_dialog():
+                circuit = ElectricalSystem.Create(doc, b_ids, ElectricalSystemType.PowerCircuit, dist_id)
+            if circuit is not None:
+                dbg.ok('ElectricalSystem.Create 4-arg com dist_id={} OK'.format(dist_id.IntegerValue))
+                return circuit
+        except Exception as ex:
+            dbg.step('4-arg Create falhou (Revit < 2022?): {}'.format(ex))
+
+    # Fallback: criar por conector (herda tensao do conector)
+    first_conn = None
+    first_owner = None
     for eid in b_ids:
         elem = doc.GetElement(eid)
         first_conn, first_owner = _get_available_electrical_connector(elem)
@@ -598,6 +704,7 @@ def _configure_industrial_target_for_circuit(elem, phase_config, panel):
     dist_id = _get_panel_distribution_id(panel)
 
     _force_shared_voltage_phase(elem, phase_config)
+    _force_voltage_option_flags(elem, phase_config)
 
     try:
         _set_param_value(elem.get_Parameter(BuiltInParameter.RBS_ELEC_VOLTAGE), voltage_internal, voltage_text)
@@ -810,32 +917,42 @@ def _force_circuit_distribution(circuit, panel):
     if not dist_id:
         dbg.warn('Panel nao tem sistema de distribuicao')
         return False
+    for bip_name in ['RBS_ELEC_CIRCUIT_DISTRIBUTION_SYSTEM_PARAM',
+                     'RBS_FAMILY_CONTENT_DISTRIBUTION_SYSTEM',
+                     'RBS_ELEC_PANEL_DISTRIBUTION_SYSTEM']:
+        bip = _get_bip(bip_name)
+        if bip is None:
+            continue
+        try:
+            p = circuit.get_Parameter(bip)
+            if p and not p.IsReadOnly and p.StorageType == StorageType.ElementId:
+                p.Set(dist_id)
+                dbg.ok('Dist set via BIP {}'.format(bip_name))
+                return True
+        except Exception:
+            pass
     for name in [u"Sistema de distribuição", "Distribution System", u"Sistema de Distribuição"]:
         try:
             p = circuit.LookupParameter(name)
-            if p:
-                dbg.step('Circuit dist [{}] RO={} ST={}'.format(name, p.IsReadOnly, p.StorageType))
-                if not p.IsReadOnly:
-                    p.Set(dist_id)
-                    dbg.ok('Distribution system forced via [{}]'.format(name))
-                    return True
-        except Exception as ex:
-            dbg.step('Dist [{}] failed: {}'.format(name, ex))
+            if p and not p.IsReadOnly:
+                p.Set(dist_id)
+                dbg.ok('Distribution system forced via [{}]'.format(name))
+                return True
+        except Exception:
+            pass
     try:
         for p in circuit.Parameters:
-            if p.IsReadOnly:
+            if p.IsReadOnly or p.StorageType != StorageType.ElementId:
                 continue
             pdef = p.Definition
             if not pdef:
                 continue
             pn = (pdef.Name or "").lower()
             if any(kw in pn for kw in ['distribu', 'sistema', 'system']):
-                dbg.step('Writable dist param: [{}] ST={}'.format(pdef.Name, p.StorageType))
                 try:
-                    if p.StorageType == StorageType.ElementId:
-                        p.Set(dist_id)
-                        dbg.ok('Dist set via [{}]'.format(pdef.Name))
-                        return True
+                    p.Set(dist_id)
+                    dbg.ok('Dist set via scan [{}]'.format(pdef.Name))
+                    return True
                 except Exception:
                     pass
     except Exception:
@@ -962,8 +1079,8 @@ def _should_skip_connected_element(elem, panel, reconnect_state):
 def _ask_circuit_description(default_text=""):
     value = forms.ask_for_string(
         default=default_text,
-        prompt="Descricao do circuito:\nDeixe em branco para usar a descricao automatica.",
-        title="Descricao do Circuito"
+        prompt="Nome da carga:\nDeixe em branco para usar o nome automatico.",
+        title="Nome da Carga"
     )
     if value is None:
         return None
@@ -1041,15 +1158,193 @@ def _detect_amperage_from_family(elem):
     elif "10a" in full_name or "10 a" in full_name: return 10
     return 10
 
+def _collect_load_classifications():
+    """Coleta classificações de carga do projeto via RBS_ELEC_CIRCUIT_LOAD_CLASSIFICATION.
+    Retorna dict {nome: ElementId}."""
+    result = {}
+    bip_name = 'RBS_ELEC_CIRCUIT_LOAD_CLASSIFICATION'
+
+    # Tenta coletar a classe diretamente (Revit 2019+)
+    try:
+        from Autodesk.Revit.DB.Electrical import ElectricalLoadClassification
+        elems = FilteredElementCollector(doc).OfClass(ElectricalLoadClassification).ToElements()
+        for e in elems:
+            try:
+                if e.Name:
+                    result[e.Name] = e.Id
+            except Exception:
+                pass
+        if result:
+            return result
+    except Exception:
+        pass
+
+    # Fallback: coleta das classificações já usadas nos circuitos existentes
+    try:
+        cat = getattr(BuiltInCategory, 'OST_ElectricalLoadClassifications', None)
+        if cat is not None:
+            elems = FilteredElementCollector(doc).OfCategory(cat).WhereElementIsNotElementType().ToElements()
+            for e in elems:
+                try:
+                    if e.Name:
+                        result[e.Name] = e.Id
+                except Exception:
+                    pass
+            if result:
+                return result
+    except Exception:
+        pass
+
+    bip = getattr(BuiltInParameter, bip_name, None)
+    if bip is None:
+        return result
+    try:
+        circuits = FilteredElementCollector(doc).OfClass(ElectricalSystem).ToElements()
+        for c in circuits:
+            try:
+                p = c.get_Parameter(bip)
+                if p and p.HasValue:
+                    eid = p.AsElementId()
+                    if eid != ElementId.InvalidElementId:
+                        elem = doc.GetElement(eid)
+                        if elem and elem.Name and elem.Name not in result:
+                            result[elem.Name] = eid
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return result
+
+def _ask_load_classification():
+    """Apresenta as classificações de carga do projeto. Retorna ElementId ou None se pulado."""
+    options = _collect_load_classifications()
+    skip_label = u"(pular — sem classificação)"
+    if not options:
+        forms.alert(
+            u"Nenhuma Classificação de Carga encontrada no projeto.\n\n"
+            u"O circuito será criado sem classificação.",
+            title=u"Classificação de Carga"
+        )
+        return None
+    sorted_names = sorted(options.keys())
+    choice = forms.CommandSwitchWindow.show(
+        sorted_names,
+        message=u"Classificação de Carga do circuito:",
+        title=u"Classificação de Carga"
+    )
+    if not choice:
+        return None
+    classification_id = options.get(choice)
+    if classification_id:
+        dbg.ok(u"Classificacao de carga escolhida: {} (Id={})".format(choice, classification_id.IntegerValue))
+    return classification_id
+
+def _set_load_classification(circuit, classification_id):
+    """Define RBS_ELEC_CIRCUIT_LOAD_CLASSIFICATION no circuito usando ElementId."""
+    if classification_id is None:
+        return
+    bip = getattr(BuiltInParameter, 'RBS_ELEC_CIRCUIT_LOAD_CLASSIFICATION', None)
+    if bip is None:
+        return
+    try:
+        p = circuit.get_Parameter(bip)
+        if p and not p.IsReadOnly:
+            p.Set(classification_id)
+            name = ""
+            try:
+                elem = doc.GetElement(classification_id)
+                if elem and elem.Name:
+                    name = u" ({})".format(elem.Name)
+            except Exception:
+                pass
+            dbg.ok(u"Classificacao de carga definida Id={}{}".format(classification_id.IntegerValue, name))
+        elif p:
+            dbg.warn(u"Classificacao de carga somente leitura no circuito Id={}".format(circuit.Id.IntegerValue))
+    except Exception as ex:
+        dbg.warn(u"Nao foi possivel definir classificacao de carga: {}".format(ex))
+
+_NO_LOAD_CLASS = object()  # sentinela: "nao foi passado, perguntar ao usuario"
+
+def _import_sync_module():
+    """Importa o modulo Sincronizar Circuitos, cacheado em sys.modules."""
+    import sys
+    key = 'lf_sinc_circ'
+    if key in sys.modules:
+        return sys.modules[key]
+    import imp
+    sync_path = os.path.normpath(os.path.join(
+        os.path.dirname(__file__), '..', '..', 'Sincronizar Circuitos.pushbutton', 'script.py'
+    ))
+    try:
+        return imp.load_source(key, sync_path)
+    except Exception as ex:
+        dbg.warn('Falha ao importar Sincronizar Circuitos: {}'.format(ex))
+        return None
+
+def _run_sync_circuits(circuit_ids):
+    """Sincroniza disjuntores, cabos e distâncias dos circuitos recém-criados."""
+    if not circuit_ids:
+        return
+    try:
+        circuits = [doc.GetElement(eid) for eid in circuit_ids]
+        circuits = [c for c in circuits if c is not None]
+        if not circuits:
+            return
+        mod = _import_sync_module()
+        if not mod:
+            return
+        mod.doc = doc  # garante que usa o doc ativo
+        ok, erros = mod.sync_circuits(circuits)
+        dbg.ok('Sync: {} OK, {} erros'.format(len(ok), len(erros)))
+        if erros:
+            dbg.warn('Erros sync: {}'.format('; '.join(erros)))
+    except Exception as ex:
+        dbg.warn('Erro na sincronizacao: {}'.format(ex))
+
+def _get_user_panel_name(panel):
+    """Retorna o nome definido pelo usuário nos parâmetros do painel, ou None se vazio."""
+    for n in ["Nome do painel", "Panel Name", "Mark"]:
+        try:
+            p = panel.LookupParameter(n)
+            if p and p.HasValue:
+                v = p.AsString()
+                if v and v.strip():
+                    return v.strip()
+        except Exception:
+            pass
+    return None
+
+def _get_panel_schedule_view(panel):
+    """Localiza o PanelScheduleView associado a este painel."""
+    try:
+        schedules = FilteredElementCollector(doc).OfClass(PanelScheduleView).ToElements()
+        for sched in schedules:
+            try:
+                if sched.GetPanel() == panel.Id:
+                    return sched
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None
+
 def configure_panel_industrial(panel):
     messages = []
 
-    new_name = forms.ask_for_string(default=get_panel_name(panel), prompt="Nome do Quadro Industrial (ex: QGBT, CCM-01):", title="Quadro Industrial")
+    current_name = _get_user_panel_name(panel) or get_panel_name(panel)
+    new_name = forms.ask_for_string(default=current_name, prompt="Nome do Quadro Industrial (ex: QGBT, CCM-01):", title="Quadro Industrial")
     if not new_name: return False, "Cancelado"
 
     with Transaction(doc, "Nome do Quadro Industrial") as t:
         t.Start()
         set_param(panel, ["Nome do painel", "Panel Name", "Mark"], new_name)
+        sched = _get_panel_schedule_view(panel)
+        if sched:
+            try:
+                sched.Name = new_name
+                dbg.ok('Tabela de paineis renomeada para: {}'.format(new_name))
+            except Exception as ex:
+                dbg.warn('Nao foi possivel renomear tabela: {}'.format(ex))
         t.Commit()
     messages.append("Nome: " + new_name)
 
@@ -1120,18 +1415,16 @@ def select_and_configure_panel_industrial():
         panel = doc.GetElement(ref.ElementId)
         dbg.elem_info(panel, 'Quadro selecionado')
 
+        user_name = _get_user_panel_name(panel)
         p_sys = panel.LookupParameter("Sistema de distribuição") or panel.LookupParameter("Distribution System")
         has_sys = p_sys and p_sys.HasValue and p_sys.AsElementId() != ElementId.InvalidElementId
         rule_label, rule = _get_panel_rule_from_distribution(panel)
         has_rule = rule is not None
-        
-        dbg.step('Params validos: sys={}, regra={}'.format(has_sys, rule_label or "nenhuma"))
 
-        if has_sys and has_rule:
-            set_current_panel(panel.Id)
-            dbg.ok('Quadro já configurado')
-            forms.alert("Quadro Industrial Selecionado: " + get_panel_name(panel))
-        else:
+        dbg.step('Params: nome={}, sys={}, regra={}'.format(user_name or "(vazio)", has_sys, rule_label or "nenhuma"))
+
+        needs_configure = not user_name or not has_sys or not has_rule
+        if needs_configure:
             dbg.step('Quadro precisa de configuração')
             success, msg = configure_panel_industrial(panel)
             if success:
@@ -1141,6 +1434,21 @@ def select_and_configure_panel_industrial():
             else:
                 dbg.warn('Configuração cancelada')
                 forms.alert(msg)
+        else:
+            # Quadro ok — verificar se nome da tabela de painéis está em sincronia
+            sched = _get_panel_schedule_view(panel)
+            if sched and sched.Name != user_name:
+                dbg.warn('Tabela ({}) dessincronizada do quadro ({}) — sincronizando'.format(sched.Name, user_name))
+                with Transaction(doc, "Sincronizar Nome da Tabela de Painéis") as t:
+                    t.Start()
+                    try:
+                        sched.Name = user_name
+                    except Exception as ex:
+                        dbg.warn('Nao foi possivel renomear tabela: {}'.format(ex))
+                    t.Commit()
+            set_current_panel(panel.Id)
+            dbg.ok('Quadro já configurado')
+            forms.alert("Quadro Industrial Selecionado: " + user_name)
     except OperationCanceledException:
         dbg.step('ESC - Cancelado')
         pass
@@ -1160,6 +1468,8 @@ def create_ilum_circuit_industrial():
     limite_w = 1200 if int(phase_config["voltage"]) == 127 else 2400
     dbg.ok('Limite iluminacao: {}W para {}V'.format(limite_w, phase_config["voltage"]))
 
+    load_class = _ask_load_classification()
+
     batches = []
     current_batch = List[ElementId]()
     current_watts = 0.0
@@ -1167,13 +1477,19 @@ def create_ilum_circuit_industrial():
     skipped = []
     reconnect_state = {"choice": None}
 
-    forms.toast("Selecione luminarias uma a uma. ESC finaliza.", title="Industrial")
+    _ilum_filter = ConnectorDomainFilter(allowed_categories=[
+        int(BuiltInCategory.OST_LightingFixtures),
+        int(BuiltInCategory.OST_ElectricalFixtures),
+        int(BuiltInCategory.OST_LightingDevices),
+    ])
+
+    forms.toast("Selecione luminarias/dispositivos uma a uma. ESC finaliza.", title="Industrial")
     while True:
         try:
             r = uidoc.Selection.PickObject(
                 ObjectType.Element,
-                CategoryFilter(BuiltInCategory.OST_LightingFixtures),
-                "Selecione uma luminaria (ESC para finalizar)"
+                _ilum_filter,
+                "Selecione uma luminaria ou dispositivo de iluminacao (ESC para finalizar)"
             )
         except OperationCanceledException:
             dbg.step('Selecao de iluminacao finalizada por ESC')
@@ -1220,6 +1536,7 @@ def create_ilum_circuit_industrial():
         batch_descs.append(desc)
 
     created = 0
+    created_ids = []
     with Transaction(doc, "Circuitos Ilum Industrial") as t:
         t.Start()
         for bi, (b_ids, b_watts, b_rooms) in enumerate(batches):
@@ -1236,6 +1553,8 @@ def create_ilum_circuit_industrial():
                 _select_panel_checked(circuit, panel, phase_config)
                 room_str = " / ".join(sorted(b_rooms)) if b_rooms else "Ilum Industrial"
                 set_param(circuit, LOAD_NAME_PARAMS, _circuit_description(batch_descs[bi], "{} ({:.0f}W)".format(room_str, b_watts)))
+                _set_load_classification(circuit, load_class)
+                created_ids.append(circuit.Id)
                 dbg.ok('Circuito ilum criado Id={}'.format(circuit.Id.IntegerValue))
                 created += 1
             except Exception as ex:
@@ -1243,7 +1562,9 @@ def create_ilum_circuit_industrial():
                 raise
         t.Commit()
 
-    if created > 0: forms.toast("Sucesso! {} circuito(s) criado(s).".format(created), title="Industrial")
+    if created > 0:
+        _run_sync_circuits(created_ids)
+        forms.toast("Sucesso! {} circuito(s) criado(s) e sincronizado(s).".format(created), title="Industrial")
 
 class _FamilyLoadOptions(IFamilyLoadOptions):
     def OnFamilyFound(self, familyInUse, overwriteParameterValues):
@@ -1313,7 +1634,8 @@ def create_tomada_circuit_industrial(selection_category=BuiltInCategory.OST_Elec
                                      panel_override=None,
                                      phase_config_override=None,
                                      refs_override=None,
-                                     circuit_desc_override=None):
+                                     circuit_desc_override=None,
+                                     load_class_override=_NO_LOAD_CLASS):
     dbg.section('INDUSTRIAL - Criar Circuito Tomadas')
     dbg.step('01/09 - Lendo quadro ativo')
     panel = panel_override or get_current_panel()
@@ -1341,6 +1663,8 @@ def create_tomada_circuit_industrial(selection_category=BuiltInCategory.OST_Elec
     if circuit_desc is None: return
     dbg.ok('Nome da carga informado: {}'.format(circuit_desc if circuit_desc else '(vazio)'))
 
+    load_class = _ask_load_classification() if load_class_override is _NO_LOAD_CLASS else load_class_override
+
     refs_list = list(refs)
     refs_list.reverse()
 
@@ -1350,8 +1674,8 @@ def create_tomada_circuit_industrial(selection_category=BuiltInCategory.OST_Elec
         amp = _detect_amperage_from_family(doc.GetElement(r.ElementId))
         if amp > detected_amp: detected_amp = amp
     
-    limite_w = 4000 if detected_amp >= 20 else 2200
-    dbg.ok('Amperagem detectada: {}A | limite: {}W'.format(detected_amp, limite_w))
+    limite_w = 1200 if int(phase_config["voltage"]) == 127 else 2400
+    dbg.ok('Amperagem detectada: {}A | limite: {}W ({}V)'.format(detected_amp, limite_w, phase_config["voltage"]))
 
     batches = []
     current_batch = List[ElementId]()
@@ -1439,6 +1763,7 @@ def create_tomada_circuit_industrial(selection_category=BuiltInCategory.OST_Elec
 
     dbg.step('08/09 - Lotes prontos: {} | Limite {}W'.format(len(batches), limite_w))
     created = 0
+    created_ids = []
     unassigned_ids = []
     with Transaction(doc, transaction_name) as t:
         t.Start()
@@ -1463,11 +1788,12 @@ def create_tomada_circuit_industrial(selection_category=BuiltInCategory.OST_Elec
 
                 circuit = None
                 assigned_to_panel = False
-                # Tentativa 1: criar com suppress_elec_dialog e SelectPanel
+                # Tentativa 1: automatico, suprime dialog do Revit
                 sub = SubTransaction(doc)
                 sub.Start()
                 try:
-                    circuit = _create_power_circuit_from_batch_ids(b_ids, phase_config, panel)
+                    with suppress_elec_dialog():
+                        circuit = _create_power_circuit_from_batch_ids(b_ids, phase_config, panel)
                     dbg.ok('Create OK Id={}'.format(circuit.Id.IntegerValue))
                     _select_panel_checked(circuit, panel, phase_config)
                     sub.Commit()
@@ -1482,13 +1808,15 @@ def create_tomada_circuit_industrial(selection_category=BuiltInCategory.OST_Elec
                     circuit = None
 
                     if "do not match" in str(ex1).lower():
-                        # Tentativa 2: SEM suprimir dialog — Revit pergunta ao usuario
-                        dbg.step('Tentativa 2: sem suppress_elec_dialog (dialog do Revit)')
+                        # Tentativa 2: deixa o Revit mostrar o dialog
+                        # O Revit pre-seleciona o sistema de distribuicao do projeto (220V),
+                        # entao o usuario so precisa confirmar com OK para criar o circuito certo.
+                        dbg.step('Tentativa 2: aguardando selecao no dialog do Revit')
                         sub2 = SubTransaction(doc)
                         sub2.Start()
                         try:
                             circuit = _create_power_circuit_from_batch_ids(b_ids, phase_config, panel)
-                            dbg.ok('Create (sem suppress) OK Id={}'.format(circuit.Id.IntegerValue))
+                            dbg.ok('Create (com dialog) OK Id={}'.format(circuit.Id.IntegerValue))
                             _select_panel_checked(circuit, panel, phase_config)
                             sub2.Commit()
                             dbg.ok('SubTransaction 2 COMMITTED')
@@ -1500,30 +1828,17 @@ def create_tomada_circuit_industrial(selection_category=BuiltInCategory.OST_Elec
                             except Exception:
                                 pass
                             circuit = None
-
-                            # Tentativa 3: criar circuito SEM atribuir ao quadro
-                            dbg.step('Tentativa 3: criar circuito SEM atribuir quadro')
-                            sub3 = SubTransaction(doc)
-                            sub3.Start()
-                            try:
-                                circuit = _create_power_circuit_from_batch_ids(b_ids, phase_config, panel)
-                                dbg.ok('Create (sem panel) OK Id={}'.format(circuit.Id.IntegerValue))
-                                dbg.warn('Circuito Id={} criado SEM quadro (atribuir manualmente)'.format(circuit.Id.IntegerValue))
-                                sub3.Commit()
-                                assigned_to_panel = False
-                            except Exception as ex3:
-                                dbg.fail('Tentativa 3 falhou: {}'.format(ex3))
-                                try:
-                                    sub3.RollBack()
-                                except Exception:
-                                    pass
-                                circuit = None
+                            raise Exception(
+                                "Nao foi criado circuito sem quadro. O circuito nasceu incompativel com o quadro selecionado: {}".format(ex2)
+                            )
                     else:
                         raise
 
                 if circuit:
                     room_str = " / ".join(sorted(b_rooms)) if b_rooms else "Tomada {}A".format(detected_amp)
                     set_param(circuit, LOAD_NAME_PARAMS, _circuit_description(circuit_desc, "{} ({:.0f}W)".format(room_str, b_watts)))
+                    _set_load_classification(circuit, load_class)
+                    created_ids.append(circuit.Id)
                     dbg.ok('Circuito tomada criado Id={}'.format(circuit.Id.IntegerValue))
                     created += 1
                     if not assigned_to_panel:
@@ -1553,7 +1868,8 @@ def create_tomada_circuit_industrial(selection_category=BuiltInCategory.OST_Elec
                 title="Circuitos criados com pendencia"
             )
         else:
-            forms.toast("Sucesso! {} circuito(s) de tomada criado(s).".format(created), title="Industrial")
+            _run_sync_circuits(created_ids)
+            forms.toast("Sucesso! {} circuito(s) de tomada criado(s) e sincronizado(s).".format(created), title="Industrial")
 
 def create_tomada_circuit_individual_loop_industrial():
     panel = get_current_panel()
@@ -1583,12 +1899,14 @@ def create_tomada_circuit_individual_loop_industrial():
         if circuit_desc is None:
             dbg.step('Descricao cancelada para Id={}'.format(ref.ElementId.IntegerValue))
             continue
+        load_class = _ask_load_classification()
 
         create_tomada_circuit_industrial(
             panel_override=panel,
             phase_config_override=phase_config,
             refs_override=[ref],
             circuit_desc_override=circuit_desc,
+            load_class_override=load_class,
             transaction_name="Circuito Tomada Individual Industrial"
         )
 
@@ -1678,6 +1996,7 @@ def create_individual_circuits_industrial():
     if not refs: return
     circuit_desc = _ask_circuit_description()
     if circuit_desc is None: return
+    load_class = _ask_load_classification()
 
     refs_list = list(refs)
     refs_list.reverse()
@@ -1711,6 +2030,7 @@ def create_individual_circuits_industrial():
                                 circuit = ElectricalSystem.Create(c, ElectricalSystemType.PowerCircuit)
                             _select_panel_checked(circuit, panel, phase_config)
                             set_param(circuit, LOAD_NAME_PARAMS, _circuit_description(circuit_desc, rm if rm else "Carga Industrial"))
+                            _set_load_classification(circuit, load_class)
                             dbg.ok('Circuito individual criado Id={}'.format(circuit.Id.IntegerValue))
                             created_count += 1
                         except Exception as e:
@@ -1747,6 +2067,7 @@ def create_grouped_circuit_industrial():
     if not refs: return
     circuit_desc = _ask_circuit_description()
     if circuit_desc is None: return
+    load_class = _ask_load_classification()
 
     ids = List[ElementId]()
     rooms = set()
@@ -1782,6 +2103,7 @@ def create_grouped_circuit_industrial():
             _select_panel_checked(circuit, panel, phase_config)
             room_str = " / ".join(sorted(rooms)) if rooms else "Agrupado Industrial"
             set_param(circuit, LOAD_NAME_PARAMS, _circuit_description(circuit_desc, room_str))
+            _set_load_classification(circuit, load_class)
             t.Commit()
             forms.toast("Circuito agrupado criado com {} elemento(s).".format(ids.Count), title="Industrial")
         except Exception as e:
@@ -1813,6 +2135,97 @@ def main_menu():
             if "aborted" not in str(e).lower() and "cancel" not in str(e).lower():
                 forms.alert("Erro. Veja o console do pyRevit.")
 
+class _IndustrialActionHandler(IExternalEventHandler):
+    """Executa ações do painel Industrial dentro do contexto da API do Revit."""
+    def __init__(self):
+        self._action = None
+        self._window = None
+
+    def Execute(self, _uiapp):
+        action = self._action
+        self._action = None
+        if action is None:
+            return
+        try:
+            action()
+        except OperationCanceledException:
+            pass
+        except Exception as ex:
+            dbg.fail("Erro na janela Industrial: {}".format(ex))
+            dbg.fail(traceback.format_exc())
+            forms.alert("Erro. Veja o console do pyRevit.")
+        finally:
+            win = self._window
+            if win:
+                try:
+                    win._refresh_status()
+                    win.Topmost = True
+                except Exception:
+                    pass
+
+    def GetName(self):
+        return "LF Industrial Action"
+
+_action_handler = _IndustrialActionHandler()
+_ext_event = ExternalEvent.Create(_action_handler)
+
+
+class IndustrialWindow(forms.WPFWindow):
+    def __init__(self):
+        xaml_path = os.path.join(os.path.dirname(__file__), "IndustrialWindow.xaml")
+        forms.WPFWindow.__init__(self, xaml_path)
+        self.DebugToggle.IsChecked = bool(lf_electrical_core.DEBUG_MODE)
+        _action_handler._window = self
+        self._refresh_status()
+
+    def _refresh_status(self):
+        try:
+            quadro = get_current_panel()
+            self.StatusText.Text = "Quadro: " + (get_panel_name(quadro) if quadro else "NENHUM")
+        except Exception:
+            self.StatusText.Text = "Quadro: NENHUM"
+
+    def _run_action(self, action):
+        try:
+            self.Topmost = False
+        except Exception:
+            pass
+        _action_handler._action = action
+        _ext_event.Raise()
+
+    def debug_toggle_click(self, sender, args):
+        global INDUSTRIAL_DEBUG
+        INDUSTRIAL_DEBUG = bool(self.DebugToggle.IsChecked)
+        lf_electrical_core.DEBUG_MODE = INDUSTRIAL_DEBUG
+        try:
+            self.DebugToggle.Content = "Debug ligado" if INDUSTRIAL_DEBUG else "Debug desligado"
+        except Exception:
+            pass
+
+    def refresh_click(self, sender, args):
+        self._refresh_status()
+
+    def close_click(self, sender, args):
+        self.Close()
+
+    def select_panel_click(self, sender, args):
+        self._run_action(select_and_configure_panel_industrial)
+
+    def lighting_click(self, sender, args):
+        self._run_action(create_ilum_circuit_industrial)
+
+    def outlets_single_click(self, sender, args):
+        self._run_action(create_tomada_circuit_individual_loop_industrial)
+
+    def outlets_multi_click(self, sender, args):
+        self._run_action(create_tomada_circuit_industrial)
+
+def show_industrial_window():
+    System.Threading.Thread.Sleep(250)
+    win = IndustrialWindow()
+    win.show(modal=False)
+    return win
+
 if __name__ == "__main__":
     try: is_shift = __shiftclick__
     except NameError: is_shift = False
@@ -1820,4 +2233,8 @@ if __name__ == "__main__":
     if is_shift:
         lf_electrical_core.show_settings()
     else:
-        main_menu()
+        try:
+            show_industrial_window()
+        except Exception as ex:
+            dbg.warn("Falha ao abrir janela persistente; usando menu antigo: {}".format(ex))
+            main_menu()
