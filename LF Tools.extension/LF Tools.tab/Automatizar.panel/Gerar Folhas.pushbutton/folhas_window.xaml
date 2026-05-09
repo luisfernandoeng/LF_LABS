@@ -2,10 +2,11 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Gerar Folhas - Luís Fernando"
         Height="780" Width="1200"
+        MinHeight="680" MinWidth="1050"
         Background="#F2F2F2"
         Foreground="#333333"
         WindowStartupLocation="CenterScreen" 
-        ResizeMode="NoResize"
+        ResizeMode="CanResizeWithGrip"
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Display"
         PreviewKeyDown="Window_PreviewKeyDown"
@@ -160,6 +161,103 @@
         </Style>
 
         <Style TargetType="CheckBox" BasedOn="{StaticResource ModernCheckBox}"/>
+
+        <Style TargetType="DataGrid">
+            <Setter Property="Background" Value="#F8F8F8"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="RowBackground" Value="Transparent"/>
+            <Setter Property="AlternatingRowBackground" Value="#FFFFFF"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="#E0E0E0"/>
+            <Setter Property="VerticalGridLinesBrush" Value="Transparent"/>
+            <Setter Property="HeadersVisibility" Value="Column"/>
+            <Setter Property="CanUserAddRows" Value="False"/>
+            <Setter Property="CanUserDeleteRows" Value="False"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+            <Setter Property="RowHeight" Value="34"/>
+            <Setter Property="RowHeaderWidth" Value="0"/>
+            <Setter Property="CanUserResizeColumns" Value="True"/>
+        </Style>
+
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#F2F2F2"/>
+            <Setter Property="Foreground" Value="{StaticResource AccentBlue}"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Padding" Value="10,8"/>
+            <Setter Property="BorderBrush" Value="#DADADA"/>
+            <Setter Property="BorderThickness" Value="0,0,0,1"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DataGridColumnHeader">
+                        <Grid>
+                            <Border Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter VerticalAlignment="Center"/>
+                            </Border>
+                            <Thumb x:Name="PART_LeftHeaderGripper"
+                                   Width="5"
+                                   HorizontalAlignment="Left"
+                                   Background="Transparent"
+                                   Cursor="SizeWE">
+                                <Thumb.Template>
+                                    <ControlTemplate TargetType="Thumb">
+                                        <Border Background="Transparent"/>
+                                    </ControlTemplate>
+                                </Thumb.Template>
+                            </Thumb>
+                            <Thumb x:Name="PART_RightHeaderGripper"
+                                   Width="5"
+                                   HorizontalAlignment="Right"
+                                   Background="Transparent"
+                                   Cursor="SizeWE">
+                                <Thumb.Template>
+                                    <ControlTemplate TargetType="Thumb">
+                                        <Border Background="Transparent"/>
+                                    </ControlTemplate>
+                                </Thumb.Template>
+                            </Thumb>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="DataGridCell">
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DataGridCell">
+                        <Border Padding="{TemplateBinding Padding}" Background="{TemplateBinding Background}">
+                            <ContentPresenter VerticalAlignment="Center"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#E6F2FA"/>
+                    <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style TargetType="DataGridRow">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#F2F2F2"/>
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#E6F2FA"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
 
         <!-- RADIOBUTTON -->
         <Style TargetType="RadioButton" x:Key="ModernRadioButton">
@@ -332,59 +430,82 @@
                                 <TextBox Grid.Column="3" Name="txt_Search" Height="32" VerticalContentAlignment="Center" Margin="0" Padding="8,0,0,0"/>
                             </Grid>
 
-                            <ListBox Grid.Row="1" Name="lst_Sheets" 
-                                     Background="#F8F8F8"
-                                     BorderBrush="{StaticResource BorderColor}"
-                                     BorderThickness="1"
-                                     HorizontalContentAlignment="Stretch"
-                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                                     SelectionMode="Multiple">
-                                <ListBox.ItemContainerStyle>
-                                    <Style TargetType="ListBoxItem">
-                                        <Setter Property="Background" Value="Transparent"/>
-                                        <Setter Property="BorderThickness" Value="0,0,0,1"/>
-                                        <Setter Property="BorderBrush" Value="#E0E0E0"/>
-                                        <Setter Property="Padding" Value="4"/>
-                                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                                        <Setter Property="Template">
-                                            <Setter.Value>
-                                                <ControlTemplate TargetType="ListBoxItem">
-                                                    <Border x:Name="ItemBorder" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="4">
-                                                        <ContentPresenter />
-                                                    </Border>
-                                                    <ControlTemplate.Triggers>
-                                                        <Trigger Property="IsMouseOver" Value="True">
-                                                            <Setter TargetName="ItemBorder" Property="Background" Value="#F2F2F2"/>
-                                                        </Trigger>
-                                                        <Trigger Property="IsSelected" Value="True">
-                                                            <Setter TargetName="ItemBorder" Property="Background" Value="#E6F2FA"/>
-                                                        </Trigger>
-                                                    </ControlTemplate.Triggers>
-                                                </ControlTemplate>
-                                            </Setter.Value>
-                                        </Setter>
-                                    </Style>
-                                </ListBox.ItemContainerStyle>
-                                <ListBox.ItemTemplate>
-                                    <DataTemplate>
-                                        <Grid Margin="12,10">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="20"/>
-                                                <ColumnDefinition Width="30"/>
-                                                <ColumnDefinition Width="90"/>
-                                                <ColumnDefinition Width="*"/>
-                                                <ColumnDefinition Width="0.7*"/>
-                                            </Grid.ColumnDefinitions>
-                                            
-                                            <Ellipse Grid.Column="0" Width="10" Height="10" Fill="{Binding StatusColor}" VerticalAlignment="Center"/>
-                                            <CheckBox Grid.Column="1" IsChecked="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" IsHitTestVisible="False" VerticalAlignment="Center"/>
-                                            <TextBlock Grid.Column="2" Text="{Binding Number}" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center"/>
-                                            <TextBlock Grid.Column="3" Text="{Binding Name}" Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                                            <TextBlock Grid.Column="4" Text="{Binding FileName}" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" FontSize="11" Margin="15,0,0,0" TextTrimming="CharacterEllipsis"/>
-                                        </Grid>
-                                    </DataTemplate>
-                                </ListBox.ItemTemplate>
-                            </ListBox>
+                            <Border Grid.Row="1"
+                                    BorderBrush="{StaticResource BorderColor}"
+                                    BorderThickness="1"
+                                    CornerRadius="4"
+                                    Background="#F8F8F8">
+                                <DataGrid Name="lst_Sheets"
+                                          AutoGenerateColumns="False"
+                                          CanUserAddRows="False"
+                                          CanUserResizeColumns="True"
+                                          HeadersVisibility="Column"
+                                          GridLinesVisibility="Horizontal"
+                                          SelectionMode="Extended"
+                                          CanUserSortColumns="False"
+                                          AlternationCount="2">
+                                    <DataGrid.Columns>
+                                        <DataGridTemplateColumn Header="" Width="34" CanUserResize="False" IsReadOnly="True">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <Ellipse Width="10" Height="10" Fill="{Binding StatusColor}" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+
+                                        <DataGridCheckBoxColumn Header="Sel."
+                                                                Binding="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                Width="48"
+                                                                CanUserResize="False">
+                                            <DataGridCheckBoxColumn.ElementStyle>
+                                                <Style TargetType="CheckBox" BasedOn="{StaticResource ModernCheckBox}">
+                                                    <Setter Property="HorizontalAlignment" Value="Center"/>
+                                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                                    <Setter Property="Margin" Value="0"/>
+                                                </Style>
+                                            </DataGridCheckBoxColumn.ElementStyle>
+                                            <DataGridCheckBoxColumn.EditingElementStyle>
+                                                <Style TargetType="CheckBox" BasedOn="{StaticResource ModernCheckBox}">
+                                                    <Setter Property="HorizontalAlignment" Value="Center"/>
+                                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                                    <Setter Property="Margin" Value="0"/>
+                                                </Style>
+                                            </DataGridCheckBoxColumn.EditingElementStyle>
+                                        </DataGridCheckBoxColumn>
+
+                                        <DataGridTextColumn Header="Folha" Binding="{Binding Number}" Width="90" MinWidth="70" IsReadOnly="True">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+                                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
+
+                                        <DataGridTextColumn Header="Nome" Binding="{Binding Name}" Width="1.4*" MinWidth="180" IsReadOnly="True">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+                                                    <Setter Property="FontWeight" Value="SemiBold"/>
+                                                    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
+
+                                        <DataGridTextColumn Header="Arquivo" Binding="{Binding FileName}" Width="*" MinWidth="150" IsReadOnly="True">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+                                                    <Setter Property="FontSize" Value="11"/>
+                                                    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </Border>
                         </Grid>
                     </TabItem>
                     

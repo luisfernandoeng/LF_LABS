@@ -1,0 +1,6 @@
+title: LF Electrical
+tooltip: Ferramentas para criar circuitos, configurar quadros e organizar cargas elétricas.
+layout:
+  - Dados
+  - Industrial
+  - Residencial

@@ -1,0 +1,5 @@
+title: "Nome\nAmb"
+tooltip: Preenche parâmetros de ambiente em anotações com base nos ambientes próximos ou no vínculo selecionado.
+author: Luís Fernando
+script: script.py
+icon: icon.png

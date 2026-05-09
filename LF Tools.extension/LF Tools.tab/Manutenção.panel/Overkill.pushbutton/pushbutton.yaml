@@ -1,6 +1,0 @@
-tooltip: Limpeza geral do projeto Revit
-icon: icon.png
-long_description: >
-    Remove elementos sobrepostos/duplicados, modelos de vista não utilizados,
-    tipos de texto, padrões de linha e tipos de carga sem uso.
-    Selecione as operações desejadas e revise os itens antes de excluir.

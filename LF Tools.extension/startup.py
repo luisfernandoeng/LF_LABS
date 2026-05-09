@@ -3,9 +3,26 @@
 
 import os
 import sys
+import shutil
 
 
 ROOT_PATH = os.path.dirname(__file__)
+
+
+def _limpar_cache_cpython(raiz):
+    for dirpath, dirnames, filenames in os.walk(raiz, topdown=False):
+        for nome in dirnames:
+            if nome == "__pycache__":
+                shutil.rmtree(os.path.join(dirpath, nome), ignore_errors=True)
+        for nome in filenames:
+            if nome.endswith((".pyc", ".pyo")):
+                try:
+                    os.remove(os.path.join(dirpath, nome))
+                except OSError:
+                    pass
+
+
+_limpar_cache_cpython(ROOT_PATH)
 LF_LIB_PATH = os.path.join(ROOT_PATH, "lib")
 if LF_LIB_PATH not in sys.path:
     sys.path.append(LF_LIB_PATH)
@@ -14,7 +31,8 @@ if LF_LIB_PATH not in sys.path:
 # Smart AutoSave
 autosave_lib_path = os.path.join(
     ROOT_PATH,
-    "LF Tools.tab", "AutoSave.panel",
+    "LF Tools.tab", "Automatizar.panel",
+    "Smart.stack",
     "Smart AutoSave.pushbutton", "lib"
 )
 if autosave_lib_path not in sys.path:

@@ -1,0 +1,6 @@
+title: Dev Log
+tooltip: Inicia, para e consulta o registro de ações executadas no Revit.
+layout:
+  - Start
+  - Stop
+  - View Log

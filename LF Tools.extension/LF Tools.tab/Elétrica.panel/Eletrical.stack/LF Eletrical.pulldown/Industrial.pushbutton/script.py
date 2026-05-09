@@ -1,0 +1,2301 @@
+# coding: utf-8
+"""LF Electrical - Industrial
+Criação de circuitos e interruptores (Industrial)"""
+
+__title__ = "Industrial"
+__author__ = "Luís Fernando"
+__persistentengine__ = True
+
+# DEBUG DO INDUSTRIAL
+# True  = gera log passo a passo no console/arquivo
+# False = desliga o debug deste comando
+INDUSTRIAL_DEBUG = False
+
+from pyrevit import forms
+from System.Collections.Generic import List
+from Autodesk.Revit.DB import *
+from Autodesk.Revit.DB.Electrical import *
+from Autodesk.Revit.UI import IExternalEventHandler, ExternalEvent
+from Autodesk.Revit.UI.Selection import ObjectType
+from collections import OrderedDict
+import traceback
+import re
+import os
+from Autodesk.Revit.Exceptions import OperationCanceledException
+import System
+
+import lf_electrical_core
+lf_electrical_core.DEBUG_MODE = INDUSTRIAL_DEBUG
+from lf_electrical_core import (
+    doc, uidoc, get_current_panel, set_current_panel, get_panel_name, set_param,
+    ConnectorDomainFilter, get_valid_electrical_elements,
+    is_element_connected_to_panel, ensure_element_is_free, get_room_name, get_family_name,
+    configure_panel, PanelFilter, CategoryFilter, call_queda_tensao,
+    VALID_SWITCH_LETTERS, _get_switch_label, load_config, dbg,
+    suppress_elec_dialog
+)
+
+VOLTAGE_FACTOR = 10.7639104167
+LOAD_NAME_PARAMS = ["Nome da carga", "Load Name", "Nome de carga", "Carga", "Load"]
+
+INDUSTRIAL_PANEL_RULES = OrderedDict([
+    ("127V monofasico", {
+        "poles": 1,
+        "voltage": 127,
+        "patterns": ("127",),
+        "reject_patterns": ("220/127", "380/220"),
+        "circuit_options": OrderedDict([
+            ("1 Polo - 127V", {"poles": 1, "voltage": 127}),
+        ]),
+    }),
+    ("220/127V bifasico", {
+        "poles": 2,
+        "voltage": 220,
+        "patterns": ("220/127",),
+        "phase_hint": 2,
+        "circuit_options": OrderedDict([
+            ("1 Polo - 127V", {"poles": 1, "voltage": 127}),
+            ("2 Polos - 220V", {"poles": 2, "voltage": 220}),
+        ]),
+    }),
+    ("220/127V trifasico", {
+        "poles": 3,
+        "voltage": 220,
+        "patterns": ("220/127",),
+        "phase_hint": 3,
+        "circuit_options": OrderedDict([
+            ("1 Polo - 127V", {"poles": 1, "voltage": 127}),
+            ("2 Polos - 220V", {"poles": 2, "voltage": 220}),
+        ]),
+    }),
+    ("380/220V trifasico", {
+        "poles": 3,
+        "voltage": 380,
+        "patterns": ("380/220",),
+        "phase_hint": 3,
+        "circuit_options": OrderedDict([
+            ("1 Polo - 220V", {"poles": 1, "voltage": 220}),
+            ("3 Polos - 380V", {"poles": 3, "voltage": 380}),
+        ]),
+    }),
+])
+
+def _norm_name(value):
+    return (value or "").lower().replace(" ", "")
+
+def _name_has_voltages(name, voltages):
+    nums = set(re.findall(r"\d+", name or ""))
+    return all(str(v) in nums for v in voltages)
+
+def _dist_system_has_neutral_ground_name(system):
+    name = _norm_name(_get_dist_system_name(system))
+    has_neutral = any(token in name for token in ["neutro", "neutral", "+n", "-n", "fn", "f+n"])
+    has_ground = any(token in name for token in ["terra", "ground", "aterr", "gnd", "+t", "-t", "pe", "+pe", "-pe"])
+    return has_neutral and has_ground
+
+def _dist_system_matches_phase_name(system, poles):
+    name = _norm_name(_get_dist_system_name(system))
+    if poles == 1:
+        return any(token in name for token in ["mono", "monofas", "1f", "f+n"]) and not any(token in name for token in ["2f", "3f", "bif", "trif"])
+    if poles == 2:
+        return any(token in name for token in ["bif", "bifas", "2f"])
+    if poles == 3:
+        return any(token in name for token in ["trif", "trifas", "3f"])
+    return False
+
+def _get_dist_system_name(system):
+    try:
+        return system.Name
+    except Exception:
+        p = system.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+        return p.AsString() if p else ""
+
+def _get_bip(name):
+    try:
+        return getattr(BuiltInParameter, name)
+    except Exception:
+        return None
+
+def _get_voltage_value_from_dist_system(system, bip_name):
+    try:
+        bip = _get_bip(bip_name)
+        if bip is None:
+            return None
+        vp = system.get_Parameter(bip)
+        if not vp or vp.AsElementId() == ElementId.InvalidElementId:
+            return None
+        vtype = doc.GetElement(vp.AsElementId())
+        if not vtype:
+            return None
+        param_ids = []
+        try: param_ids.append(BuiltInParameter.RBS_ELEC_VOLTAGE_VALUE)
+        except Exception: pass
+        param_ids.extend([
+            BuiltInParameter.RBS_ELEC_VOLTAGE_MIN_PARAM,
+            BuiltInParameter.RBS_ELEC_VOLTAGE_MAX_PARAM
+        ])
+        for param_id in param_ids:
+            try:
+                p = vtype.get_Parameter(param_id)
+                if p and p.HasValue:
+                    return int(round(p.AsDouble() / VOLTAGE_FACTOR))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None
+
+def _get_voltage_type_value(vtype):
+    param_ids = []
+    for bip_name in ['RBS_ELEC_VOLTAGE_VALUE', 'RBS_ELEC_VOLTAGE_MIN_PARAM', 'RBS_ELEC_VOLTAGE_MAX_PARAM']:
+        try:
+            param_ids.append(getattr(BuiltInParameter, bip_name))
+        except AttributeError:
+            pass
+    for param_id in param_ids:
+        try:
+            p = vtype.get_Parameter(param_id)
+            if p and p.HasValue:
+                return int(round(p.AsDouble() / VOLTAGE_FACTOR))
+        except Exception:
+            pass
+    # Fallback: extrair tensao do nome do VoltageType (ex: "220 V", "220V", "Fase-Neutro 220V")
+    try:
+        m = re.search(r'\b(\d{2,3})\b', vtype.Name or '')
+        if m:
+            return int(m.group(1))
+    except Exception:
+        pass
+    return None
+
+def _find_voltage_type(voltage):
+    target = int(round(float(voltage)))
+    try:
+        for vtype in FilteredElementCollector(doc).OfClass(VoltageType).ToElements():
+            val = _get_voltage_type_value(vtype)
+            if val and abs(val - target) <= 2:
+                return vtype
+            try:
+                name_nums = [int(x) for x in re.findall(r"\d+", vtype.Name or "")]
+                if any(abs(n - target) <= 2 for n in name_nums):
+                    dbg.step('VoltageType {}V encontrado por nome: {}'.format(target, vtype.Name))
+                    return vtype
+            except Exception:
+                pass
+    except Exception as ex:
+        dbg.warn('Falha ao buscar VoltageType {}V: {}'.format(target, ex))
+    return None
+
+def _force_circuit_voltage_type(circuit, phase_config):
+    if not phase_config:
+        return False
+    vt = _find_voltage_type(phase_config["voltage"])
+    if not vt:
+        dbg.warn('VoltageType {}V nao encontrado'.format(phase_config["voltage"]))
+        return False
+    try:
+        circuit.VoltageType = vt
+        dbg.ok('Circuit VoltageType definido para {}V ({})'.format(phase_config["voltage"], vt.Name))
+        return True
+    except Exception as ex:
+        dbg.warn('Circuito nao aceitou VoltageType {}V: {}'.format(phase_config["voltage"], ex))
+        return False
+
+def _dist_system_matches_rule(system, rule):
+    name = _norm_name(_get_dist_system_name(system))
+    if not _dist_system_has_neutral_ground_name(system):
+        return False
+    if not _dist_system_matches_phase_name(system, rule["poles"]):
+        return False
+
+    for reject in rule.get("reject_patterns", ()):
+        if _norm_name(reject) in name:
+            return False
+    has_pattern = any(_norm_name(pattern) in name for pattern in rule.get("patterns", ()))
+    if not has_pattern:
+        if rule["voltage"] == 380:
+            has_pattern = _name_has_voltages(name, (380, 220))
+        elif rule["voltage"] == 220:
+            has_pattern = _name_has_voltages(name, (220, 127))
+        elif rule["voltage"] == 127:
+            has_pattern = _name_has_voltages(name, (127,)) and not _name_has_voltages(name, (220,))
+    if not has_pattern:
+        return False
+
+    hint = rule.get("phase_hint")
+    if hint:
+        try:
+            phase_bip = _get_bip("RBS_ELEC_DISTRIBUTION_SYS_PHASE_PARAM")
+            p = system.get_Parameter(phase_bip) if phase_bip is not None else None
+            if p and p.HasValue and p.AsInteger() != hint:
+                return False
+        except Exception:
+            pass
+
+    ll = _get_voltage_value_from_dist_system(system, "RBS_ELEC_DISTRIBUTION_SYS_VOLTAGE_L_L_PARAM")
+    lg = _get_voltage_value_from_dist_system(system, "RBS_ELEC_DISTRIBUTION_SYS_VOLTAGE_L_G_PARAM")
+    expected = rule["voltage"]
+
+    if "380/220" in name or _name_has_voltages(name, (380, 220)):
+        return expected == 380 and (ll is None or ll == 380) and (lg is None or lg == 220)
+    if "220/127" in name or "127/220" in name or _name_has_voltages(name, (220, 127)):
+        return expected == 220 and (ll is None or ll == 220) and (lg is None or lg == 127)
+    if expected == 127:
+        return (ll == 127 or lg == 127 or ll is None and lg is None)
+    return True
+
+def _collect_industrial_distribution_options_for_rule(rule):
+    systems = list(FilteredElementCollector(doc).OfClass(DistributionSysType).ToElements())
+    options = OrderedDict()
+    matches = []
+    for system in systems:
+        if _dist_system_matches_rule(system, rule):
+            matches.append(system)
+    for system in sorted(matches, key=lambda s: _get_dist_system_name(s)):
+        sys_name = _get_dist_system_name(system)
+        options[sys_name] = system.Id
+    return options
+
+def _set_panel_voltage_and_poles(panel, rule):
+    set_param(panel, ["N° de Fases", "Nº de Fases", "Número de Fases", "Número de polos", "Number of Poles", "Polos"], rule["poles"])
+    set_param(panel, ["Tensão (V)", "Tensão", "Voltage", "Voltagem", "Tensão Nominal", "Volts"], rule["voltage"])
+    v_internal = float(rule["voltage"]) * VOLTAGE_FACTOR
+    for bip, value in [(BuiltInParameter.RBS_ELEC_VOLTAGE, v_internal),
+                       (BuiltInParameter.RBS_ELEC_NUMBER_OF_POLES, float(rule["poles"]))]:
+        try:
+            p = panel.get_Parameter(bip)
+            if p and not p.IsReadOnly:
+                p.Set(value)
+        except Exception:
+            pass
+    try:
+        if hasattr(panel, "MEPModel") and panel.MEPModel:
+            cm = getattr(panel.MEPModel, "ConnectorManager", None)
+            if cm:
+                for c in cm.Connectors:
+                    if c.Domain == Domain.DomainElectrical:
+                        try: c.Voltage = v_internal
+                        except Exception: pass
+                        try: c.Poles = rule["poles"]
+                        except Exception: pass
+    except Exception:
+        pass
+
+def _get_param_number(elem, names):
+    for name in names:
+        try:
+            p = elem.get_Parameter(name) if isinstance(name, BuiltInParameter) else elem.LookupParameter(name)
+            if p and p.HasValue:
+                try:
+                    val = p.AsDouble()
+                    if val:
+                        if isinstance(name, BuiltInParameter) and name == BuiltInParameter.RBS_ELEC_VOLTAGE:
+                            return int(round(val / VOLTAGE_FACTOR))
+                        return int(round(val))
+                except Exception:
+                    pass
+                try:
+                    text = p.AsValueString() or p.AsString() or ""
+                    match = re.search(r"\d+", text)
+                    if match:
+                        return int(match.group())
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    return None
+
+def _get_panel_rule_from_values(panel):
+    poles = _get_param_number(panel, [
+        BuiltInParameter.RBS_ELEC_NUMBER_OF_POLES,
+        "N° de Fases", "Nº de Fases", "Número de Fases", "Número de polos", "Number of Poles", "Polos"
+    ])
+    voltage = _get_param_number(panel, [
+        BuiltInParameter.RBS_ELEC_VOLTAGE,
+        "Tensão (V)", "Tensão", "Voltage", "Voltagem", "Tensão Nominal", "Volts"
+    ])
+    for label, rule in INDUSTRIAL_PANEL_RULES.items():
+        if poles == rule["poles"] and voltage == rule["voltage"]:
+            return label, rule
+    return None, None
+
+def _get_panel_rule_from_distribution(panel):
+    try:
+        p = panel.LookupParameter("Sistema de distribuição") or panel.LookupParameter("Distribution System")
+        if p and p.HasValue and p.AsElementId() != ElementId.InvalidElementId:
+            system = doc.GetElement(p.AsElementId())
+            if system:
+                for label, rule in INDUSTRIAL_PANEL_RULES.items():
+                    if _dist_system_matches_rule(system, rule):
+                        return label, rule
+    except Exception:
+        pass
+    return _get_panel_rule_from_values(panel)
+
+def prompt_industrial_phase_voltage(panel):
+    label, rule = _get_panel_rule_from_distribution(panel)
+    if not rule:
+        forms.alert("Nao consegui identificar o sistema industrial deste quadro. Configure o quadro novamente antes de criar circuitos.", title="Quadro sem regra industrial")
+        return None
+    options = rule["circuit_options"]
+    escolha = forms.CommandSwitchWindow.show(
+        options.keys(),
+        message="Circuitos permitidos para {}:".format(label),
+        title="Compatibilidade do Quadro"
+    )
+    if escolha:
+        return options[escolha]
+    return None
+
+def prompt_industrial_tomada_voltage(panel):
+    label, rule = _get_panel_rule_from_distribution(panel)
+    if not rule:
+        forms.alert("Nao consegui identificar o sistema industrial deste quadro. Configure o quadro novamente antes de criar circuitos.", title="Quadro sem regra industrial")
+        return None
+
+    options = rule["circuit_options"]
+    if not options:
+        forms.alert("Nenhuma tensao permitida para tomadas neste quadro.", title="Tomadas")
+        return None
+
+    if len(options) == 1:
+        key = list(options.keys())[0]
+        dbg.step('Tomadas: unica opcao permitida {}'.format(key))
+        return options[key]
+
+    escolha = forms.CommandSwitchWindow.show(
+        options.keys(),
+        message="Circuitos de tomadas permitidos para {}:".format(label),
+        title="Compatibilidade do Quadro"
+    )
+    if escolha:
+        return options[escolha]
+    return None
+
+def _get_panel_distribution_id(panel):
+    for bip_name in ['RBS_FAMILY_CONTENT_DISTRIBUTION_SYSTEM', 'RBS_ELEC_PANEL_DISTRIBUTION_SYSTEM']:
+        bip = _get_bip(bip_name)
+        if bip is None:
+            continue
+        try:
+            p = panel.get_Parameter(bip)
+            if p and p.HasValue and p.AsElementId() != ElementId.InvalidElementId:
+                return p.AsElementId()
+        except Exception:
+            pass
+    for name in [u"Sistema de distribuição", "Distribution System", u"Sistema de Distribuição"]:
+        try:
+            p = panel.LookupParameter(name)
+            if p and p.HasValue and p.AsElementId() != ElementId.InvalidElementId:
+                return p.AsElementId()
+        except Exception:
+            pass
+    return None
+
+def _set_param_value(p, value=None, value_string=None):
+    if p is None or p.IsReadOnly:
+        return False
+    try:
+        if value_string:
+            try:
+                if p.SetValueString(value_string):
+                    return True
+            except Exception:
+                pass
+        st = p.StorageType
+        if st == StorageType.Integer:
+            p.Set(int(round(float(value))))
+            return True
+        if st == StorageType.Double:
+            p.Set(float(value))
+            return True
+        if st == StorageType.ElementId:
+            if isinstance(value, ElementId):
+                p.Set(value)
+                return True
+            p.Set(ElementId(int(value)))
+            return True
+        if st == StorageType.String:
+            p.Set(str(value))
+            return True
+    except Exception:
+        pass
+    return False
+
+def _set_binary_param(param, value):
+    if param is None or param.IsReadOnly:
+        return False
+    try:
+        if param.StorageType == StorageType.Integer:
+            param.Set(1 if value else 0)
+            return True
+        if param.StorageType == StorageType.Double:
+            param.Set(1.0 if value else 0.0)
+            return True
+        if param.StorageType == StorageType.String:
+            param.Set("1" if value else "0")
+            return True
+    except Exception:
+        pass
+    return False
+
+def _force_voltage_option_flags(elem, phase_config):
+    """Liga/desliga flags de tipo/instancia como STD-TOMADA 2P+T 220V/127V."""
+    target_voltage = int(round(float(phase_config["voltage"])))
+    if target_voltage not in (127, 220):
+        return False
+
+    changed = False
+    targets = [elem]
+    try:
+        elem_type = doc.GetElement(elem.GetTypeId()) if hasattr(elem, "GetTypeId") else None
+        if elem_type:
+            targets.append(elem_type)
+    except Exception:
+        pass
+
+    for target in targets:
+        try:
+            for p in target.Parameters:
+                pdef = p.Definition
+                pname = pdef.Name if pdef else ""
+                key = _norm_name(pname)
+                if not key:
+                    continue
+                looks_like_voltage_option = (
+                    ("127" in key or "220" in key) and
+                    any(token in key for token in ["tomada", "toma", "2p", "220v", "127v", "std"])
+                )
+                if not looks_like_voltage_option:
+                    continue
+
+                desired = None
+                if str(target_voltage) in key:
+                    desired = True
+                elif ("127" in key or "220" in key):
+                    desired = False
+
+                if desired is not None and _set_binary_param(p, desired):
+                    changed = True
+                    dbg.ok('Flag tensao [{}] Id={} -> {}'.format(
+                        pname, target.Id.IntegerValue, 1 if desired else 0))
+        except Exception as ex:
+            dbg.warn('Falha ao ajustar flags de tensao Id={}: {}'.format(
+                getattr(target.Id, "IntegerValue", "?"), ex))
+    return changed
+
+def _apply_panel_distribution(elem, panel):
+    dist_id = _get_panel_distribution_id(panel)
+    if not dist_id:
+        return False
+    for name in ["Sistema de distribuição", "Distribution System", "Sistema de Distribuição"]:
+        try:
+            p = elem.LookupParameter(name)
+            if p and not p.IsReadOnly:
+                p.Set(dist_id)
+                dbg.ok('Sistema do quadro aplicado ao elemento Id={}'.format(elem.Id.IntegerValue))
+                return True
+        except Exception as ex:
+            dbg.warn('Falha ao aplicar sistema do quadro em Id={}: {}'.format(elem.Id.IntegerValue, ex))
+    return False
+
+def _get_industrial_config_targets(elem):
+    targets = []
+    try:
+        parent = getattr(elem, "SuperComponent", None)
+        if parent and parent.Id != elem.Id:
+            targets.append(parent)
+            dbg.step('Config alvo externo via SuperComponent: Id={} Cat={}'.format(
+                parent.Id.IntegerValue,
+                parent.Category.Name if parent.Category else "?"))
+    except Exception as ex:
+        dbg.step('Sem SuperComponent configuravel para Id={}: {}'.format(elem.Id.IntegerValue, ex))
+    targets.append(elem)
+    return targets
+
+def _get_load_classification_name(classification_id):
+    if classification_id is None:
+        return None
+    try:
+        elem = doc.GetElement(classification_id)
+        if elem and elem.Name:
+            return elem.Name
+    except Exception:
+        pass
+    return None
+
+def _set_load_type_param_on_target(target, classification_id):
+    class_name = _get_load_classification_name(classification_id)
+    if not class_name:
+        return False
+    names = [
+        u"Tipo de Carga", u"Tipo da Carga", u"ClassificaÃ§Ã£o de Carga",
+        u"Classificacao de Carga", "Load Classification", "Load Type"
+    ]
+    guid_prefixes = ["d9c177cb"]
+
+    def _try_set_param(p, owner_label):
+        if not p:
+            return False
+        try:
+            if p.IsReadOnly:
+                dbg.step('Tipo de Carga {} Id={} RO=True'.format(owner_label, target.Id.IntegerValue))
+                return False
+            if p.StorageType == StorageType.String:
+                p.Set(class_name)
+            elif p.StorageType == StorageType.ElementId:
+                p.Set(classification_id)
+            else:
+                try:
+                    p.SetValueString(class_name)
+                except Exception:
+                    return False
+            dbg.ok('Tipo de Carga {} Id={} -> {}'.format(owner_label, target.Id.IntegerValue, class_name))
+            return True
+        except Exception as ex:
+            dbg.warn('Falha Tipo de Carga {} Id={}: {}'.format(owner_label, target.Id.IntegerValue, ex))
+            return False
+
+    if _try_set_param(_find_param_by_name_or_guid(target, names, guid_prefixes), "INST"):
+        return True
+
+    try:
+        elem_type = doc.GetElement(target.GetTypeId()) if hasattr(target, "GetTypeId") else None
+        if elem_type:
+            p = _find_param_by_name_or_guid(elem_type, names, guid_prefixes)
+            return _try_set_param(p, "TYPE")
+    except Exception as ex:
+        dbg.warn('Falha ao acessar TYPE para Tipo de Carga Id={}: {}'.format(target.Id.IntegerValue, ex))
+    return False
+
+def _get_first_electrical_connector(elem):
+    try:
+        mgr = None
+        mep = getattr(elem, "MEPModel", None)
+        if mep:
+            mgr = getattr(mep, "ConnectorManager", None)
+        if not mgr:
+            mgr = getattr(elem, "ConnectorManager", None)
+        if mgr:
+            for c in mgr.Connectors:
+                if c.Domain == Domain.DomainElectrical:
+                    return c
+    except Exception as ex:
+        dbg.warn('Falha ao obter conector eletrico Id={}: {}'.format(elem.Id.IntegerValue, ex))
+    return None
+
+def _param_guid_text(param):
+    try:
+        return str(param.GUID).lower()
+    except Exception:
+        return ""
+
+def _param_name_text(param):
+    try:
+        return (param.Definition.Name or "").strip().lower()
+    except Exception:
+        return ""
+
+def _find_param_by_name_or_guid(elem, names, guid_prefixes=None):
+    guid_prefixes = [(g or "").lower() for g in (guid_prefixes or [])]
+    names = [(n or "").strip().lower() for n in names]
+    matches = []
+    try:
+        for p in elem.Parameters:
+            pname = _param_name_text(p)
+            pguid = _param_guid_text(p)
+            by_name = pname in names
+            by_guid = pguid and any(pguid.startswith(g) for g in guid_prefixes)
+            if by_name or by_guid:
+                score = (4 if by_guid else 0) + (2 if by_name else 0) + (1 if not p.IsReadOnly else 0)
+                matches.append((score, p))
+    except Exception:
+        pass
+    if matches:
+        matches.sort(key=lambda item: item[0], reverse=True)
+        return matches[0][1]
+    for name in names:
+        try:
+            p = elem.LookupParameter(name)
+            if p:
+                return p
+        except Exception:
+            pass
+    return None
+
+def _force_shared_voltage_phase(elem, phase_config):
+    """Forca parametros compartilhados que alimentam o conector antes do Create."""
+    voltage_internal = float(phase_config["voltage"]) * VOLTAGE_FACTOR
+    voltage_text = str(int(round(phase_config["voltage"]))) + " V"
+    poles = int(phase_config["poles"])
+    changed = False
+
+    p_v = _find_param_by_name_or_guid(
+        elem,
+        [u"Tensão (V)", u"Tensao (V)", u"Tensão", u"Tensao", "Voltage", "Voltagem"],
+        ["2bf202e8"]
+    )
+    if p_v:
+        try:
+            if not p_v.IsReadOnly:
+                if p_v.StorageType == StorageType.Double:
+                    p_v.Set(voltage_internal)
+                elif p_v.StorageType == StorageType.Integer:
+                    p_v.Set(int(round(phase_config["voltage"])))
+                elif p_v.StorageType == StorageType.String:
+                    p_v.Set(voltage_text)
+                changed = True
+                dbg.ok('Shared tensão Id={} -> {}'.format(elem.Id.IntegerValue, voltage_text))
+            else:
+                dbg.step('Shared tensão Id={} RO=True'.format(elem.Id.IntegerValue))
+        except Exception as ex:
+            dbg.warn('Falha shared tensão Id={}: {}'.format(elem.Id.IntegerValue, ex))
+
+    p_f = _find_param_by_name_or_guid(
+        elem,
+        [u"N° de Fases", u"Nº de Fases", u"Número de Fases", u"Numero de Fases", "Fases", "Polos", u"Pólos"],
+        ["d1d0c4b4-47d8-45bc-a138-06f76d6f0beb", "d1d0c4b4"]
+    )
+    if p_f:
+        try:
+            if not p_f.IsReadOnly:
+                if p_f.StorageType == StorageType.Integer:
+                    p_f.Set(poles)
+                elif p_f.StorageType == StorageType.Double:
+                    p_f.Set(float(poles))
+                elif p_f.StorageType == StorageType.String:
+                    p_f.Set(str(poles))
+                changed = True
+                dbg.ok('Shared fases Id={} -> {}'.format(elem.Id.IntegerValue, poles))
+            else:
+                dbg.step('Shared fases Id={} RO=True'.format(elem.Id.IntegerValue))
+        except Exception as ex:
+            dbg.warn('Falha shared fases Id={}: {}'.format(elem.Id.IntegerValue, ex))
+    return changed
+
+def _get_available_electrical_connector(elem):
+    fallback = None
+    for target in _get_industrial_config_targets(elem):
+        try:
+            mgr = None
+            mep = getattr(target, "MEPModel", None)
+            if mep:
+                mgr = getattr(mep, "ConnectorManager", None)
+            if not mgr:
+                mgr = getattr(target, "ConnectorManager", None)
+            if not mgr:
+                continue
+            for c in mgr.Connectors:
+                if c.Domain != Domain.DomainElectrical:
+                    continue
+                if fallback is None:
+                    fallback = (c, target)
+                try:
+                    if c.MEPSystem is None:
+                        return c, target
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    return fallback if fallback else (None, None)
+
+def _create_power_circuit_from_batch_ids(b_ids, phase_config, panel, load_classification_id=None):
+    """Cria circuito passando o DistributionSysType do painel direto no Create (4-arg),
+    com fallback para conector e depois por ElementId."""
+    for eid in b_ids:
+        elem = doc.GetElement(eid)
+        if elem is None:
+            continue
+        _configure_industrial_element_for_circuit(elem, phase_config, panel, load_classification_id)
+        _force_shared_voltage_phase(elem, phase_config)
+        _force_voltage_option_flags(elem, phase_config)
+    doc.Regenerate()
+
+    # Tentativa preferencial: 4-arg Create com dist_id do painel.
+    # O circuito nasce ja com o DistributionSysType correto, evitando o mismatch no SelectPanel.
+    dist_id = _get_panel_distribution_id(panel)
+    if dist_id:
+        try:
+            with suppress_elec_dialog():
+                circuit = ElectricalSystem.Create(doc, b_ids, ElectricalSystemType.PowerCircuit, dist_id)
+            if circuit is not None:
+                dbg.ok('ElectricalSystem.Create 4-arg com dist_id={} OK'.format(dist_id.IntegerValue))
+                return circuit
+        except Exception as ex:
+            dbg.step('4-arg Create falhou (Revit < 2022?): {}'.format(ex))
+
+    # Fallback: criar por conector (herda tensao do conector)
+    first_conn = None
+    first_owner = None
+    for eid in b_ids:
+        elem = doc.GetElement(eid)
+        first_conn, first_owner = _get_available_electrical_connector(elem)
+        if first_conn:
+            break
+
+    if first_conn:
+        dbg.step('ElectricalSystem.Create por Connector Id={}'.format(first_owner.Id.IntegerValue))
+        circuit = ElectricalSystem.Create(first_conn, ElectricalSystemType.PowerCircuit)
+        doc.Regenerate()
+        for eid in b_ids:
+            try:
+                elem = doc.GetElement(eid)
+                if first_owner is not None and elem is not None and elem.Id == first_owner.Id:
+                    continue
+                add_ids = List[ElementId]()
+                add_ids.Add(eid)
+                circuit.AddToCircuit(add_ids)
+            except Exception as ex:
+                dbg.warn('Falha ao adicionar Id={} ao circuito: {}'.format(eid.IntegerValue, ex))
+        return circuit
+
+    dbg.warn('Nenhum conector eletrico disponivel; fallback Create por ElementId')
+    return ElectricalSystem.Create(doc, b_ids, ElectricalSystemType.PowerCircuit)
+
+def _configure_industrial_target_for_circuit(elem, phase_config, panel):
+    voltage_internal = float(phase_config["voltage"]) * VOLTAGE_FACTOR
+    voltage_text = str(int(round(phase_config["voltage"]))) + " V"
+    poles = int(phase_config["poles"])
+    dist_id = _get_panel_distribution_id(panel)
+
+    _force_shared_voltage_phase(elem, phase_config)
+    _force_voltage_option_flags(elem, phase_config)
+
+    try:
+        _set_param_value(elem.get_Parameter(BuiltInParameter.RBS_ELEC_VOLTAGE), voltage_internal, voltage_text)
+    except Exception:
+        pass
+    try:
+        _set_param_value(elem.get_Parameter(BuiltInParameter.RBS_ELEC_NUMBER_OF_POLES), poles)
+    except Exception:
+        pass
+
+    try:
+        mgr = None
+        mep = getattr(elem, "MEPModel", None)
+        if mep:
+            mgr = getattr(mep, "ConnectorManager", None)
+        if not mgr:
+            mgr = getattr(elem, "ConnectorManager", None)
+        if mgr:
+            for c in mgr.Connectors:
+                if c.Domain == Domain.DomainElectrical:
+                    try:
+                        c.Voltage = voltage_internal
+                        dbg.ok('Conector Id={} tensao setada para {}'.format(elem.Id.IntegerValue, voltage_text))
+                    except Exception as ex:
+                        dbg.warn('Conector Id={} nao aceitou tensao: {}'.format(elem.Id.IntegerValue, ex))
+                    try:
+                        c.Poles = poles
+                        dbg.ok('Conector Id={} polos setado para {}'.format(elem.Id.IntegerValue, poles))
+                    except Exception as ex:
+                        dbg.warn('Conector Id={} nao aceitou polos: {}'.format(elem.Id.IntegerValue, ex))
+                    try:
+                        read_v = c.Voltage / VOLTAGE_FACTOR
+                        read_p = c.Poles
+                        dbg.step('Conector Id={} apos set: {:.0f}V / {} polo(s)'.format(
+                            elem.Id.IntegerValue, read_v, read_p))
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    if dist_id:
+        for name in [u"Sistema de distribuição", "Distribution System", u"Sistema de Distribuição"]:
+            try:
+                if _set_param_value(elem.LookupParameter(name), dist_id):
+                    break
+            except Exception:
+                pass
+
+    p_names_poles = [u"Pólos", "Polos", u"Número de Polos", "Poles",
+                     u"Número de polos", "Fases", u"N° de Fases",
+                     u"Nº de Fases", u"Número de Fases",
+                     u"Número de polos", "Number of Poles"]
+    p_names_volt = [u"Tensão", u"Tensão Numérica", "Voltagem", "Voltage",
+                    u"Tensão (V)", "Volts"]
+
+    for p_name in p_names_poles:
+        try:
+            if _set_param_value(elem.LookupParameter(p_name), poles):
+                break
+        except Exception:
+            pass
+    for p_name in p_names_volt:
+        try:
+            if _set_param_value(elem.LookupParameter(p_name), voltage_internal, voltage_text):
+                break
+        except Exception:
+            pass
+
+    try:
+        elem_type = doc.GetElement(elem.GetTypeId()) if hasattr(elem, "GetTypeId") else None
+        if elem_type:
+            dbg.step('Tentando modificar parametros no TYPE: {}'.format(elem_type.Id.IntegerValue))
+            for p_name in p_names_poles:
+                p = elem_type.LookupParameter(p_name)
+                if p:
+                    dbg.step('TYPE param [{}] RO={}'.format(p_name, p.IsReadOnly))
+                    try:
+                        if not p.IsReadOnly:
+                            p.Set(poles)
+                            dbg.ok('TYPE param [{}] alterado para {}'.format(p_name, poles))
+                            break
+                    except Exception as ex:
+                        dbg.warn('Erro ao setar TYPE param [{}]: {}'.format(p_name, ex))
+
+            for p_name in p_names_volt:
+                p = elem_type.LookupParameter(p_name)
+                if p:
+                    dbg.step('TYPE param [{}] RO={}'.format(p_name, p.IsReadOnly))
+                    try:
+                        if not p.IsReadOnly:
+                            try: p.Set(voltage_internal)
+                            except: p.Set(voltage_text)
+                            dbg.ok('TYPE param [{}] alterado para {}'.format(p_name, voltage_text))
+                            break
+                    except Exception as ex:
+                        dbg.warn('Erro ao setar TYPE param [{}]: {}'.format(p_name, ex))
+    except Exception as ex:
+        dbg.warn('Erro ao acessar TYPE: {}'.format(ex))
+
+def _configure_industrial_element_for_circuit(elem, phase_config, panel, load_classification_id=None):
+    for target in _get_industrial_config_targets(elem):
+        try:
+            dbg.step('Configurando alvo Id={} para {} polo(s), {}V'.format(
+                target.Id.IntegerValue, phase_config["poles"], phase_config["voltage"]))
+            _set_load_type_param_on_target(target, load_classification_id)
+            _configure_industrial_target_for_circuit(target, phase_config, panel)
+        except Exception as ex:
+            dbg.warn('Falha ao configurar alvo Id={}: {}'.format(target.Id.IntegerValue, ex))
+
+def _parse_first_int(value):
+    if value is None:
+        return None
+    try:
+        return int(round(float(value)))
+    except Exception:
+        pass
+    try:
+        m = re.search(r"\d+", str(value))
+        if m:
+            return int(m.group(0))
+    except Exception:
+        pass
+    return None
+
+def _param_display_value(param):
+    if not param:
+        return None
+    for getter in ("AsValueString", "AsString"):
+        try:
+            val = getattr(param, getter)()
+            if val not in (None, ""):
+                return val
+        except Exception:
+            pass
+    try:
+        return param.AsInteger()
+    except Exception:
+        pass
+    try:
+        return param.AsDouble()
+    except Exception:
+        pass
+    return None
+
+def _read_poles_param(elem):
+    names = [
+        u"Número de polos", u"Numero de polos", u"Número de Polos",
+        u"Número de Fases", u"Numero de Fases", u"N° de Fases",
+        u"Nº de Fases", "Number of Poles", "Poles", "Polos",
+        u"Pólos", "Fases"
+    ]
+    try:
+        bip = elem.get_Parameter(BuiltInParameter.RBS_ELEC_NUMBER_OF_POLES)
+        val = _parse_first_int(_param_display_value(bip))
+        if val:
+            return val, getattr(bip, "IsReadOnly", False), "RBS_ELEC_NUMBER_OF_POLES"
+    except Exception:
+        pass
+    for name in names:
+        try:
+            p = elem.LookupParameter(name)
+            val = _parse_first_int(_param_display_value(p))
+            if val:
+                return val, getattr(p, "IsReadOnly", False), name
+        except Exception:
+            pass
+    return None, False, None
+
+def _assert_elements_match_phase_config(elems, phase_config):
+    expected_poles = int(phase_config["poles"])
+    bad = []
+    for elem in elems:
+        val, ro, pname = _read_poles_param(elem)
+        if val and val != expected_poles:
+            bad.append((elem.Id.IntegerValue, val, pname or "parametro", ro))
+    if not bad:
+        return
+    details = []
+    for eid, val, pname, ro in bad:
+        details.append("Id {}: {} = {}{}".format(
+            eid, pname, val, " (somente leitura)" if ro else ""))
+    msg = (
+        "A familia/tipo ainda esta configurada como {} polo(s), mas voce escolheu {} polo(s).\n"
+        "O Revit criaria o circuito com a configuracao da familia e o quadro recusaria a ligacao.\n\n{}"
+    ).format(bad[0][1], expected_poles, "\n".join(details))
+    dbg.warn(msg)
+    return False
+
+def _circuit_panel_matches(circuit, panel):
+    try:
+        base = circuit.BaseEquipment
+        if base and base.Id == panel.Id:
+            return True
+    except Exception:
+        pass
+    try:
+        panel_name = get_panel_name(panel)
+        for pname in ["Painel", "Panel"]:
+            p = circuit.LookupParameter(pname)
+            if p and p.HasValue:
+                val = p.AsString() or p.AsValueString() or ""
+                if val == panel_name:
+                    return True
+    except Exception:
+        pass
+    return False
+
+def _force_circuit_distribution(circuit, panel):
+    """Tenta forcar o sistema de distribuicao do circuito para coincidir com o do quadro."""
+    dist_id = _get_panel_distribution_id(panel)
+    if not dist_id:
+        dbg.warn('Panel nao tem sistema de distribuicao')
+        return False
+    for bip_name in ['RBS_ELEC_CIRCUIT_DISTRIBUTION_SYSTEM_PARAM',
+                     'RBS_FAMILY_CONTENT_DISTRIBUTION_SYSTEM',
+                     'RBS_ELEC_PANEL_DISTRIBUTION_SYSTEM']:
+        bip = _get_bip(bip_name)
+        if bip is None:
+            continue
+        try:
+            p = circuit.get_Parameter(bip)
+            if p and not p.IsReadOnly and p.StorageType == StorageType.ElementId:
+                p.Set(dist_id)
+                dbg.ok('Dist set via BIP {}'.format(bip_name))
+                return True
+        except Exception:
+            pass
+    for name in [u"Sistema de distribuição", "Distribution System", u"Sistema de Distribuição"]:
+        try:
+            p = circuit.LookupParameter(name)
+            if p and not p.IsReadOnly:
+                p.Set(dist_id)
+                dbg.ok('Distribution system forced via [{}]'.format(name))
+                return True
+        except Exception:
+            pass
+    try:
+        for p in circuit.Parameters:
+            if p.IsReadOnly or p.StorageType != StorageType.ElementId:
+                continue
+            pdef = p.Definition
+            if not pdef:
+                continue
+            pn = (pdef.Name or "").lower()
+            if any(kw in pn for kw in ['distribu', 'sistema', 'system']):
+                try:
+                    p.Set(dist_id)
+                    dbg.ok('Dist set via scan [{}]'.format(pdef.Name))
+                    return True
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    dbg.warn('Nao foi possivel forcar dist system no circuito')
+    return False
+
+def _configure_circuit_for_phase(circuit, panel, phase_config):
+    if not phase_config:
+        return
+    _force_circuit_voltage_type(circuit, phase_config)
+    set_param(circuit, [u"N° de Fases", u"Nº de Fases", u"Número de Fases", u"Número de polos", "Number of Poles", "Polos"], phase_config["poles"])
+    set_param(circuit, [u"Tensão (V)", u"Tensão", "Voltage", "Voltagem", u"Tensão Nominal", "Volts"], phase_config["voltage"])
+    try:
+        p = circuit.get_Parameter(BuiltInParameter.RBS_ELEC_NUMBER_OF_POLES)
+        if p and not p.IsReadOnly:
+            p.Set(float(phase_config["poles"]))
+            dbg.ok('Circuit BIP poles={}'.format(phase_config["poles"]))
+        else:
+            dbg.step('Circuit BIP poles RO={}'.format(p.IsReadOnly if p else 'N/A'))
+    except Exception as ex:
+        dbg.step('Circuit BIP poles err: {}'.format(ex))
+    try:
+        p = circuit.get_Parameter(BuiltInParameter.RBS_ELEC_VOLTAGE)
+        if p and not p.IsReadOnly:
+            p.Set(float(phase_config["voltage"]) * VOLTAGE_FACTOR)
+            dbg.ok('Circuit BIP voltage={}'.format(phase_config["voltage"]))
+        else:
+            dbg.step('Circuit BIP voltage RO={}'.format(p.IsReadOnly if p else 'N/A'))
+    except Exception as ex:
+        dbg.step('Circuit BIP voltage err: {}'.format(ex))
+    _apply_panel_distribution(circuit, panel)
+
+def _select_panel_checked(circuit, panel, phase_config=None):
+    panel_name = get_panel_name(panel)
+    _configure_circuit_for_phase(circuit, panel, phase_config)
+    _force_circuit_distribution(circuit, panel)
+    try:
+        doc.Regenerate()
+    except Exception:
+        pass
+    dbg.step('Conectando circuito Id={} ao quadro Id={} ({})'.format(
+        circuit.Id.IntegerValue, panel.Id.IntegerValue, panel_name))
+    try:
+        circuit.SelectPanel(panel)
+    except Exception as ex:
+        if "do not match" not in str(ex).lower():
+            raise
+        dbg.warn('SelectPanel dist mismatch: {}'.format(ex))
+        # Dump circuit params for diagnostics
+        try:
+            for p in circuit.Parameters:
+                pdef = p.Definition
+                if pdef:
+                    pn = (pdef.Name or "").lower()
+                    if any(kw in pn for kw in ['distribu', 'sistema', 'system', 'polo',
+                                                'fase', 'tens', 'volt', 'painel', 'panel']):
+                        val = ""
+                        try:
+                            val = p.AsValueString() or p.AsString() or str(p.AsDouble())
+                        except Exception:
+                            try:
+                                val = str(p.AsElementId().IntegerValue)
+                            except Exception:
+                                val = "?"
+                        dbg.step('  CIRC [{}] RO={} val={}'.format(pdef.Name, p.IsReadOnly, val))
+        except Exception:
+            pass
+        try:
+            doc.Regenerate()
+            circuit.SelectPanel(panel)
+            dbg.ok('SelectPanel OK no retry')
+        except Exception as ex2:
+            dbg.fail('SelectPanel retry falhou: {}'.format(ex2))
+            raise
+    try:
+        doc.Regenerate()
+    except Exception as ex:
+        dbg.warn('Regenerate apos SelectPanel falhou: {}'.format(ex))
+    if not _circuit_panel_matches(circuit, panel):
+        raise Exception("Circuito criado, mas o Revit nao conectou ao quadro '{}'.".format(panel_name))
+    dbg.ok('Circuito Id={} conectado ao quadro {}'.format(circuit.Id.IntegerValue, panel_name))
+
+def _get_assigned_panel_name(elem):
+    try:
+        for pname in ["Painel", "Panel"]:
+            p = elem.LookupParameter(pname)
+            if p and p.HasValue:
+                val = p.AsString() or p.AsValueString() or ""
+                if val and val.strip():
+                    return val.strip()
+    except Exception:
+        pass
+    return ""
+
+def _should_skip_connected_element(elem, panel, reconnect_state):
+    assigned_panel = _get_assigned_panel_name(elem)
+    if not assigned_panel:
+        return False
+
+    target_panel = get_panel_name(panel)
+    if assigned_panel == target_panel:
+        dbg.step('Id={} ja esta ligado ao quadro selecionado "{}" -- pulado'.format(
+            elem.Id.IntegerValue, target_panel))
+        return True
+
+    if reconnect_state.get("choice") is None:
+        reconnect_state["choice"] = forms.alert(
+            "Existem elementos ligados ao quadro '{}'.\n\nDeseja remover o circuito existente e recriar no quadro '{}' ?".format(
+                assigned_panel, target_panel),
+            title="Religar circuitos",
+            yes=True,
+            no=True
+        )
+
+    if reconnect_state.get("choice"):
+        dbg.step('Id={} estava no painel "{}" e sera religado para "{}"'.format(
+            elem.Id.IntegerValue, assigned_panel, target_panel))
+        return False
+
+    dbg.step('Id={} ligado ao painel "{}" -- pulado'.format(elem.Id.IntegerValue, assigned_panel))
+    return True
+
+def _ask_circuit_description(default_text=""):
+    value = forms.ask_for_string(
+        default=default_text,
+        prompt="Nome da carga:\nDeixe em branco para usar o nome automatico.",
+        title="Nome da Carga"
+    )
+    if value is None:
+        return None
+    return value.strip()
+
+def _circuit_description(custom_text, fallback_text):
+    return custom_text if custom_text else fallback_text
+
+def _read_voltage_param(elem):
+    for name in [u"Tensão (V)", u"Tensão", "Voltage", "Voltagem", u"Tensão Nominal", "Volts"]:
+        try:
+            p = elem.LookupParameter(name)
+            if p and p.HasValue:
+                text = p.AsValueString() or p.AsString() or ""
+                match = re.search(r"[-+]?\d*\.\d+|\d+", str(text).replace(",", "."))
+                if match:
+                    return int(round(float(match.group()))), p.IsReadOnly, name
+                try:
+                    raw = p.AsDouble()
+                    if raw:
+                        value = raw / VOLTAGE_FACTOR if raw > 1000 else raw
+                        return int(round(value)), p.IsReadOnly, name
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    return None, False, None
+
+def _voltage_locked_incompatible(elem, target_voltage):
+    current_voltage, readonly, pname = _read_voltage_param(elem)
+    if current_voltage is None:
+        return False, None
+    if abs(current_voltage - int(target_voltage)) <= 2:
+        return False, current_voltage
+    if readonly:
+        dbg.warn('Id={} tem {}={}V somente leitura; esperado {}V'.format(
+            elem.Id.IntegerValue, pname, current_voltage, target_voltage))
+        return True, current_voltage
+    return False, current_voltage
+
+
+def _get_element_wattage(elem):
+    for pname in ["Potência Aparente (VA)", "Potência Aparente", "Apparent Load", "Potência", "Power", "Wattage", "Potencia Aparente", "Potencia", "Carga Aparente"]:
+        p = elem.LookupParameter(pname)
+        if p and p.HasValue:
+            try:
+                val_str = p.AsValueString()
+                if val_str:
+                    s = str(val_str).replace(',', '.')
+                    match = re.search(r"[-+]?\d*\.\d+|\d+", s)
+                    if match: return float(match.group())
+            except Exception: pass
+            try: return p.AsDouble()
+            except Exception: pass
+    try:
+        if hasattr(elem, 'MEPModel') and elem.MEPModel:
+            cm = elem.MEPModel.ConnectorManager
+            if cm:
+                for c in cm.Connectors:
+                    if c.Domain == Domain.DomainElectrical:
+                        try: return c.Voltage * c.Current
+                        except Exception: pass
+    except Exception: pass
+    return 0.0
+
+def _detect_amperage_from_family(elem):
+    fname = get_family_name(elem).lower()
+    tname = ""
+    try:
+        if hasattr(elem, 'Symbol') and elem.Symbol:
+            tname = elem.Symbol.Name.lower() if hasattr(elem.Symbol, 'Name') else ""
+    except Exception: pass
+    full_name = fname + " " + tname
+    if "20a" in full_name or "20 a" in full_name: return 20
+    elif "10a" in full_name or "10 a" in full_name: return 10
+    return 10
+
+def _collect_load_classifications():
+    """Coleta classificações de carga do projeto via RBS_ELEC_CIRCUIT_LOAD_CLASSIFICATION.
+    Retorna dict {nome: ElementId}."""
+    result = {}
+    bip_name = 'RBS_ELEC_CIRCUIT_LOAD_CLASSIFICATION'
+
+    # Tenta coletar a classe diretamente (Revit 2019+)
+    try:
+        from Autodesk.Revit.DB.Electrical import ElectricalLoadClassification
+        elems = FilteredElementCollector(doc).OfClass(ElectricalLoadClassification).ToElements()
+        for e in elems:
+            try:
+                if e.Name:
+                    result[e.Name] = e.Id
+            except Exception:
+                pass
+        if result:
+            return result
+    except Exception:
+        pass
+
+    # Fallback: coleta das classificações já usadas nos circuitos existentes
+    try:
+        cat = getattr(BuiltInCategory, 'OST_ElectricalLoadClassifications', None)
+        if cat is not None:
+            elems = FilteredElementCollector(doc).OfCategory(cat).WhereElementIsNotElementType().ToElements()
+            for e in elems:
+                try:
+                    if e.Name:
+                        result[e.Name] = e.Id
+                except Exception:
+                    pass
+            if result:
+                return result
+    except Exception:
+        pass
+
+    bip = getattr(BuiltInParameter, bip_name, None)
+    if bip is None:
+        return result
+    try:
+        circuits = FilteredElementCollector(doc).OfClass(ElectricalSystem).ToElements()
+        for c in circuits:
+            try:
+                p = c.get_Parameter(bip)
+                if p and p.HasValue:
+                    eid = p.AsElementId()
+                    if eid != ElementId.InvalidElementId:
+                        elem = doc.GetElement(eid)
+                        if elem and elem.Name and elem.Name not in result:
+                            result[elem.Name] = eid
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return result
+
+def _ask_load_classification():
+    """Apresenta as classificações de carga do projeto. Retorna ElementId ou None se cancelado."""
+    options = _collect_load_classifications()
+    if not options:
+        forms.alert(
+            u"Nenhuma Classificação de Carga encontrada no projeto.\n\n"
+            u"O circuito será criado sem classificação.",
+            title=u"Classificação de Carga"
+        )
+        return None
+    choice = forms.CommandSwitchWindow.show(
+        sorted(options.keys()),
+        message=u"Classificação de Carga do circuito (ESC para pular):",
+        title=u"Classificação de Carga"
+    )
+    if not choice:
+        return None
+    classification_id = options.get(choice)
+    dbg.ok(u"Classificacao de carga: {} (Id={})".format(choice, classification_id.IntegerValue if classification_id else '?'))
+    return classification_id
+
+def _set_load_classification(circuit, classification_id):
+    """Define RBS_ELEC_CIRCUIT_LOAD_CLASSIFICATION no circuito usando ElementId."""
+    if classification_id is None:
+        return
+    bip = getattr(BuiltInParameter, 'RBS_ELEC_CIRCUIT_LOAD_CLASSIFICATION', None)
+    if bip is None:
+        return
+    try:
+        p = circuit.get_Parameter(bip)
+        if p and not p.IsReadOnly:
+            p.Set(classification_id)
+            name = ""
+            try:
+                elem = doc.GetElement(classification_id)
+                if elem and elem.Name:
+                    name = u" ({})".format(elem.Name)
+            except Exception:
+                pass
+            dbg.ok(u"Classificacao de carga definida Id={}{}".format(classification_id.IntegerValue, name))
+        elif p:
+            dbg.warn(u"Classificacao de carga somente leitura no circuito Id={}".format(circuit.Id.IntegerValue))
+    except Exception as ex:
+        dbg.warn(u"Nao foi possivel definir classificacao de carga: {}".format(ex))
+
+_NO_LOAD_CLASS = object()  # sentinela: "nao foi passado, perguntar ao usuario"
+
+def _import_sync_module():
+    """Importa o modulo Sincronizar Circuitos, cacheado em sys.modules."""
+    import sys
+    key = 'lf_sinc_circ'
+    if key in sys.modules:
+        return sys.modules[key]
+    import imp
+    panel_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    candidates = [
+        os.path.join(panel_dir, 'Circuitos.stack', 'Sincronizar Circuitos.pushbutton', 'script.py'),
+        os.path.join(panel_dir, 'LF Electrical.stack', 'Sincronizar Circuitos.pushbutton', 'script.py'),
+        os.path.join(os.path.dirname(__file__), '..', 'Sincronizar Circuitos.pushbutton', 'script.py'),
+    ]
+    sync_path = candidates[0]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            sync_path = candidate
+            break
+    try:
+        return imp.load_source(key, sync_path)
+    except Exception as ex:
+        dbg.warn('Falha ao importar Sincronizar Circuitos: {}'.format(ex))
+        return None
+
+def _run_sync_circuits(circuit_ids):
+    """Sincroniza disjuntores, cabos e distâncias dos circuitos recém-criados."""
+    if not circuit_ids:
+        return
+    try:
+        circuits = [doc.GetElement(eid) for eid in circuit_ids]
+        circuits = [c for c in circuits if c is not None]
+        if not circuits:
+            return
+        mod = _import_sync_module()
+        if not mod:
+            return
+        mod.doc = doc  # garante que usa o doc ativo
+        ok, erros = mod.sync_circuits(circuits)
+        dbg.ok('Sync: {} OK, {} erros'.format(len(ok), len(erros)))
+        if erros:
+            dbg.warn('Erros sync: {}'.format('; '.join(erros)))
+    except Exception as ex:
+        dbg.warn('Erro na sincronizacao: {}'.format(ex))
+
+def _get_user_panel_name(panel):
+    """Retorna o nome definido pelo usuário nos parâmetros do painel, ou None se vazio."""
+    for n in ["Nome do painel", "Panel Name", "Mark"]:
+        try:
+            p = panel.LookupParameter(n)
+            if p and p.HasValue:
+                v = p.AsString()
+                if v and v.strip():
+                    return v.strip()
+        except Exception:
+            pass
+    return None
+
+def _get_panel_schedule_view(panel):
+    """Localiza o PanelScheduleView associado a este painel."""
+    try:
+        schedules = FilteredElementCollector(doc).OfClass(PanelScheduleView).ToElements()
+        for sched in schedules:
+            try:
+                if sched.GetPanel() == panel.Id:
+                    return sched
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None
+
+def configure_panel_industrial(panel):
+    messages = []
+
+    current_name = _get_user_panel_name(panel) or get_panel_name(panel)
+    new_name = forms.ask_for_string(default=current_name, prompt="Nome do Quadro Industrial (ex: QGBT, CCM-01):", title="Quadro Industrial")
+    if not new_name: return False, "Cancelado"
+
+    with Transaction(doc, "Nome do Quadro Industrial") as t:
+        t.Start()
+        set_param(panel, ["Nome do painel", "Panel Name", "Mark"], new_name)
+        sched = _get_panel_schedule_view(panel)
+        if sched:
+            try:
+                sched.Name = new_name
+                dbg.ok('Tabela de paineis renomeada para: {}'.format(new_name))
+            except Exception as ex:
+                dbg.warn('Nao foi possivel renomear tabela: {}'.format(ex))
+        t.Commit()
+    messages.append("Nome: " + new_name)
+
+    chosen_rule = forms.CommandSwitchWindow.show(
+        INDUSTRIAL_PANEL_RULES.keys(),
+        message="Defina primeiro a tensao e a quantidade de fases do quadro:",
+        title="Regra do Quadro Industrial"
+    )
+    if not chosen_rule:
+        return False, "Cancelado"
+
+    rule = INDUSTRIAL_PANEL_RULES[chosen_rule]
+    messages.append("Regra: " + chosen_rule)
+
+    with Transaction(doc, "Tensao e Polos Quadro Industrial") as t:
+        t.Start()
+        _set_panel_voltage_and_poles(panel, rule)
+        if set_param(panel, [u"Op\u00e7\u00e3o de numera\u00e7\u00e3o do circuito", "Circuit Numbering Option"], 0):
+            messages.append("Nomenclatura: Por projeto")
+        if set_param(panel, [u"Nomenclatura do circuito", "Circuit Naming"], "Por projeto"):
+            messages.append("Nomenclatura do circuito: Por projeto")
+        if set_param(panel, [u"N\u00famero do circuito", "Numero do circuito", "Circuit Number"], 0):
+            messages.append("Numero do circuito: 0")
+        t.Commit()
+
+    dist_options = _collect_industrial_distribution_options_for_rule(rule)
+    if not dist_options:
+        forms.alert(
+            "Nenhum sistema de distribuicao compativel encontrado.\n\n"
+            "Crie/renomeie um sistema com fase(s) + neutro + terra para {}.".format(chosen_rule),
+            title="Sistema de Distribuicao"
+        )
+        return False, "Sistema de distribuicao compativel nao encontrado"
+
+    chosen_dist = forms.CommandSwitchWindow.show(
+        dist_options.keys(),
+        message="Sistema compativel com {} (fase(s) + neutro + terra):".format(chosen_rule),
+        title="Sistema de Distribuicao"
+    )
+    if not chosen_dist:
+        return False, "Cancelado"
+
+    sys_id = dist_options[chosen_dist]
+    with Transaction(doc, "Sistema Quadro Industrial") as t:
+        t.Start()
+        p = panel.LookupParameter(u"Sistema de distribui\u00e7\u00e3o") or panel.LookupParameter("Distribution System")
+        if p and not p.IsReadOnly and sys_id:
+            try:
+                p.Set(sys_id)
+                messages.append("Sistema: " + chosen_dist)
+            except Exception as e:
+                t.RollBack()
+                forms.alert(
+                    u"Sistema selecionado e incompativel com este quadro.\n\n"
+                    u"Detalhe: {}".format(e),
+                    title="Sistema Invalido"
+                )
+                return False, "Sistema de distribuicao invalido"
+        messages.append("Quadro: {} polo(s), {}V".format(rule["poles"], rule["voltage"]))
+        t.Commit()
+
+    return True, "\n".join(messages)
+
+def select_and_configure_panel_industrial():
+    dbg.section('INDUSTRIAL - Selecionar Quadro')
+    try:
+        ref = uidoc.Selection.PickObject(ObjectType.Element, PanelFilter(), "Selecione o QUADRO INDUSTRIAL")
+        panel = doc.GetElement(ref.ElementId)
+        dbg.elem_info(panel, 'Quadro selecionado')
+
+        user_name = _get_user_panel_name(panel)
+        p_sys = panel.LookupParameter("Sistema de distribuição") or panel.LookupParameter("Distribution System")
+        has_sys = p_sys and p_sys.HasValue and p_sys.AsElementId() != ElementId.InvalidElementId
+        rule_label, rule = _get_panel_rule_from_distribution(panel)
+        has_rule = rule is not None
+
+        dbg.step('Params: nome={}, sys={}, regra={}'.format(user_name or "(vazio)", has_sys, rule_label or "nenhuma"))
+
+        needs_configure = not user_name or not has_sys or not has_rule
+        if needs_configure:
+            dbg.step('Quadro precisa de configuração')
+            success, msg = configure_panel_industrial(panel)
+            if success:
+                set_current_panel(panel.Id)
+                dbg.ok('Quadro configurado')
+                forms.alert("Quadro Industrial Configurado!\n" + msg)
+            else:
+                dbg.warn('Configuração cancelada')
+                forms.alert(msg)
+        else:
+            # Quadro ok — verificar se nome da tabela de painéis está em sincronia
+            sched = _get_panel_schedule_view(panel)
+            if sched and sched.Name != user_name:
+                dbg.warn('Tabela ({}) dessincronizada do quadro ({}) — sincronizando'.format(sched.Name, user_name))
+                with Transaction(doc, "Sincronizar Nome da Tabela de Painéis") as t:
+                    t.Start()
+                    try:
+                        sched.Name = user_name
+                    except Exception as ex:
+                        dbg.warn('Nao foi possivel renomear tabela: {}'.format(ex))
+                    t.Commit()
+            set_current_panel(panel.Id)
+            dbg.ok('Quadro já configurado')
+            forms.alert("Quadro Industrial Selecionado: " + user_name)
+    except OperationCanceledException:
+        dbg.step('ESC - Cancelado')
+        pass
+    except Exception as e:
+        dbg.fail('Erro: {}'.format(e))
+        forms.alert("Erro:\n" + str(e))
+
+def create_ilum_circuit_industrial():
+    dbg.section('INDUSTRIAL - Criar Circuito Iluminacao')
+    panel = get_current_panel()
+    if not panel:
+        forms.alert("Selecione o quadro primeiro!")
+        return
+
+    phase_config = prompt_industrial_phase_voltage(panel)
+    if not phase_config: return
+    limite_w = 1200 if int(phase_config["voltage"]) == 127 else 2400
+    dbg.ok('Limite iluminacao: {}W para {}V'.format(limite_w, phase_config["voltage"]))
+
+    load_class = _ask_load_classification()
+
+    batches = []
+    current_batch = List[ElementId]()
+    current_watts = 0.0
+    current_rooms = set()
+    skipped = []
+    reconnect_state = {"choice": None}
+
+    _ilum_filter = ConnectorDomainFilter(allowed_categories=[
+        int(BuiltInCategory.OST_LightingFixtures),
+        int(BuiltInCategory.OST_ElectricalFixtures),
+        int(BuiltInCategory.OST_LightingDevices),
+    ])
+
+    forms.toast("Selecione luminarias/dispositivos uma a uma. ESC finaliza.", title="Industrial")
+    while True:
+        try:
+            r = uidoc.Selection.PickObject(
+                ObjectType.Element,
+                _ilum_filter,
+                "Selecione uma luminaria ou dispositivo de iluminacao (ESC para finalizar)"
+            )
+        except OperationCanceledException:
+            dbg.step('Selecao de iluminacao finalizada por ESC')
+            break
+
+        elem = doc.GetElement(r.ElementId)
+        if _should_skip_connected_element(elem, panel, reconnect_state):
+            skipped.append(str(r.ElementId.IntegerValue))
+            continue
+            
+        watts = _get_element_wattage(elem)
+        rm = get_room_name(elem)
+        if current_watts + watts > limite_w and current_batch.Count > 0:
+            forms.alert(
+                "Limite de {}W atingido.\n\n"
+                "Circuito atual: {:.0f}W\n"
+                "Nova carga: {:.0f}W\n\n"
+                "Vou criar outro circuito a partir desta selecao.".format(limite_w, current_watts, watts),
+                title="Novo circuito de iluminacao"
+            )
+            batches.append((current_batch, current_watts, set(current_rooms)))
+            current_batch = List[ElementId]()
+            current_watts = 0.0
+            current_rooms = set()
+            
+        current_batch.Add(r.ElementId)
+        current_watts += watts
+        if rm: current_rooms.add(rm)
+        
+    if current_batch.Count > 0:
+        batches.append((current_batch, current_watts, set(current_rooms)))
+
+    dbg.step('Batches: {} | Elementos totais: {}'.format(len(batches), sum(b[0].Count for b in batches)))
+    if not batches:
+        forms.toast("Nenhuma luminaria valida selecionada.", title="Industrial")
+        return
+
+    batch_descs = []
+    for bi, (b_ids, b_watts, b_rooms) in enumerate(batches):
+        default_desc = "Ilum {} ({:.0f}W)".format(bi + 1, b_watts)
+        desc = _ask_circuit_description(default_desc)
+        if desc is None:
+            return
+        batch_descs.append(desc)
+
+    created = 0
+    created_ids = []
+    with Transaction(doc, "Circuitos Ilum Industrial") as t:
+        t.Start()
+        for bi, (b_ids, b_watts, b_rooms) in enumerate(batches):
+            dbg.step('Batch {}: {} elemento(s) {:.0f}W rooms={}'.format(bi+1, b_ids.Count, b_watts, list(b_rooms)))
+            for eid in b_ids:
+                elem = doc.GetElement(eid)
+                ensure_element_is_free(elem)
+                _configure_industrial_element_for_circuit(elem, phase_config, panel, load_class)
+
+            doc.Regenerate()
+            try:
+                with suppress_elec_dialog():
+                    circuit = ElectricalSystem.Create(doc, b_ids, ElectricalSystemType.PowerCircuit)
+                _select_panel_checked(circuit, panel, phase_config)
+                room_str = " / ".join(sorted(b_rooms)) if b_rooms else "Ilum Industrial"
+                set_param(circuit, LOAD_NAME_PARAMS, _circuit_description(batch_descs[bi], "{} ({:.0f}W)".format(room_str, b_watts)))
+                _set_load_classification(circuit, load_class)
+                created_ids.append(circuit.Id)
+                dbg.ok('Circuito ilum criado Id={}'.format(circuit.Id.IntegerValue))
+                created += 1
+            except Exception as ex:
+                dbg.fail('ElectricalSystem.Create falhou batch {}: {}'.format(bi+1, ex))
+                raise
+        t.Commit()
+
+    if created > 0:
+        _run_sync_circuits(created_ids)
+        forms.toast("Sucesso! {} circuito(s) criado(s) e sincronizado(s).".format(created), title="Industrial")
+
+class _FamilyLoadOptions(IFamilyLoadOptions):
+    def OnFamilyFound(self, familyInUse, overwriteParameterValues):
+        overwriteParameterValues.Value = True
+        return True
+    def OnSharedFamilyFound(self, sharedFamily, familyInUse, source, overwriteParameterValues):
+        overwriteParameterValues.Value = True
+        return True
+
+def _unlock_family_electrical_params(unique_types):
+    unlocked_count = 0
+    p_names = ["P\xf3los", "Polos", "N\xfamero de Polos", "Poles",
+               "N\xfamero de polos", "Fases", "N\xb0 de Fases",
+               "N\xba de Fases", "N\xfamero de Fases", "Number of Poles",
+               "Tens\xe3o", "Tens\xe3o Num\xe9rica", "Voltagem", "Voltage",
+               "Tens\xe3o (V)", "Volts"]
+    p_names_lower = [n.lower() for n in p_names]
+    
+    for elem_type in unique_types:
+        family = getattr(elem_type, "Family", None)
+        if not family or not family.IsEditable:
+            continue
+            
+        # Check if it actually has locked params in the project first to save time
+        needs_unlock = False
+        for p_name in p_names:
+            p = elem_type.LookupParameter(p_name)
+            if p and p.IsReadOnly:
+                needs_unlock = True
+                break
+        if not needs_unlock:
+            continue
+            
+        dbg.step('Tentando DESTRAVAR formulas na familia: {}'.format(family.Name))
+        try:
+            fam_doc = doc.EditFamily(family)
+            if not fam_doc:
+                continue
+            
+            changed = False
+            with Transaction(fam_doc, "Unlock Electrical Params") as t:
+                t.Start()
+                for p in fam_doc.FamilyManager.Parameters:
+                    pdef_name = (p.Definition.Name or "").lower()
+                    if pdef_name in p_names_lower and p.IsDeterminedByFormula:
+                        try:
+                            fam_doc.FamilyManager.SetFormula(p, "")
+                            dbg.ok('Formula apagada do parametro: {}'.format(p.Definition.Name))
+                            changed = True
+                        except Exception as ex:
+                            dbg.warn('Falha ao apagar formula de {}: {}'.format(p.Definition.Name, ex))
+                t.Commit()
+                
+            if changed:
+                fam_doc.LoadFamily(doc, _FamilyLoadOptions())
+                dbg.ok('Familia {} recarregada e destravada!'.format(family.Name))
+                unlocked_count += 1
+            fam_doc.Close(False)
+        except Exception as ex:
+            dbg.warn('Erro ao editar familia {}: {}'.format(family.Name, ex))
+            
+    return unlocked_count
+
+def create_tomada_circuit_industrial(selection_category=BuiltInCategory.OST_ElectricalFixtures,
+                                     selection_prompt="Selecione as tomadas",
+                                     transaction_name="Circuitos Tomadas Industrial",
+                                     panel_override=None,
+                                     phase_config_override=None,
+                                     refs_override=None,
+                                     circuit_desc_override=None,
+                                     load_class_override=_NO_LOAD_CLASS):
+    dbg.section('INDUSTRIAL - Criar Circuito Tomadas')
+    dbg.step('01/09 - Lendo quadro ativo')
+    panel = panel_override or get_current_panel()
+    if not panel:
+        forms.alert("Selecione o quadro primeiro!")
+        return
+    dbg.ok('Quadro ativo: Id={} Nome={}'.format(panel.Id.IntegerValue, get_panel_name(panel)))
+
+    dbg.step('02/09 - Escolhendo tensao/polos permitidos pelo quadro')
+    phase_config = phase_config_override or prompt_industrial_tomada_voltage(panel)
+    if not phase_config: return
+    dbg.ok('Circuito escolhido: {} polo(s), {}V'.format(phase_config["poles"], phase_config["voltage"]))
+
+    dbg.step('03/09 - Aguardando selecao dos elementos')
+    refs = refs_override
+    if refs is None:
+        refs = uidoc.Selection.PickObjects(ObjectType.Element, CategoryFilter(selection_category), selection_prompt)
+    if not refs: return
+    dbg.ok('Elementos selecionados: {}'.format([r.ElementId.IntegerValue for r in refs]))
+
+    dbg.step('04/09 - Pedindo Nome da carga')
+    circuit_desc = circuit_desc_override
+    if circuit_desc is None:
+        circuit_desc = _ask_circuit_description()
+    if circuit_desc is None: return
+    dbg.ok('Nome da carga informado: {}'.format(circuit_desc if circuit_desc else '(vazio)'))
+
+    load_class = _ask_load_classification() if load_class_override is _NO_LOAD_CLASS else load_class_override
+
+    refs_list = list(refs)
+    refs_list.reverse()
+
+    dbg.step('05/09 - Detectando amperagem e limite por circuito')
+    detected_amp = 10
+    for r in refs_list:
+        amp = _detect_amperage_from_family(doc.GetElement(r.ElementId))
+        if amp > detected_amp: detected_amp = amp
+    
+    limite_w = 1200 if int(phase_config["voltage"]) == 127 else 2400
+    dbg.ok('Amperagem detectada: {}A | limite: {}W ({}V)'.format(detected_amp, limite_w, phase_config["voltage"]))
+
+    batches = []
+    current_batch = List[ElementId]()
+    current_watts = 0.0
+    current_rooms = set()
+    reconnect_state = {"choice": None}
+
+    dbg.step('06/09 - Preparando tipos/familias relacionados')
+    unique_types = set()
+    dbg.step('07/09 - Varrendo conectores eletricos e montando lotes')
+    for r in refs_list:
+        host = doc.GetElement(r.ElementId)
+        if hasattr(host, "GetTypeId"):
+            elem_type = doc.GetElement(host.GetTypeId())
+            if elem_type:
+                unique_types.add(elem_type)
+        parent = getattr(host, "SuperComponent", None)
+        if parent and hasattr(parent, "GetTypeId"):
+            parent_type = doc.GetElement(parent.GetTypeId())
+            if parent_type:
+                unique_types.add(parent_type)
+        valid_pairs = get_valid_electrical_elements(host, (Domain.DomainElectrical,))
+        for sub_id, _ in valid_pairs:
+            sub = doc.GetElement(sub_id)
+            if hasattr(sub, "GetTypeId"):
+                sub_type = doc.GetElement(sub.GetTypeId())
+                if sub_type:
+                    unique_types.add(sub_type)
+            parent_sub = getattr(sub, "SuperComponent", None)
+            if parent_sub and hasattr(parent_sub, "GetTypeId"):
+                parent_sub_type = doc.GetElement(parent_sub.GetTypeId())
+                if parent_sub_type:
+                    unique_types.add(parent_sub_type)
+    
+    if unique_types:
+        dbg.step('Iniciando rotina de destravamento de familias ({} tipos encontrados)'.format(len(unique_types)))
+        _unlock_family_electrical_params(unique_types)
+
+    for r in refs_list:
+        host = doc.GetElement(r.ElementId)
+        dbg.elem_full(host, 'HOST')
+
+        # Resolve os elementos com conector elétrico real.
+        # Para famílias com sub-componentes (ex: FAST-ELE-CONDULETE-TOMADA), o host é
+        # ConduitFitting sem conector elétrico — o conector fica no sub-componente.
+        valid_pairs = get_valid_electrical_elements(host, (Domain.DomainElectrical,))
+        dbg.step('Host Id={} -> {} par(es) com conector eletrico'.format(
+            r.ElementId.IntegerValue, len(valid_pairs)))
+
+        if not valid_pairs:
+            dbg.warn('Sem conector eletrico Id={}'.format(r.ElementId.IntegerValue))
+            continue
+
+        watts = _get_element_wattage(host)
+        rm = get_room_name(host)
+
+        sub_ids_to_add = []
+        for sub_id, conns in valid_pairs:
+            sub = doc.GetElement(sub_id)
+            dbg.elem_full(sub, 'SUB Id={}'.format(sub_id.IntegerValue))
+            if _should_skip_connected_element(sub, panel, reconnect_state):
+                dbg.step('  Sub Id={} ja ligado ao painel — pulado'.format(sub_id.IntegerValue))
+                continue
+            dbg.step('  Sub Id={} sera configurado para {} polo(s), {}V'.format(
+                sub_id.IntegerValue, phase_config["poles"], phase_config["voltage"]))
+            sub_ids_to_add.append(sub_id)
+
+        dbg.step('sub_ids_para_batch: {}'.format([s.IntegerValue for s in sub_ids_to_add]))
+        if not sub_ids_to_add:
+            continue
+
+        if current_watts + watts > limite_w and current_batch.Count > 0:
+            batches.append((current_batch, current_watts, set(current_rooms)))
+            current_batch = List[ElementId]()
+            current_watts = 0.0
+            current_rooms = set()
+
+        for sub_id in sub_ids_to_add:
+            current_batch.Add(sub_id)
+        current_watts += watts
+        if rm: current_rooms.add(rm)
+
+    if current_batch.Count > 0:
+        batches.append((current_batch, current_watts, set(current_rooms)))
+
+    dbg.step('08/09 - Lotes prontos: {} | Limite {}W'.format(len(batches), limite_w))
+    created = 0
+    created_ids = []
+    unassigned_ids = []
+    with Transaction(doc, transaction_name) as t:
+        t.Start()
+        try:
+            dbg.step('09/09 - Abrindo transaction e criando circuitos')
+            for bi, (b_ids, b_watts, b_rooms) in enumerate(batches):
+                dbg.step('Batch {}: {} elemento(s) {:.0f}W'.format(bi+1, b_ids.Count, b_watts))
+                for eid in b_ids:
+                    elem = doc.GetElement(eid)
+                    ensure_element_is_free(elem)
+                    _configure_industrial_element_for_circuit(elem, phase_config, panel, load_class)
+                dbg.step('Loop elementos batch {} concluido -- Regenerate...'.format(bi+1))
+                try:
+                    doc.Regenerate()
+                    dbg.ok('doc.Regenerate OK')
+                except Exception as ex_regen:
+                    dbg.fail('doc.Regenerate falhou: {}'.format(ex_regen))
+                    dbg.fail(traceback.format_exc())
+                _assert_elements_match_phase_config([doc.GetElement(eid) for eid in b_ids], phase_config)
+                ids_list = [eid.IntegerValue for eid in b_ids]
+                dbg.step('ElectricalSystem.Create IDs: {}'.format(ids_list))
+
+                circuit = None
+                assigned_to_panel = False
+                # Tentativa 1: automatico, suprime dialog do Revit
+                sub = SubTransaction(doc)
+                sub.Start()
+                try:
+                    with suppress_elec_dialog():
+                        circuit = _create_power_circuit_from_batch_ids(b_ids, phase_config, panel, load_class)
+                    dbg.ok('Create OK Id={}'.format(circuit.Id.IntegerValue))
+                    _select_panel_checked(circuit, panel, phase_config)
+                    sub.Commit()
+                    dbg.ok('SubTransaction 1 COMMITTED')
+                    assigned_to_panel = True
+                except Exception as ex1:
+                    dbg.warn('Tentativa 1 falhou: {}'.format(ex1))
+                    try:
+                        sub.RollBack()
+                    except Exception:
+                        pass
+                    circuit = None
+
+                    if "do not match" in str(ex1).lower():
+                        # Tentativa 2: deixa o Revit mostrar o dialog
+                        # O Revit pre-seleciona o sistema de distribuicao do projeto (220V),
+                        # entao o usuario so precisa confirmar com OK para criar o circuito certo.
+                        dbg.step('Tentativa 2: aguardando selecao no dialog do Revit')
+                        sub2 = SubTransaction(doc)
+                        sub2.Start()
+                        try:
+                            circuit = _create_power_circuit_from_batch_ids(b_ids, phase_config, panel, load_class)
+                            dbg.ok('Create (com dialog) OK Id={}'.format(circuit.Id.IntegerValue))
+                            _select_panel_checked(circuit, panel, phase_config)
+                            sub2.Commit()
+                            dbg.ok('SubTransaction 2 COMMITTED')
+                            assigned_to_panel = True
+                        except Exception as ex2:
+                            dbg.warn('Tentativa 2 falhou: {}'.format(ex2))
+                            try:
+                                sub2.RollBack()
+                            except Exception:
+                                pass
+                            circuit = None
+                            raise Exception(
+                                "Nao foi criado circuito sem quadro. O circuito nasceu incompativel com o quadro selecionado: {}".format(ex2)
+                            )
+                    else:
+                        raise
+
+                if circuit:
+                    room_str = " / ".join(sorted(b_rooms)) if b_rooms else "Tomada {}A".format(detected_amp)
+                    set_param(circuit, LOAD_NAME_PARAMS, _circuit_description(circuit_desc, "{} ({:.0f}W)".format(room_str, b_watts)))
+                    _set_load_classification(circuit, load_class)
+                    created_ids.append(circuit.Id)
+                    dbg.ok('Circuito tomada criado Id={}'.format(circuit.Id.IntegerValue))
+                    created += 1
+                    if not assigned_to_panel:
+                        unassigned_ids.append(circuit.Id.IntegerValue)
+
+            t.Commit()
+            dbg.ok('Transaction COMMITTED')
+        except Exception as ex_outer:
+            dbg.fail('EXCECAO NAO CAPTURADA na Transaction: {}'.format(ex_outer))
+            dbg.fail(traceback.format_exc())
+            try: t.RollBack()
+            except Exception: pass
+            forms.alert(u"Circuito de tomada nao criado:\n\n{}".format(ex_outer))
+
+    if created > 0:
+        if unassigned_ids:
+            forms.alert(
+                u"Criado(s) {} circuito(s), porém {} NÃO foi(ram) conectado(s) ao quadro.\n\n"
+                u"IDs sem quadro: {}\n\n"
+                u"Motivo: A família tem tensão/polos travados no conector que não "
+                u"são compatíveis com o sistema de distribuição do quadro selecionado.\n\n"
+                u"Solução: Selecione o(s) circuito(s) no projeto e atribua o quadro "
+                u"manualmente via 'Selecionar Painel' ou edite a família para "
+                u"ajustar a tensão do conector.".format(
+                    created, len(unassigned_ids),
+                    ", ".join(str(x) for x in unassigned_ids)),
+                title="Circuitos criados com pendencia"
+            )
+        else:
+            _run_sync_circuits(created_ids)
+            forms.toast("Sucesso! {} circuito(s) de tomada criado(s) e sincronizado(s).".format(created), title="Industrial")
+
+def create_tomada_circuit_individual_loop_industrial():
+    panel = get_current_panel()
+    if not panel:
+        forms.alert("Selecione o quadro primeiro!")
+        return
+
+    phase_config = prompt_industrial_tomada_voltage(panel)
+    if not phase_config:
+        return
+
+    forms.toast("Selecione uma carga por vez. ESC finaliza.", title="Industrial")
+    while True:
+        try:
+            ref = uidoc.Selection.PickObject(
+                ObjectType.Element,
+                CategoryFilter(BuiltInCategory.OST_ElectricalFixtures),
+                "Selecione uma tomada/carga (ESC para finalizar)"
+            )
+        except OperationCanceledException:
+            dbg.step('Selecao individual de tomadas finalizada por ESC')
+            break
+
+        elem = doc.GetElement(ref.ElementId)
+        default_desc = get_room_name(elem) or get_family_name(elem) or "Tomada"
+        circuit_desc = _ask_circuit_description(default_desc)
+        if circuit_desc is None:
+            dbg.step('Descricao cancelada para Id={}'.format(ref.ElementId.IntegerValue))
+            continue
+        load_class = _ask_load_classification()
+
+        create_tomada_circuit_industrial(
+            panel_override=panel,
+            phase_config_override=phase_config,
+            refs_override=[ref],
+            circuit_desc_override=circuit_desc,
+            load_class_override=load_class,
+            transaction_name="Circuito Tomada Individual Industrial"
+        )
+
+def create_tomada_conduit_circuit_industrial():
+    return create_tomada_circuit_industrial(
+        BuiltInCategory.OST_ConduitFitting,
+        "Selecione as conexoes do conduite/caixas com tomadas",
+        "Circuitos Tomadas por Conexao do Conduite"
+    )
+
+def name_switch_industrial():
+    dbg.section('INDUSTRIAL - Nomear Interruptores')
+    start_str = forms.ask_for_string(
+        default="a",
+        prompt="Letra inicial (minúscula):\n(o e s são puladas automaticamente)\n(Após z: aa, bb, cc...)",
+        title="Nomear Interruptores Industrial"
+    )
+    if not start_str:
+        dbg.exit('name_switch_industrial', 'CANCELADO')
+        return
+    start_char = start_str.lower().strip()
+    if not start_char or not start_char[0].isalpha(): return
+
+    counter = 0
+    target = start_char
+    if len(target) == 1:
+        if target in VALID_SWITCH_LETTERS: counter = VALID_SWITCH_LETTERS.index(target)
+        else:
+            for i, l in enumerate(VALID_SWITCH_LETTERS):
+                if l >= target:
+                    counter = i
+                    break
+    else:
+        n = len(VALID_SWITCH_LETTERS)
+        if target[0] in VALID_SWITCH_LETTERS:
+            idx = VALID_SWITCH_LETTERS.index(target[0])
+            counter = n + idx
+        else: counter = n
+
+    dbg.step('Counter inicial: {} -> label: {}'.format(counter, _get_switch_label(counter)))
+
+    while True:
+        try:
+            label = _get_switch_label(counter)
+            dbg.step('Aguardando seleção para label: {}'.format(label))
+            ref = uidoc.Selection.PickObject(
+                ObjectType.Element,
+                CategoryFilter(BuiltInCategory.OST_LightingDevices),
+                "Selecione o INTERRUPTOR para nomear como: " + label + " (ESC para sair)"
+            )
+            interruptor = doc.GetElement(ref.ElementId)
+            dbg.elem_info(interruptor, 'Interruptor selecionado')
+
+            with Transaction(doc, "Nomear Interruptor Industrial") as t:
+                t.Start()
+                success = set_param(interruptor, ["ID do comando"], label)
+                t.Commit()
+
+            if success:
+                dbg.ok('Nomeado: {} -> Id={}'.format(label, ref.ElementId.IntegerValue))
+                counter += 1
+            else:
+                dbg.fail('Parâmetro ID do comando NÃO encontrado')
+                break
+        except OperationCanceledException:
+            dbg.step('ESC pressionado - saindo')
+            break
+        except Exception as e:
+            dbg.fail('Erro: {}'.format(e))
+            forms.alert("Erro ao nomear interruptor:\n" + str(e))
+            break
+    dbg.exit('name_switch_industrial', 'FIM')
+
+def create_individual_circuits_industrial():
+    panel = get_current_panel()
+    if not panel:
+        forms.alert("Selecione o quadro primeiro!")
+        return
+    phase_config = prompt_industrial_phase_voltage(panel)
+    if not phase_config: return
+    forms.toast("Selecione os equipamentos (1 circuito por conector)...", title="Industrial")
+    refs = uidoc.Selection.PickObjects(
+        ObjectType.Element,
+        ConnectorDomainFilter((Domain.DomainElectrical,)),
+        "Selecione os equipamentos — cada conector elétrico será um circuito individual"
+    )
+    if not refs: return
+    circuit_desc = _ask_circuit_description()
+    if circuit_desc is None: return
+    load_class = _ask_load_classification()
+
+    refs_list = list(refs)
+    refs_list.reverse()
+
+    created_count = 0
+    reconnect_state = {"choice": None}
+    with Transaction(doc, "Circuitos Individuais Industrial") as t:
+        t.Start()
+        try:
+            for r in refs_list:
+                host_elem = doc.GetElement(r.ElementId)
+                valid_pairs = get_valid_electrical_elements(host_elem, (Domain.DomainElectrical,))
+                if not valid_pairs:
+                    continue
+
+                for sub_id, conns in valid_pairs:
+                    sub_elem = doc.GetElement(sub_id)
+                    if _should_skip_connected_element(sub_elem, panel, reconnect_state):
+                        continue
+
+                    ensure_element_is_free(sub_elem)
+                    _configure_industrial_element_for_circuit(sub_elem, phase_config, panel, load_class)
+                    doc.Regenerate()
+
+                    rm = get_room_name(host_elem)
+                    for c in conns:
+                        if c.IsConnected:
+                            continue
+                        try:
+                            with suppress_elec_dialog():
+                                circuit = ElectricalSystem.Create(c, ElectricalSystemType.PowerCircuit)
+                            _select_panel_checked(circuit, panel, phase_config)
+                            set_param(circuit, LOAD_NAME_PARAMS, _circuit_description(circuit_desc, rm if rm else "Carga Industrial"))
+                            _set_load_classification(circuit, load_class)
+                            dbg.ok('Circuito individual criado Id={}'.format(circuit.Id.IntegerValue))
+                            created_count += 1
+                        except Exception as e:
+                            dbg.fail('Falha ao criar circuito Id={}: {}'.format(sub_id.IntegerValue, e))
+                            raise
+
+            t.Commit()
+            if created_count > 0:
+                forms.toast("Industrial: {} circuito(s) individual(ais) criado(s).".format(created_count), title="Industrial")
+            else:
+                forms.alert("Nenhum circuito individual criado.")
+        except Exception as e:
+            t.RollBack()
+            dbg.fail('Erro: {}'.format(e))
+            forms.alert("Erro. Detalhes no console do pyRevit.")
+
+def create_grouped_circuit_industrial():
+    panel = get_current_panel()
+    if not panel:
+        forms.alert("Selecione o quadro primeiro!")
+        return
+
+    cat_choice = forms.CommandSwitchWindow.show(
+        ["Luminárias", "Tomadas/Dispositivos"], message="Tipo de elementos a agrupar:", title="Circuito Agrupado Industrial"
+    )
+    if not cat_choice: return
+
+    cat_id = BuiltInCategory.OST_LightingFixtures if "Lumin" in cat_choice else BuiltInCategory.OST_ElectricalFixtures
+    phase_config = prompt_industrial_phase_voltage(panel)
+    if not phase_config: return
+    refs = uidoc.Selection.PickObjects(
+        ObjectType.Element, CategoryFilter(cat_id), "Selecione os elementos para agrupar em 1 circuito"
+    )
+    if not refs: return
+    circuit_desc = _ask_circuit_description()
+    if circuit_desc is None: return
+    load_class = _ask_load_classification()
+
+    ids = List[ElementId]()
+    rooms = set()
+    reconnect_state = {"choice": None}
+
+    for r in refs:
+        host = doc.GetElement(r.ElementId)
+        valid_pairs = get_valid_electrical_elements(host, (Domain.DomainElectrical,))
+        if not valid_pairs:
+            continue
+        for sub_id, _ in valid_pairs:
+            sub = doc.GetElement(sub_id)
+            if not _should_skip_connected_element(sub, panel, reconnect_state):
+                ids.Add(sub_id)
+        rm = get_room_name(host)
+        if rm: rooms.add(rm)
+
+    if ids.Count == 0:
+        forms.toast("Nenhum elemento válido.", title="Agrupado Industrial")
+        return
+
+    with Transaction(doc, "Circuito Agrupado Industrial") as t:
+        t.Start()
+        for eid in ids:
+            child_elem = doc.GetElement(eid)
+            ensure_element_is_free(child_elem)
+            _configure_industrial_element_for_circuit(child_elem, phase_config, panel, load_class)
+
+        doc.Regenerate()
+        try:
+            with suppress_elec_dialog():
+                circuit = ElectricalSystem.Create(doc, ids, ElectricalSystemType.PowerCircuit)
+            _select_panel_checked(circuit, panel, phase_config)
+            room_str = " / ".join(sorted(rooms)) if rooms else "Agrupado Industrial"
+            set_param(circuit, LOAD_NAME_PARAMS, _circuit_description(circuit_desc, room_str))
+            _set_load_classification(circuit, load_class)
+            t.Commit()
+            forms.toast("Circuito agrupado criado com {} elemento(s).".format(ids.Count), title="Industrial")
+        except Exception as e:
+            dbg.fail('ElectricalSystem.Create falhou: {}'.format(e))
+            t.RollBack()
+            forms.alert("Erro ao criar circuito agrupado:\n" + str(e))
+
+def main_menu():
+    while True:
+        quadro = get_current_panel()
+        status = "Quadro: " + (get_panel_name(quadro) if quadro else "NENHUM")
+
+        opcoes = OrderedDict([
+            ("1. Selecionar/Configurar Quadro", select_and_configure_panel_industrial),
+            ("2. Criar Circuito Iluminação (max 2400W)", create_ilum_circuit_industrial),
+            ("3. Comando Interruptor (a, b, c...)", name_switch_industrial),
+            ("4. Criar Circuito Tomadas (1 carga por vez)", create_tomada_circuit_individual_loop_industrial),
+            ("5. Criar Circuito Tomadas (multiplas cargas)", create_tomada_circuit_industrial),
+            ("6. Criar Circuitos Individuais (1 por elemento)", create_individual_circuits_industrial),
+            ("7. Criar Circuito Agrupado (1 para muitos)", create_grouped_circuit_industrial),
+            ("8. Queda de Tensão", call_queda_tensao),
+            ("9. Sair", lambda: None),
+        ])
+
+        escolha = forms.CommandSwitchWindow.show(opcoes.keys(), message=status, title="🏭 Industrial - " + status)
+        if not escolha or "Sair" in escolha: break
+        try: opcoes[escolha]()
+        except Exception as e:
+            if "aborted" not in str(e).lower() and "cancel" not in str(e).lower():
+                forms.alert("Erro. Veja o console do pyRevit.")
+
+class _IndustrialActionHandler(IExternalEventHandler):
+    """Executa ações do painel Industrial dentro do contexto da API do Revit."""
+    def __init__(self):
+        self._action = None
+        self._window = None
+
+    def Execute(self, _uiapp):
+        action = self._action
+        self._action = None
+        if action is None:
+            return
+        try:
+            action()
+        except OperationCanceledException:
+            pass
+        except Exception as ex:
+            dbg.fail("Erro na janela Industrial: {}".format(ex))
+            dbg.fail(traceback.format_exc())
+            forms.alert("Erro. Veja o console do pyRevit.")
+        finally:
+            win = self._window
+            if win:
+                try:
+                    win._refresh_status()
+                    win.Topmost = True
+                except Exception:
+                    pass
+
+    def GetName(self):
+        return "LF Industrial Action"
+
+_action_handler = _IndustrialActionHandler()
+_ext_event = ExternalEvent.Create(_action_handler)
+
+
+class IndustrialWindow(forms.WPFWindow):
+    def __init__(self):
+        xaml_path = os.path.join(os.path.dirname(__file__), "IndustrialWindow.xaml")
+        forms.WPFWindow.__init__(self, xaml_path)
+        self.DebugToggle.IsChecked = bool(lf_electrical_core.DEBUG_MODE)
+        _action_handler._window = self
+        self._refresh_status()
+
+    def _refresh_status(self):
+        try:
+            quadro = get_current_panel()
+            self.StatusText.Text = "Quadro: " + (get_panel_name(quadro) if quadro else "NENHUM")
+        except Exception:
+            self.StatusText.Text = "Quadro: NENHUM"
+
+    def _run_action(self, action):
+        try:
+            self.Topmost = False
+        except Exception:
+            pass
+        _action_handler._action = action
+        _ext_event.Raise()
+
+    def debug_toggle_click(self, sender, args):
+        global INDUSTRIAL_DEBUG
+        INDUSTRIAL_DEBUG = bool(self.DebugToggle.IsChecked)
+        lf_electrical_core.DEBUG_MODE = INDUSTRIAL_DEBUG
+        try:
+            self.DebugToggle.Content = "Debug ligado" if INDUSTRIAL_DEBUG else "Debug desligado"
+        except Exception:
+            pass
+
+    def refresh_click(self, sender, args):
+        self._refresh_status()
+
+    def close_click(self, sender, args):
+        self.Close()
+
+    def select_panel_click(self, sender, args):
+        self._run_action(select_and_configure_panel_industrial)
+
+    def lighting_click(self, sender, args):
+        self._run_action(create_ilum_circuit_industrial)
+
+    def outlets_single_click(self, sender, args):
+        self._run_action(create_tomada_circuit_individual_loop_industrial)
+
+    def outlets_multi_click(self, sender, args):
+        self._run_action(create_tomada_circuit_industrial)
+
+def show_industrial_window():
+    System.Threading.Thread.Sleep(250)
+    win = IndustrialWindow()
+    win.show(modal=False)
+    return win
+
+if __name__ == "__main__":
+    try: is_shift = __shiftclick__
+    except NameError: is_shift = False
+
+    if is_shift:
+        lf_electrical_core.show_settings()
+    else:
+        try:
+            show_industrial_window()
+        except Exception as ex:
+            dbg.warn("Falha ao abrir janela persistente; usando menu antigo: {}".format(ex))
+            main_menu()
