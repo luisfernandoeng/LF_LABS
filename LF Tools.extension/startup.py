@@ -22,7 +22,17 @@ def _limpar_cache_cpython(raiz):
                     pass
 
 
-_limpar_cache_cpython(ROOT_PATH)
+def _limpeza_cache_habilitada():
+    valor = os.environ.get("LF_TOOLS_CLEAN_CPYTHON_CACHE", "")
+    return valor.strip().lower() in ("1", "true", "yes", "sim")
+
+
+if _limpeza_cache_habilitada():
+    try:
+        _limpar_cache_cpython(ROOT_PATH)
+    except Exception:
+        pass
+
 LF_LIB_PATH = os.path.join(ROOT_PATH, "lib")
 if LF_LIB_PATH not in sys.path:
     sys.path.append(LF_LIB_PATH)

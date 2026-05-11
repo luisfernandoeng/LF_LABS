@@ -331,6 +331,9 @@ class SheetManagerWindow(forms.WPFWindow):
         self._bind_click('SelectAllBtn', self._on_select_all)
         self._bind_click('SelectNoneBtn', self._on_select_none)
         self._bind_click('SetFieldBtn', self._on_set_field)
+        self._bind_click('BulkEditBtn', self._on_bulk_edit)
+        self._bind_click('FindReplaceBtn', self._on_find_replace)
+        self._bind_click('AddViewColumnBtn', self._on_add_view_column)
         self._bind_click('ReplicateStampBtn', self._on_replicate_stamp)
         self._bind_click('ApplyProfileBtn', self._on_apply_profile)
         self._bind_click('ExportBtn', self._on_export_excel)
@@ -759,6 +762,48 @@ class SheetManagerWindow(forms.WPFWindow):
             pass
         return None
 
+    def _editable_columns_for_active_tab(self):
+        idx = self.MainTabs.SelectedIndex
+        dt = self._active_dt()
+        if not dt:
+            return []
+
+        cols = []
+        for col in dt.Columns:
+            cname = col.ColumnName
+            if cname == u"Selected" or cname.startswith(u"_"):
+                continue
+            if idx == 2:
+                continue
+            if idx == 1:
+                if cname.startswith(u"View_"):
+                    cols.append((cname, cname.replace(u"_", u" ")))
+                continue
+            display = self._param_map.get(cname, cname)
+            cols.append((cname, display))
+        return cols
+
+    def _choose_editable_column(self, title):
+        cols = self._editable_columns_for_active_tab()
+        if not cols:
+            forms.toast(u"Nenhuma coluna editável nesta aba.")
+            return None
+        labels = [u"{} ({})".format(display, cname) for cname, display in cols]
+        chosen = forms.SelectFromList.show(
+            labels,
+            title=title,
+            button_name=u"Selecionar",
+            multiselect=False,
+        )
+        if not chosen:
+            return None
+        chosen = unicode(chosen) if 'unicode' in globals() else str(chosen)
+        safe_name = chosen.split(u"(")[-1].rstrip(u")")
+        for cname, display in cols:
+            if cname == safe_name:
+                return cname, display
+        return None
+
     def _set_visible_selected(self, value):
         dt = self._active_dt()
         if not dt:
@@ -882,6 +927,119 @@ class SheetManagerWindow(forms.WPFWindow):
 
         self._update_status()
         forms.toast(u"{} linha(s) atualizadas (staged — clique Aplicar).".format(len(selected)))
+
+    def _on_bulk_edit(self, sender, args):
+        if self.MainTabs.SelectedIndex == 2:
+            forms.toast(u"Edição em massa não se aplica à aba Revisões.")
+            return
+
+        grid = self._active_grid()
+        dt = self._active_dt()
+        selected = self._selected_rows(grid, dt)
+        if not selected:
+            forms.alert(u"Marque ao menos uma linha para editar em massa.")
+            return
+
+        chosen = self._choose_editable_column(u"Editar em Massa")
+        if not chosen:
+            return
+        cname, display = chosen
+
+        new_val = forms.ask_for_string(
+            prompt=u"Novo valor para '{}' em {} linha(s):".format(display, len(selected)),
+            title=u"Editar em Massa",
+        )
+        if new_val is None:
+            return
+
+        for row in selected:
+            try:
+                row[cname] = new_val or u""
+            except Exception:
+                pass
+        self._update_status()
+        forms.toast(u"{} linha(s) atualizadas (clique Aplicar).".format(len(selected)))
+
+    def _on_find_replace(self, sender, args):
+        if self.MainTabs.SelectedIndex == 2:
+            forms.toast(u"Procurar/Substituir não se aplica à aba Revisões.")
+            return
+
+        grid = self._active_grid()
+        dt = self._active_dt()
+        rows = self._selected_rows(grid, dt)
+        if not rows and dt:
+            rows = list(dt.DefaultView)
+        if not rows:
+            forms.alert(u"Nenhuma linha disponível para procurar/substituir.")
+            return
+
+        chosen = self._choose_editable_column(u"Procurar e Substituir")
+        if not chosen:
+            return
+        cname, display = chosen
+
+        find_text = forms.ask_for_string(
+            prompt=u"Procurar em '{}':".format(display),
+            title=u"Procurar e Substituir",
+        )
+        if find_text is None:
+            return
+        replace_text = forms.ask_for_string(
+            prompt=u"Substituir por:",
+            title=u"Procurar e Substituir",
+        )
+        if replace_text is None:
+            return
+
+        count = 0
+        for row in rows:
+            try:
+                current = self._row_value(row, cname)
+                if find_text in current:
+                    row[cname] = current.replace(find_text, replace_text or u"")
+                    count += 1
+            except Exception:
+                pass
+
+        self._update_status()
+        forms.toast(u"{} linha(s) alterada(s) (clique Aplicar).".format(count))
+
+    def _on_add_view_column(self, sender, args):
+        if self.MainTabs.SelectedIndex != 1:
+            self.MainTabs.SelectedIndex = 1
+        if not self._conteudo_dt:
+            forms.toast(u"Aba Vistas ainda não carregada.")
+            return
+
+        max_slot = 0
+        for col in self._conteudo_dt.Columns:
+            cname = col.ColumnName
+            if cname.startswith(u"View_"):
+                try:
+                    max_slot = max(max_slot, int(cname.split(u"_", 1)[-1]))
+                except Exception:
+                    pass
+        n = max_slot + 1
+
+        for cname in (
+            u"_VpId_{0}".format(n), u"_ViewId_{0}".format(n),
+            u"_CX_{0}".format(n), u"_CY_{0}".format(n), u"_CZ_{0}".format(n),
+            u"Detail_{0}".format(n), u"View_{0}".format(n),
+            u"Title_{0}".format(n), u"Type_{0}".format(n), u"Scale_{0}".format(n),
+        ):
+            if cname not in self._conteudo_dt.Columns:
+                self._conteudo_dt.Columns.Add(cname, str)
+
+        view_names = [u""] + [v.Name for v in self._all_views]
+        self._add_combo_col(
+            self.ConteudoGrid,
+            u"View_{0}".format(n),
+            u"View {0:02d}".format(n),
+            view_names,
+            220,
+        )
+        forms.toast(u"Coluna View {0:02d} adicionada.".format(n))
 
     def _on_replicate_stamp(self, sender, args):
         if self.MainTabs.SelectedIndex != 0:

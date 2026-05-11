@@ -15,6 +15,17 @@ IDLING_HANDLER_KEY = "lf_tabs_visibility_idling_handler"
 DOC_HANDLER_KEY = "lf_tabs_visibility_doc_handler"
 LEGACY_VIEW_HANDLER_KEY = "lf_tabs_visibility_handler"
 _LOCAL_HANDLERS = {}
+PROTECTED_TAB_TITLES = set([
+    u"Complementos",
+    u"Add-Ins",
+    u"pyRevit",
+    u"pyRevit Bundles Creator",
+    u"LF Tools",
+])
+CUSTOM_TAB_ID_PREFIXES = (
+    "CustomCtrl",
+    "AddIn",
+)
 
 
 def _text(value):
@@ -56,8 +67,22 @@ def _set_handler(uiapp, key, handler):
         pass
 
 
+def _is_protected_title(title):
+    title = _text(title)
+    return title in PROTECTED_TAB_TITLES or title.startswith(u"pyRevit")
+
+
+def _is_custom_or_addin_tab(tab_id):
+    tab_id = _text(tab_id)
+    return any(tab_id.startswith(prefix) for prefix in CUSTOM_TAB_ID_PREFIXES)
+
+
 def get_hidden():
-    return set(_text(tab) for tab in get_config().get_option("hidden_tabs", []))
+    return set(
+        _text(tab)
+        for tab in get_config().get_option("hidden_tabs", [])
+        if not _is_protected_title(tab)
+    )
 
 
 def is_active():
@@ -65,7 +90,11 @@ def is_active():
 
 
 def save_hidden(tab_names):
-    get_config().hidden_tabs = sorted(_text(tab) for tab in tab_names if _text(tab))
+    get_config().hidden_tabs = sorted(
+        _text(tab)
+        for tab in tab_names
+        if _text(tab) and not _is_protected_title(tab)
+    )
     script.save_config()
 
 
@@ -100,6 +129,8 @@ def is_managed_tab(tab, exclude_ext=None):
     if not title:
         return False
     if exclude_ext and exclude_ext in title:
+        return False
+    if _is_protected_title(title) or _is_custom_or_addin_tab(tab_id):
         return False
     if "Modify" in tab_id:
         return False

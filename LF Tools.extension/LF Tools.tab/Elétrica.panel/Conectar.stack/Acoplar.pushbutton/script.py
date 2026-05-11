@@ -548,34 +548,113 @@ def _connect_direct(conn_a, conn_b):
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+def _pick_chain():
+    """Coleta elementos em cadeia: o usuário clica um a um e pressiona ESC para encerrar.
+    Retorna lista de elementos ou [] se cancelado antes do segundo clique.
+    """
+    elements = []
+    prompt_msgs = [
+        u"Clique no 1º elemento da cadeia (ESC para cancelar)",
+        u"Clique no próximo elemento (ESC para encerrar a seleção)",
+    ]
+    while True:
+        msg = prompt_msgs[0] if not elements else prompt_msgs[1]
+        try:
+            ref = uidoc.Selection.PickObject(ObjectType.Element, AnyFilter(), msg)
+            elem = doc.GetElement(ref.ElementId)
+            # Evita duplicatas consecutivas
+            if not elements or elem.Id != elements[-1].Id:
+                elements.append(elem)
+        except OperationCanceledException:
+            break
+    return elements
+
+
+def _connect_pair(el_a, el_b, sym):
+    """Executa a lógica de conexão entre dois elementos.
+    Retorna (ok:bool, msg_erro:str|None).
+    """
+    pt_a = _location(el_a)
+    pt_b = _location(el_b)
+    c_a  = _ct_connectors(el_a)
+    c_b  = _ct_connectors(el_b)
+
+    # Caso D: nenhum tem conector CT
+    if not c_a and not c_b:
+        return False, u"Id={} ↔ Id={}: sem conector CT".format(
+            el_a.Id.IntegerValue, el_b.Id.IntegerValue)
+
+    # Caso A: el_b sem CT → adaptador em el_b
+    if not c_b:
+        conn_tray = _best_conn(c_a, pt_b)
+        try:
+            _, connected, _ = _insert_adapter_simple(
+                sym, pt_b, _level(el_b),
+                conn_tray, pt_a, source_elem=el_a)
+            if connected:
+                return True, None
+            return False, u"Id={}: adaptador inserido sem conexão".format(el_b.Id.IntegerValue)
+        except Exception as e:
+            return False, u"Id={}: {}".format(el_b.Id.IntegerValue, e)
+
+    # Caso A': el_a sem CT → adaptador em el_a
+    if not c_a:
+        conn_tray = _best_conn(c_b, pt_a)
+        try:
+            _, connected, _ = _insert_adapter_simple(
+                sym, pt_a, _level(el_a),
+                conn_tray, pt_b, source_elem=el_b)
+            if connected:
+                return True, None
+            return False, u"Id={}: adaptador inserido sem conexão".format(el_a.Id.IntegerValue)
+        except Exception as e:
+            return False, u"Id={}: {}".format(el_a.Id.IntegerValue, e)
+
+    # Casos B/C: ambos têm CT → tenta direto
+    conn_a = _best_conn(c_a, pt_b)
+    conn_b = _best_conn(c_b, pt_a)
+    if _connect_direct(conn_a, conn_b):
+        return True, None
+
+    # Direto falhou — perfis diferentes → adaptador ponte
+    pa, pb = _profile(conn_a), _profile(conn_b)
+    if pa != pb:
+        if sym is None:
+            return False, u"Id={}: perfis distintos mas sem adaptador".format(el_b.Id.IntegerValue)
+        if pa == ConnectorProfileType.Round:
+            round_conn, rect_conn = conn_a, conn_b
+            round_elem, rect_elem = el_a, el_b
+        else:
+            round_conn, rect_conn = conn_b, conn_a
+            round_elem, rect_elem = el_b, el_a
+        try:
+            _, round_ok, rect_ok = _insert_bridge_adapter(
+                sym, _location(round_elem), _level(round_elem),
+                round_conn, rect_conn, source_elem=rect_elem)
+            if round_ok or rect_ok:
+                return True, None
+            return False, u"Id={}: ponte sem conexão".format(el_b.Id.IntegerValue)
+        except Exception as e:
+            return False, u"Id={}: {}".format(el_b.Id.IntegerValue, e)
+
+    return False, u"Id={}: ConnectTo rejeitado (mesmo perfil, já conectado?)".format(
+        el_b.Id.IntegerValue)
+
+
 def main():
-    # 1. Elemento base (eletrocalha, eletroduto...)
-    try:
-        r1 = uidoc.Selection.PickObject(ObjectType.Element, AnyFilter(),
-             u"Clique no elemento principal (eletrocalha, eletroduto...)")
-    except OperationCanceledException:
+    # Coleta elementos em cadeia (ESC encerra)
+    chain = _pick_chain()
+
+    if len(chain) < 2:
+        forms.alert(u"Selecione ao menos 2 elementos para acoplar.",
+                    title=u"Acoplar")
         return
 
-    # 2. Múltiplos elementos a acoplar
-    try:
-        refs = uidoc.Selection.PickObjects(ObjectType.Element, AnyFilter(),
-             u"Selecione os elementos a acoplar e pressione Enter")
-    except OperationCanceledException:
-        return
-
-    if not refs:
-        return
-
-    el_main = doc.GetElement(r1.ElementId)
-    c_main  = _ct_connectors(el_main)
-    targets = [doc.GetElement(r.ElementId) for r in refs]
-
-    # Rastreia tipo da eletrocalha para reencontrar segmentos após splits
-    main_is_ct = _is_cable_tray(el_main)
-    ct_type_id = el_main.GetTypeId() if main_is_ct else None
-
-    # Pergunta a família de adaptador uma única vez, se algum target precisar
-    need_adapter = (not c_main) or any(not _ct_connectors(t) for t in targets)
+    # Verifica se algum par precisará de adaptador
+    need_adapter = any(
+        not _ct_connectors(chain[i]) or not _ct_connectors(chain[i + 1])
+        for i in range(len(chain) - 1)
+    )
     sym = None
     if need_adapter:
         _, sym = _pick_adapter()
@@ -585,91 +664,23 @@ def main():
     ok_count = 0
     errors   = []
 
-    for el_target in targets:
-        pt_target = _location(el_target)
-        c_target  = _ct_connectors(el_target)
+    # Conecta em cadeia: 1→2, 2→3, 3→4 ...
+    for i in range(len(chain) - 1):
+        el_a = chain[i]
+        el_b = chain[i + 1]
 
-        # Após splits, reencontra o segmento da eletrocalha mais próximo deste target
-        if ct_type_id is not None:
-            el_cur = _find_ct_for_point(ct_type_id, pt_target) or el_main
-        else:
-            el_cur = el_main
+        # Se el_a é eletrocalha, re-localiza o segmento correto após splits anteriores
+        if _is_cable_tray(el_a):
+            el_a = _find_ct_for_point(el_a.GetTypeId(), _location(el_b)) or el_a
 
-        c_cur  = _ct_connectors(el_cur)
-        pt_cur = _location(el_cur)
-
-        # Caso D: nenhum tem conector CT
-        if not c_cur and not c_target:
-            errors.append(u"Id={}: sem conector CT".format(el_target.Id.IntegerValue))
-            continue
-
-        # Caso A: target sem CT → adaptador no target
-        if not c_target:
-            conn_tray = _best_conn(c_cur, pt_target)
-            try:
-                _, connected, _ = _insert_adapter_simple(
-                    sym, pt_target, _level(el_target),
-                    conn_tray, pt_cur, source_elem=el_cur)
-                if connected:
-                    ok_count += 1
-                else:
-                    errors.append(u"Id={}: adaptador inserido sem conexão".format(el_target.Id.IntegerValue))
-            except Exception as e:
-                errors.append(u"Id={}: {}".format(el_target.Id.IntegerValue, e))
-            continue
-
-        # Caso A': base sem CT → adaptador na base
-        if not c_cur:
-            conn_tray = _best_conn(c_target, pt_cur)
-            try:
-                _, connected, _ = _insert_adapter_simple(
-                    sym, pt_cur, _level(el_cur),
-                    conn_tray, pt_target, source_elem=el_target)
-                if connected:
-                    ok_count += 1
-                else:
-                    errors.append(u"Id={}: adaptador inserido sem conexão".format(el_target.Id.IntegerValue))
-            except Exception as e:
-                errors.append(u"Id={}: {}".format(el_target.Id.IntegerValue, e))
-            continue
-
-        # Casos B/C: ambos têm CT → tenta direto
-        conn_a = _best_conn(c_cur, pt_target)
-        conn_b = _best_conn(c_target, pt_cur)
-        if _connect_direct(conn_a, conn_b):
+        ok, err = _connect_pair(el_a, el_b, sym)
+        if ok:
             ok_count += 1
-            continue
-
-        # Direto falhou — perfis diferentes → adaptador ponte
-        pa, pb = _profile(conn_a), _profile(conn_b)
-        if pa != pb:
-            if sym is None:
-                _, sym = _pick_adapter(u"deve ter conector round + rectangular")
-                if sym is None:
-                    errors.append(u"Id={}: adaptador ponte cancelado".format(el_target.Id.IntegerValue))
-                    continue
-            if pa == ConnectorProfileType.Round:
-                round_conn, rect_conn = conn_a, conn_b
-                round_elem, rect_elem = el_cur, el_target
-            else:
-                round_conn, rect_conn = conn_b, conn_a
-                round_elem, rect_elem = el_target, el_cur
-            try:
-                _, round_ok, rect_ok = _insert_bridge_adapter(
-                    sym, _location(round_elem), _level(round_elem),
-                    round_conn, rect_conn, source_elem=rect_elem)
-                if round_ok or rect_ok:
-                    ok_count += 1
-                else:
-                    errors.append(u"Id={}: ponte sem conexão".format(el_target.Id.IntegerValue))
-            except Exception as e:
-                errors.append(u"Id={}: {}".format(el_target.Id.IntegerValue, e))
-        else:
-            errors.append(u"Id={}: ConnectTo rejeitado (mesmo perfil, já conectado?)".format(
-                el_target.Id.IntegerValue))
+        elif err:
+            errors.append(err)
 
     if ok_count > 0:
-        msg = u"{} elemento(s) acoplado(s).".format(ok_count)
+        msg = u"{} conexão(ões) realizada(s) em cadeia.".format(ok_count)
         if errors:
             msg += u"\n{} falha(s):\n{}".format(len(errors), u"\n".join(errors[:3]))
         forms.toast(msg, title=u"Acoplar")

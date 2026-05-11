@@ -266,9 +266,34 @@ def execute_connection():
     settings = load_config()
     dbg.dump("settings", settings)
 
+    def pick_elements_until_escape():
+        elements = []
+        picked_ids = List[ElementId]()
+        prompt = (
+            "Selecione os dispositivos/eletrocalhas em sequência. "
+            "Pressione ESC para finalizar."
+        )
+
+        while True:
+            try:
+                ref = uidoc.Selection.PickObject(ObjectType.Element, prompt)
+                el = doc.GetElement(ref)
+                if el:
+                    elements.append(el)
+                    picked_ids.Add(el.Id)
+                    try:
+                        uidoc.Selection.SetElementIds(picked_ids)
+                    except Exception:
+                        pass
+            except OperationCanceledException:
+                break
+
+        return elements
+
     # ── 1. Seleção de elementos ──────────────────────────────────────
     dbg.section("Fase 1: Seleção de Elementos")
     picked_elements = []
+    manual_pick_order = False
     
     selected_ids = uidoc.Selection.GetElementIds()
     if selected_ids:
@@ -277,18 +302,13 @@ def execute_connection():
             if el:
                 picked_elements.append(el)
     else:
-        try:
-            refs = uidoc.Selection.PickObjects(ObjectType.Element, "Selecione os dispositivos/eletrocalhas a conectar")
-            for ref in refs:
-                el = doc.GetElement(ref)
-                if el:
-                    picked_elements.append(el)
-        except OperationCanceledException:
-            pass
+        picked_elements = pick_elements_until_escape()
+        manual_pick_order = True
 
     if len(picked_elements) < 2:
         forms.alert(
-            "Selecione pelo menos 2 elementos para formar uma rota.",
+            "Selecione pelo menos 2 elementos para formar uma rota.\n\n"
+            "Dica: clique nos elementos em sequência e pressione ESC para finalizar.",
             title="Aviso"
         )
         return
@@ -332,8 +352,11 @@ def execute_connection():
             
         return sorted_els
 
-    picked_elements = sort_by_proximity(picked_elements)
-    dbg.info("Ordem definida para {} elementos.".format(len(picked_elements)))
+    if not manual_pick_order:
+        picked_elements = sort_by_proximity(picked_elements)
+        dbg.info("Ordem definida por proximidade para {} elementos.".format(len(picked_elements)))
+    else:
+        dbg.info("Ordem manual mantida para {} elementos.".format(len(picked_elements)))
 
     # ── 2. Resolver tipo e parâmetros ────────────────────────────
     dbg.section("Fase 2: Parâmetros")

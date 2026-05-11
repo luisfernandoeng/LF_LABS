@@ -21,6 +21,7 @@ def _col_letter_to_index(col_str):
 
 def _parse_cell_ref(ref):
     """Extrai (col_index, row_number) de referencia como 'B3'."""
+    ref = str(ref).replace("$", "")
     col_str = ''
     row_str = ''
     for ch in ref:
@@ -30,12 +31,28 @@ def _parse_cell_ref(ref):
             row_str += ch
     return _col_letter_to_index(col_str), int(row_str)
 
+def _parse_excel_range(range_ref):
+    """Converte range Excel A1:C5 em indices 0-based/1-based: c1,r1,c2,r2."""
+    ref = str(range_ref or "").replace("$", "")
+    if "!" in ref:
+        ref = ref.split("!")[-1]
+    ref = ref.replace("'", "")
+    if "," in ref:
+        ref = ref.split(",")[0]
+    parts = ref.split(":")
+    if len(parts) == 1:
+        c1, r1 = _parse_cell_ref(parts[0])
+        return c1, r1, c1, r1
+    c1, r1 = _parse_cell_ref(parts[0])
+    c2, r2 = _parse_cell_ref(parts[1])
+    return min(c1, c2), min(r1, r2), max(c1, c2), max(r1, r2)
+
 class _XlsxReader:
     """Leitor leve de .xlsx usando apenas zipfile + ElementTree."""
     def __init__(self, file_path):
         self._zf = zipfile.ZipFile(file_path, 'r')
         self._shared_strings = self._load_shared_strings()
-        self._sheet_names, self._sheet_paths = self._load_workbook_info()
+        self._sheet_names, self._sheet_paths, self._print_areas = self._load_workbook_info()
 
     def _load_shared_strings(self):
         strings = []
@@ -82,11 +99,75 @@ class _XlsxReader:
         for name, rid in sheet_entries:
             names.append(name)
             paths.append(rid_to_path.get(rid, ''))
-        return names, paths
+
+        print_areas = {}
+        try:
+            defined_names = wb_root.find('ss:definedNames', _XLSX_NS)
+            if defined_names is not None:
+                for dn in defined_names.findall('ss:definedName', _XLSX_NS):
+                    if dn.get('name') != '_xlnm.Print_Area':
+                        continue
+                    txt = dn.text or ""
+                    local_id = dn.get('localSheetId')
+                    if local_id is not None:
+                        try:
+                            idx = int(local_id)
+                            if idx >= 0 and idx < len(names):
+                                print_areas[names[idx]] = txt
+                        except:
+                            pass
+                    else:
+                        for s_name in names:
+                            if txt.startswith("'" + s_name + "'!") or txt.startswith(s_name + "!"):
+                                print_areas[s_name] = txt
+                                break
+        except:
+            pass
+
+        return names, paths, print_areas
 
     @property
     def sheetnames(self):
         return list(self._sheet_names)
+
+    def get_print_area(self, sheet_name):
+        return self._print_areas.get(sheet_name, "")
+
+    def get_column_widths(self, sheet_name, col_count):
+        """Le larguras de coluna do XLSX; volta None para colunas sem largura."""
+        widths = [None for _ in range(col_count)]
+        try:
+            idx = self._sheet_names.index(sheet_name)
+            path = self._sheet_paths[idx]
+            xml_data = self._zf.read(path)
+            root = ET.fromstring(xml_data)
+            cols = root.find('ss:cols', _XLSX_NS)
+            if cols is not None:
+                for col in cols.findall('ss:col', _XLSX_NS):
+                    min_c = int(col.get('min', '1')) - 1
+                    max_c = int(col.get('max', '1')) - 1
+                    width = float(col.get('width', '0') or 0)
+                    if width <= 0:
+                        continue
+                    for c in range(max(min_c, 0), min(max_c + 1, col_count)):
+                        widths[c] = width
+        except:
+            pass
+        return widths
+
+    def read_print_area_or_sheet(self, sheet_name):
+        rows = self.read_sheet(sheet_name)
+        area = self.get_print_area(sheet_name)
+        if not area:
+            return rows, False
+        try:
+            c1, r1, c2, r2 = _parse_excel_range(area)
+            sliced = []
+            for row in rows[r1 - 1:r2]:
+                sliced.append(tuple(row[c1:c2 + 1]))
+            return sliced, True
+        except:
+            return rows, False
 
     def read_sheet(self, sheet_name):
         """Retorna lista de linhas (cada linha é uma lista de valores)."""
@@ -1827,6 +1908,337 @@ def import_xls(file_path):
         
     forms.alert(report, title="Relatorio de Importacao")
 
+def _first_text_note_type_id():
+    try:
+        tnt = DB.FilteredElementCollector(doc).OfClass(DB.TextNoteType).FirstElement()
+        if tnt:
+            return tnt.Id
+    except:
+        pass
+    return DB.ElementId.InvalidElementId
+
+def _mm_to_ft(mm_value):
+    return float(mm_value) / 304.8
+
+def _get_or_create_table_text_type_id(text_mm=2.0):
+    """Cria/usa um tipo de texto pequeno para tabelas importadas."""
+    type_name = "LF Excel Table {:.1f}mm".format(float(text_mm))
+    first_type = None
+    try:
+        for tnt in DB.FilteredElementCollector(doc).OfClass(DB.TextNoteType):
+            try:
+                if not first_type:
+                    first_type = tnt
+                if tnt.Name == type_name:
+                    return tnt.Id
+            except:
+                pass
+    except:
+        pass
+
+    if not first_type:
+        return DB.ElementId.InvalidElementId
+
+    try:
+        new_type = first_type.Duplicate(type_name)
+    except:
+        return first_type.Id
+
+    try:
+        p = new_type.get_Parameter(DB.BuiltInParameter.TEXT_SIZE)
+        if p and not p.IsReadOnly:
+            p.Set(_mm_to_ft(text_mm))
+    except:
+        pass
+    try:
+        p = new_type.get_Parameter(DB.BuiltInParameter.TEXT_WIDTH_SCALE)
+        if p and not p.IsReadOnly:
+            p.Set(1.0)
+    except:
+        pass
+    return new_type.Id
+
+def _create_cell_text_note(view, text_type_id, x, y, width, text):
+    """Cria texto de celula com largura controlada quando a API suporta."""
+    text = (text or "")[:120]
+    opts = None
+    try:
+        opts = DB.TextNoteOptions(text_type_id)
+        opts.HorizontalAlignment = DB.HorizontalTextAlignment.Left
+    except:
+        opts = None
+
+    pt = DB.XYZ(x, y, 0)
+    try:
+        if opts:
+            return DB.TextNote.Create(doc, view.Id, pt, width, text, opts)
+    except:
+        pass
+    try:
+        if opts:
+            return DB.TextNote.Create(doc, view.Id, pt, text, opts)
+    except:
+        pass
+    return DB.TextNote.Create(doc, view.Id, pt, text, text_type_id)
+
+def _first_drafting_view_type_id():
+    try:
+        for vft in DB.FilteredElementCollector(doc).OfClass(DB.ViewFamilyType):
+            try:
+                if vft.ViewFamily == DB.ViewFamily.Drafting:
+                    return vft.Id
+            except:
+                pass
+    except:
+        pass
+    return DB.ElementId.InvalidElementId
+
+def _first_table_drafting_view_type_id():
+    """Procura um tipo de vista de desenho nomeado como tabela/table no template."""
+    try:
+        for vft in DB.FilteredElementCollector(doc).OfClass(DB.ViewFamilyType):
+            try:
+                if vft.ViewFamily != DB.ViewFamily.Drafting:
+                    continue
+                name = _normalize_text(vft.Name)
+                if "tabela" in name or "table" in name:
+                    return vft.Id
+            except:
+                pass
+    except:
+        pass
+    return DB.ElementId.InvalidElementId
+
+def _first_legend_view_type_id():
+    try:
+        for vft in DB.FilteredElementCollector(doc).OfClass(DB.ViewFamilyType):
+            try:
+                if vft.ViewFamily == DB.ViewFamily.Legend:
+                    return vft.Id
+            except:
+                pass
+    except:
+        pass
+    return DB.ElementId.InvalidElementId
+
+def _create_table_view(view_name):
+    """Prioridade: Legend, tipo de desenho para tabela, depois Drafting comum."""
+    legend_id = _first_legend_view_type_id()
+    if legend_id != DB.ElementId.InvalidElementId:
+        try:
+            view = DB.View.CreateLegend(doc, legend_id)
+            view.Name = _unique_view_name(view_name)
+            return view, "Legend"
+        except:
+            pass
+
+    table_drafting_id = _first_table_drafting_view_type_id()
+    if table_drafting_id != DB.ElementId.InvalidElementId:
+        try:
+            view = DB.ViewDrafting.Create(doc, table_drafting_id)
+            view.Name = _unique_view_name(view_name)
+            return view, "Tabela"
+        except:
+            pass
+
+    drafting_id = _first_drafting_view_type_id()
+    if drafting_id != DB.ElementId.InvalidElementId:
+        view = DB.ViewDrafting.Create(doc, drafting_id)
+        view.Name = _unique_view_name(view_name)
+        return view, "Drafting"
+
+    return None, ""
+
+def _unique_view_name(base_name):
+    existing = set()
+    try:
+        for v in DB.FilteredElementCollector(doc).OfClass(DB.View):
+            try:
+                existing.add(v.Name)
+            except:
+                pass
+    except:
+        pass
+    name = base_name
+    idx = 1
+    while name in existing:
+        idx += 1
+        name = "{} ({})".format(base_name, idx)
+    return name
+
+def _cell_to_text(value):
+    if value is None:
+        return ""
+    try:
+        if isinstance(value, float) and value == int(value):
+            return str(int(value))
+    except:
+        pass
+    return str(value)
+
+def _trim_external_rows(rows, max_rows=200, max_cols=20):
+    """Mantem a ordem da planilha e remove apenas linhas/colunas finais vazias."""
+    used_rows = []
+    last_col = -1
+    for row in rows:
+        has_value = False
+        for idx, value in enumerate(row):
+            if value not in (None, ""):
+                has_value = True
+                if idx > last_col:
+                    last_col = idx
+        if has_value:
+            used_rows.append(row)
+
+    if last_col < 0:
+        return [], False
+
+    truncated = len(used_rows) > max_rows or (last_col + 1) > max_cols
+    out_rows = []
+    for row in used_rows[:max_rows]:
+        out_rows.append([_cell_to_text(row[i] if i < len(row) else "") for i in range(min(last_col + 1, max_cols))])
+    return out_rows, truncated
+
+def import_external_xlsx_as_drafting_view(file_path, sheet_name=None):
+    """Importa XLSX externo como tabela visual em Legend/Drafting View."""
+    wb = None
+    used_print_area = False
+    excel_col_widths = []
+    try:
+        wb = _XlsxReader(file_path)
+        target_sheet = sheet_name
+        if not target_sheet or target_sheet not in wb.sheetnames:
+            target_sheet = None
+            for s_name in wb.sheetnames:
+                if s_name.startswith('_'):
+                    continue
+                rows = wb.read_sheet(s_name)
+                if rows:
+                    target_sheet = s_name
+                    break
+        if not target_sheet:
+            forms.alert("Nenhuma aba com dados encontrada no Excel.", title="Importar Planilha Externa")
+            return False
+
+        # Determinar o offset de coluna da area de impressao para alinhar as larguras
+        _print_area_col_offset = 0
+        area_str = wb.get_print_area(target_sheet)
+        if area_str:
+            try:
+                _c1, _r1, _c2, _r2 = _parse_excel_range(area_str)
+                _print_area_col_offset = _c1
+            except:
+                _print_area_col_offset = 0
+
+        raw_rows, used_print_area = wb.read_print_area_or_sheet(target_sheet)
+        rows, truncated = _trim_external_rows(raw_rows)
+        if not rows:
+            forms.alert("A aba selecionada esta vazia.", title="Importar Planilha Externa")
+            return False
+
+        # col_count baseado nos dados ja recortados
+        _trimmed_col_count = max([len(r) for r in rows])
+        # Buscar larguras absolutas cobrindo o range real da planilha
+        _abs_col_count = _trimmed_col_count + _print_area_col_offset
+        _all_widths = wb.get_column_widths(target_sheet, _abs_col_count)
+        # Fatiar apenas as colunas que correspondem aos dados recortados
+        excel_col_widths = _all_widths[_print_area_col_offset:_print_area_col_offset + _trimmed_col_count]
+    except Exception as e:
+        forms.alert("Erro ao ler Excel externo: " + str(e), title="Importar Planilha Externa")
+        return False
+    finally:
+        try:
+            if wb:
+                wb.close()
+        except:
+            pass
+
+    base_text_type_id = _first_text_note_type_id()
+    if base_text_type_id == DB.ElementId.InvalidElementId:
+        forms.alert("Nao encontrei tipo de Texto no projeto.", title="Importar Planilha Externa")
+        return False
+
+    col_count = max([len(r) for r in rows])
+    text_mm = 2.0
+    text_h = _mm_to_ft(text_mm)
+    pad_x = _mm_to_ft(1.5)
+    pad_y = _mm_to_ft(1.2)
+    min_col_w = _mm_to_ft(18.0)
+    max_col_w = _mm_to_ft(72.0)
+    col_widths = []
+    for c in range(col_count):
+        if c < len(excel_col_widths) and excel_col_widths[c]:
+            col_widths.append(max(min_col_w, min(max_col_w, float(excel_col_widths[c]) * _mm_to_ft(2.15))))
+        else:
+            max_len = 6
+            for row in rows:
+                text = row[c] if c < len(row) else ""
+                if len(text) > max_len:
+                    max_len = min(len(text), 42)
+            col_widths.append(max(min_col_w, min(max_col_w, _mm_to_ft(max_len * 2.2 + 8.0))))
+
+    row_h = max(_mm_to_ft(6.0), text_h * 2.4)
+    x0 = 0.0
+    y0 = 0.0
+    base_name = "Tabela Excel - " + sanitize_filename(os.path.splitext(os.path.basename(file_path))[0])[:45]
+
+    t = DB.Transaction(doc, "Importar Excel Externo como Tabela")
+    t.Start()
+    try:
+        view, view_kind = _create_table_view(base_name)
+        if not view:
+            raise Exception("Nao encontrei tipo de Legend ou Vista de Desenho no projeto.")
+        text_type_id = _get_or_create_table_text_type_id(text_mm)
+        if text_type_id == DB.ElementId.InvalidElementId:
+            text_type_id = base_text_type_id
+
+        x_positions = [x0]
+        for w in col_widths:
+            x_positions.append(x_positions[-1] + w)
+        total_w = x_positions[-1] - x0
+        total_h = row_h * len(rows)
+
+        # Grade da tabela
+        for x in x_positions:
+            line = DB.Line.CreateBound(DB.XYZ(x, y0, 0), DB.XYZ(x, y0 - total_h, 0))
+            doc.Create.NewDetailCurve(view, line)
+        for r in range(len(rows) + 1):
+            y = y0 - (r * row_h)
+            line = DB.Line.CreateBound(DB.XYZ(x0, y, 0), DB.XYZ(x0 + total_w, y, 0))
+            doc.Create.NewDetailCurve(view, line)
+
+        for r, row in enumerate(rows):
+            y = y0 - (r * row_h) - pad_y - text_h
+            for c, text in enumerate(row):
+                if not text:
+                    continue
+                x = x_positions[c] + pad_x
+                width = max(_mm_to_ft(5.0), col_widths[c] - (pad_x * 2.0))
+                _create_cell_text_note(view, text_type_id, x, y, width, text)
+
+        t.Commit()
+        try:
+            uidoc.ActiveView = view
+        except:
+            pass
+
+        msg = "Planilha externa importada como tabela visual:\n\n{}".format(view.Name)
+        msg += "\nTipo de vista: {}".format(view_kind)
+        if used_print_area:
+            msg += "\nArea de impressao do Excel aplicada."
+        if truncated:
+            msg += "\n\nObs.: limitei a importacao a 200 linhas e 20 colunas para manter a vista leve."
+        forms.alert(msg, title="Importar Planilha Externa")
+        return True
+    except Exception as e:
+        try:
+            t.RollBack()
+        except:
+            pass
+        logger.error(traceback.format_exc())
+        forms.alert("Erro ao criar tabela visual: " + str(e), title="Importar Planilha Externa")
+        return False
+
 # ==================== UI OTIMIZADA ====================
 class ExportImportWindow(forms.WPFWindow):
     def __init__(self, xaml_file_path):
@@ -2230,7 +2642,7 @@ class ExportImportWindow(forms.WPFWindow):
                 is_importable = bool(rows and rows[0] and str(rows[0][0] if rows[0] else "").strip() == "ElementId")
 
                 if not is_importable:
-                    self.lbl_ImportStatus.Text = u"Aba '{}': somente visualizacao (quadro nao importavel).".format(selected_sheet_name)
+                    self.lbl_ImportStatus.Text = u"Aba '{}': Excel externo. Ao importar, sera criada uma tabela visual em Vista de Desenho.".format(selected_sheet_name)
                     return
 
                 headers = [str(h).strip() if h is not None else "" for h in rows[0]]
@@ -2468,12 +2880,24 @@ class ExportImportWindow(forms.WPFWindow):
                 wb.close()
 
             if not has_importable:
-                return forms.alert(
-                    "Este arquivo não contém abas importáveis.\n\n"
-                    "Quadros de Cargas (painéis elétricos) são exportados apenas para leitura "
-                    "e não podem ser reimportados para o Revit.",
-                    title="Importação Bloqueada"
+                selected_sheet = None
+                try:
+                    if self.cmb_ImportPreviewSelect.SelectedIndex >= 0:
+                        selected_sheet = str(self.cmb_ImportPreviewSelect.SelectedItem)
+                except:
+                    pass
+                ok = forms.alert(
+                    "Este arquivo nao tem ElementId, entao nao da para atualizar elementos do Revit.\n\n"
+                    "Posso importar a aba selecionada como uma tabela visual em uma Vista de Desenho.\n"
+                    "Deseja criar essa tabela agora?",
+                    title="Importar Planilha Externa",
+                    yes=True,
+                    no=True
                 )
+                if ok:
+                    import_external_xlsx_as_drafting_view(self.import_path, selected_sheet)
+                    self._update_import_preview(first_load=True)
+                return
         except Exception as e:
             logger.error("Erro na verificação pré-import: " + str(e))
 

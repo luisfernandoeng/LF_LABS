@@ -468,6 +468,9 @@
             <Button x:Name="SelectAllBtn"      Content="+ Selec. Todos"  Style="{StaticResource ToolbarButton}" Margin="0,0,5,0"/>
             <Button x:Name="SelectNoneBtn"     Content="Limpar"           Style="{StaticResource ToolbarButton}" Margin="0,0,5,0"/>
             <Button x:Name="SetFieldBtn"       Content="Setar Campo"      Style="{StaticResource ToolbarButton}" Margin="0,0,5,0"/>
+            <Button x:Name="BulkEditBtn"       Content="Editar em Massa"   Style="{StaticResource ToolbarButton}" Margin="0,0,5,0"/>
+            <Button x:Name="FindReplaceBtn"    Content="Procurar/Subst."   Style="{StaticResource ToolbarButton}" Margin="0,0,5,0"/>
+            <Button x:Name="AddViewColumnBtn"  Content="+ View"            Style="{StaticResource ToolbarButton}" Margin="0,0,5,0"/>
             <Button x:Name="ReplicateStampBtn" Content="Replicar Carimbo"  Style="{StaticResource ToolbarButton}" Margin="0,0,5,0"/>
             <Button x:Name="ApplyProfileBtn"   Content="Aplicar Perfil"   Style="{StaticResource ToolbarButton}" Margin="0,0,5,0"/>
             <Button x:Name="SaveViewProfileBtn" Content="Salvar Perfil"   Style="{StaticResource ToolbarButton}" Margin="0,0,5,0"/>
