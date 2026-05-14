@@ -1,0 +1,6 @@
+﻿title: "Acoplamento"
+tooltip: Acopla ou desacopla conexões MEP entre eletrodutos, eletrocalhas, pontos e acessórios.
+icon: icon.png
+layout:
+  - Acoplar
+  - Desacoplar

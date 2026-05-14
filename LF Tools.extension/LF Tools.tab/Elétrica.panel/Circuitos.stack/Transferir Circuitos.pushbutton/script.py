@@ -16,6 +16,8 @@ __author__ = "Luís Fernando"
 # ╚══════════════════════════════════════════════════════════╝
 DEBUG_MODE = False
 
+import io
+import json
 import os
 import re
 import clr
@@ -29,7 +31,8 @@ from System.Collections.Generic import List
 
 from Autodesk.Revit.DB import (
     FilteredElementCollector, BuiltInCategory, BuiltInParameter,
-    Transaction, TransactionStatus, SubTransaction, ElementSet, ElementId, StorageType, Domain
+    Transaction, TransactionStatus, ElementSet, ElementId, StorageType, Domain,
+    IFailuresPreprocessor, FailureSeverity, FailureProcessingResult
 )
 from Autodesk.Revit.DB.Electrical import ElectricalSystem, ElectricalSystemType, DistributionSysType
 
@@ -70,6 +73,118 @@ class suppress_elec_dialog(object):
         except Exception: pass
 
 _BUNDLE_DIR = os.path.dirname(__file__)
+_HISTORY_PATH = os.path.join(_BUNDLE_DIR, "circuit_history.json")
+
+
+def _pump_dispatcher():
+    """Força atualização da UI WPF entre operações bloqueantes."""
+    try:
+        from System.Windows.Threading import Dispatcher, DispatcherPriority
+        from System import Action
+        Dispatcher.CurrentDispatcher.Invoke(DispatcherPriority.Background, Action(lambda: None))
+    except Exception:
+        pass
+
+
+def _set_row_status(status_lbl, cb, state, msg):
+    """Atualiza ícone e cor de uma linha de circuito. state: 'ok'|'error'|'warning'"""
+    try:
+        from System.Windows.Media import Brushes
+        if state == "ok":
+            status_lbl.Text = u"✓"
+            status_lbl.Foreground = Brushes.Green
+            cb.IsEnabled = False
+            cb.IsChecked = False
+            cb.Foreground = Brushes.Gray
+            cb.ToolTip = u"Transferido com sucesso"
+            status_lbl.ToolTip = None
+        elif state == "error":
+            status_lbl.Text = u"✗"
+            status_lbl.Foreground = Brushes.Red
+            cb.Foreground = Brushes.Red
+            if msg:
+                short = msg[:200]
+                status_lbl.ToolTip = short
+                cb.ToolTip = short
+        elif state == "warning":
+            status_lbl.Text = u"⚠"
+            status_lbl.Foreground = Brushes.DarkOrange
+            if msg:
+                status_lbl.ToolTip = msg[:200]
+                cb.ToolTip = msg[:200]
+    except Exception:
+        pass
+
+
+def _history_key(source_panel_name, circ):
+    try:
+        num = circ.CircuitNumber or u""
+    except Exception:
+        num = u""
+    try:
+        name = circ.LoadName or u""
+    except Exception:
+        name = u""
+    return u"{}|{}|{}".format(source_panel_name, num, name)
+
+
+def _load_history():
+    try:
+        with io.open(_HISTORY_PATH, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_history(history):
+    try:
+        with io.open(_HISTORY_PATH, 'w', encoding='utf-8') as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        dbg.warn(u"Falha ao salvar historico: {}".format(e))
+
+
+def _get_circuit_classification(circ):
+    """Retorna o nome da classificação de carga do circuito, ou '' se não houver."""
+    try:
+        lc = circ.LoadClassification
+        if lc is not None:
+            name = _safe_name(lc)
+            if name:
+                return name
+    except Exception:
+        pass
+    try:
+        p = (circ.LookupParameter(u"Classificação de Carga")
+             or circ.LookupParameter(u"Load Classification"))
+        if p and p.HasValue and p.StorageType == StorageType.ElementId:
+            lc_elem = doc.GetElement(p.AsElementId())
+            if lc_elem:
+                return _safe_name(lc_elem) or u""
+    except Exception:
+        pass
+    return u""
+
+
+class TransferFailureLogger(IFailuresPreprocessor):
+    def __init__(self):
+        self.messages = []
+
+    def PreprocessFailures(self, failuresAccessor):
+        try:
+            failures = list(failuresAccessor.GetFailureMessages())
+            for f in failures:
+                try:
+                    desc = f.GetDescriptionText()
+                    sev = f.GetSeverity()
+                    self.messages.append(u"{}: {}".format(sev, desc))
+                    if sev == FailureSeverity.Warning:
+                        failuresAccessor.DeleteWarning(f)
+                except Exception as inner_e:
+                    self.messages.append(u"Falha ao ler aviso: {}".format(inner_e))
+        except Exception as out_e:
+            self.messages.append(u"Falha no preprocessor: {}".format(out_e))
+        return FailureProcessingResult.Continue
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1625,8 +1740,13 @@ class TransferCircuitsWindow(forms.WPFWindow):
         forms.WPFWindow.__init__(self, xaml_file)
         self.panels = get_electrical_panels()
         self.dest_panels = []
-        # Cada item: (checkbox, combobox_polos, circuito)
+        # Cada item: (checkbox, volt_cb, poles_cb, circuito, status_lbl)
+        # Cada item: (cb, volt_cb, poles_cb, circ, status_lbl, row_grid, classification)
         self.circuit_rows = []
+        self._history = _load_history()
+        self._source_panel_name = u""
+        self._active_type = None
+        self._search_text = u""
 
         self._init_ui()
         self._bind_events()
@@ -1650,11 +1770,14 @@ class TransferCircuitsWindow(forms.WPFWindow):
             self.cb_SourcePanel.SelectedIndex = 0
 
     def _bind_events(self):
-        self.btn_Cancel.Click    += self._on_cancel
-        self.btn_Transfer.Click  += self._on_transfer
-        self.btn_SelectAll.Click += self._on_select_all
-        self.btn_SelectNone.Click += self._on_select_none
+        self.btn_Cancel.Click               += self._on_cancel
+        self.btn_Transfer.Click             += self._on_transfer
+        self.btn_SelectAll.Click            += self._on_select_all
+        self.btn_SelectNone.Click           += self._on_select_none
         self.cb_SourcePanel.SelectionChanged += self._on_source_changed
+        self.tb_Search.TextChanged          += self._on_search_changed
+        self.btn_ClearSearch.Click          += self._on_clear_search
+        self.btn_BulkApply.Click            += self._on_bulk_apply
 
     # ── Eventos ──
 
@@ -1662,11 +1785,14 @@ class TransferCircuitsWindow(forms.WPFWindow):
         self.Close()
 
     def _on_source_changed(self, sender, args):
-        from System.Windows.Controls import CheckBox, ComboBox as WpfComboBox
-        from System.Windows import Thickness
-
         self.sp_Circuits.Children.Clear()
         self.circuit_rows = []
+        self._active_type = None
+        self._search_text = u""
+        try:
+            self.tb_Search.Text = u""
+        except Exception:
+            pass
 
         idx = self.cb_SourcePanel.SelectedIndex
         self._update_dest_list(idx)
@@ -1675,31 +1801,34 @@ class TransferCircuitsWindow(forms.WPFWindow):
             return
 
         if idx == 0:
+            self._source_panel_name = u"SEM_QUADRO"
             circuits = get_unassigned_circuits()
         else:
             panel = self.panels[idx - 1]["element"]
+            self._source_panel_name = _safe_name(panel)
             circuits = get_circuits_from_panel(panel)
 
         if not circuits:
-            self.lbl_CircuitsCount.Text = "Nenhum circuito."
+            self.lbl_CircuitsCount.Text = u"Nenhum circuito."
+            self._build_type_filters()
             return
-
-        self.lbl_CircuitsCount.Text = "{} circuito(s)".format(len(circuits))
 
         circuits = sorted(circuits, key=_circuit_sort_key)
 
         for circ in circuits:
             self._add_circuit_row(circ)
 
-        self.lbl_Info.Text = "{} circuito(s) — selecione e escolha o destino.".format(len(circuits))
+        self._build_type_filters()
+        self.lbl_CircuitsCount.Text = u"{} circuito(s)".format(len(circuits))
+        self.lbl_Info.Text = u"{} circuito(s) — selecione e escolha o destino.".format(len(circuits))
 
     def _add_circuit_row(self, circ):
-        """Cria uma linha: [CheckBox (info)] + [ComboBox (polos)]."""
+        """Cria uma linha: [CheckBox] + [Tensão] + [Polos] + [Status]."""
         from System.Windows.Controls import (
             CheckBox, Grid as WpfGrid, ColumnDefinition,
-            ComboBox as WpfComboBox
+            ComboBox as WpfComboBox, TextBlock as WpfTextBlock
         )
-        from System.Windows import Thickness, GridLength, GridUnitType
+        from System.Windows import Thickness, GridLength, GridUnitType, HorizontalAlignment, VerticalAlignment
 
         # ── Dados ──
         c_name = ""
@@ -1748,7 +1877,7 @@ class TransferCircuitsWindow(forms.WPFWindow):
         if extras:
             lbl += "  [{}]".format(" | ".join(extras))
 
-        # ── Visual: Grid com CheckBox + ComboBox ──
+        # ── Visual: Grid com CheckBox + Tensão + Polos + Status ──
         row = WpfGrid()
         col0 = ColumnDefinition()
         col0.Width = GridLength(1.0, GridUnitType.Star)
@@ -1756,9 +1885,12 @@ class TransferCircuitsWindow(forms.WPFWindow):
         col1.Width = GridLength(90.0, GridUnitType.Pixel)
         col2 = ColumnDefinition()
         col2.Width = GridLength(80.0, GridUnitType.Pixel)
+        col3 = ColumnDefinition()
+        col3.Width = GridLength(28.0, GridUnitType.Pixel)
         row.ColumnDefinitions.Add(col0)
         row.ColumnDefinitions.Add(col1)
         row.ColumnDefinitions.Add(col2)
+        row.ColumnDefinitions.Add(col3)
         row.Margin = Thickness(0, 2, 0, 2)
 
         cb = CheckBox()
@@ -1767,13 +1899,24 @@ class TransferCircuitsWindow(forms.WPFWindow):
         cb.FontSize = 13
         WpfGrid.SetColumn(cb, 0)
         row.Children.Add(cb)
-        
+
         volt_cb = WpfComboBox()
-        volt_cb.Items.Add("Manter")
-        volt_cb.Items.Add("220V")
-        volt_cb.Items.Add("380V")
-        volt_cb.Items.Add("127V")
-        volt_cb.SelectedIndex = 0
+        # Ordem: 0=Manter, 1=127V, 2=220V, 3=380V, 4=440V
+        volt_cb.Items.Add(u"Manter")
+        volt_cb.Items.Add(u"127V")
+        volt_cb.Items.Add(u"220V")
+        volt_cb.Items.Add(u"380V")
+        volt_cb.Items.Add(u"440V")
+        # Pré-selecionar a tensão atual do circuito
+        circ_v = _circuit_voltage_volts(circ)
+        if circ_v is not None:
+            if abs(circ_v - 127) < 15:   volt_cb.SelectedIndex = 1
+            elif abs(circ_v - 220) < 15: volt_cb.SelectedIndex = 2
+            elif abs(circ_v - 380) < 15: volt_cb.SelectedIndex = 3
+            elif abs(circ_v - 440) < 15: volt_cb.SelectedIndex = 4
+            else:                         volt_cb.SelectedIndex = 0
+        else:
+            volt_cb.SelectedIndex = 0
         volt_cb.Width = 85
         volt_cb.Height = 22
         volt_cb.FontSize = 11
@@ -1781,9 +1924,9 @@ class TransferCircuitsWindow(forms.WPFWindow):
         row.Children.Add(volt_cb)
 
         poles_cb = WpfComboBox()
-        poles_cb.Items.Add("1 Polo")
-        poles_cb.Items.Add("2 Polos")
-        poles_cb.Items.Add("3 Polos")
+        poles_cb.Items.Add(u"1 Polo")
+        poles_cb.Items.Add(u"2 Polos")
+        poles_cb.Items.Add(u"3 Polos")
         if curr_poles == 3:
             poles_cb.SelectedIndex = 2
         elif curr_poles == 2:
@@ -1796,8 +1939,29 @@ class TransferCircuitsWindow(forms.WPFWindow):
         WpfGrid.SetColumn(poles_cb, 2)
         row.Children.Add(poles_cb)
 
+        status_lbl = WpfTextBlock()
+        status_lbl.Text = u""
+        status_lbl.FontSize = 15
+        status_lbl.HorizontalAlignment = HorizontalAlignment.Center
+        status_lbl.VerticalAlignment = VerticalAlignment.Center
+        WpfGrid.SetColumn(status_lbl, 3)
+        row.Children.Add(status_lbl)
+
+        # Classificação de carga para filtros por tipo
+        classification = _get_circuit_classification(circ)
+
+        # Marcar com ⚠ se já falhou antes
+        hkey = _history_key(self._source_panel_name, circ)
+        hist = self._history.get(hkey)
+        if hist:
+            count = hist.get("count", 1)
+            err = hist.get("error", u"")
+            _set_row_status(
+                status_lbl, cb, "warning",
+                u"Falhou {} vez(es) antes:\n{}".format(count, err))
+
         self.sp_Circuits.Children.Add(row)
-        self.circuit_rows.append((cb, volt_cb, poles_cb, circ))
+        self.circuit_rows.append((cb, volt_cb, poles_cb, circ, status_lbl, row, classification))
 
     def _update_dest_list(self, source_idx):
         """Atualiza a ComboBox destino excluindo o quadro de origem."""
@@ -1818,19 +1982,149 @@ class TransferCircuitsWindow(forms.WPFWindow):
             self.cb_DestPanel.SelectedIndex = -1
 
     def _on_select_all(self, sender, args):
-        for cb, _, _, _ in self.circuit_rows:
-            cb.IsChecked = True
+        from System.Windows import Visibility
+        for cb, _, _, _, _, rg, _ in self.circuit_rows:
+            if cb.IsEnabled and rg.Visibility == Visibility.Visible:
+                cb.IsChecked = True
         self._update_count()
 
     def _on_select_none(self, sender, args):
-        for cb, _, _, _ in self.circuit_rows:
-            cb.IsChecked = False
+        from System.Windows import Visibility
+        for cb, _, _, _, _, rg, _ in self.circuit_rows:
+            if cb.IsEnabled and rg.Visibility == Visibility.Visible:
+                cb.IsChecked = False
         self._update_count()
 
     def _update_count(self):
-        count = sum(1 for cb, _, _, _ in self.circuit_rows if cb.IsChecked)
+        from System.Windows import Visibility
+        count = sum(1 for cb, _, _, _, _, rg, _ in self.circuit_rows
+                    if cb.IsChecked and cb.IsEnabled and rg.Visibility == Visibility.Visible)
+        total = sum(1 for cb, _, _, _, _, rg, _ in self.circuit_rows
+                    if cb.IsEnabled and rg.Visibility == Visibility.Visible)
+        self.lbl_Info.Text = u"{} de {} selecionado(s).".format(count, total)
+
+    # ── Busca / Filtros / Edição em Massa ──
+
+    def _apply_filter(self):
+        from System.Windows import Visibility
+        search = self._search_text.strip().lower()
+        active = self._active_type
+
+        visible = 0
+        for cb, _, _, circ, _, rg, classification in self.circuit_rows:
+            if active is not None and classification != active:
+                rg.Visibility = Visibility.Collapsed
+                continue
+
+            if search:
+                circ_num = u""
+                try: circ_num = str(circ.CircuitNumber or u"")
+                except Exception: pass
+                load_name = u""
+                try: load_name = circ.LoadName or u""
+                except Exception: pass
+                haystack = u"{} {} {}".format(circ_num, load_name, classification).lower()
+                if search not in haystack:
+                    rg.Visibility = Visibility.Collapsed
+                    continue
+
+            rg.Visibility = Visibility.Visible
+            visible += 1
+
+        self.lbl_CircuitsCount.Text = u"{} visível(is)".format(visible)
+        self._update_count()
+
+    def _on_search_changed(self, sender, args):
+        from System.Windows import Visibility
+        text = self.tb_Search.Text or u""
+        self._search_text = text
+        self.lbl_SearchPlaceholder.Visibility = (
+            Visibility.Collapsed if text else Visibility.Visible)
+        self._apply_filter()
+
+    def _on_clear_search(self, sender, args):
+        from System.Windows import Visibility
+        self.tb_Search.Text = u""
+        self._search_text = u""
+        self.lbl_SearchPlaceholder.Visibility = Visibility.Visible
+        self._apply_filter()
+
+    def _on_bulk_apply(self, sender, args):
+        from System.Windows import Visibility
+        vi = self.cb_BulkVoltage.SelectedIndex
+        pi = self.cb_BulkPoles.SelectedIndex
+
+        if vi == 0 and pi == 0:
+            forms.alert(u"Selecione tensão e/ou polos para aplicar.", title="Edição em Massa")
+            return
+
+        count = 0
+        for cb, volt_cb, poles_cb, _, _, rg, _ in self.circuit_rows:
+            if cb.IsChecked and cb.IsEnabled and rg.Visibility == Visibility.Visible:
+                if vi > 0:
+                    volt_cb.SelectedIndex = vi  # 1=127V, 2=220V, 3=380V, 4=440V
+                if pi > 0:
+                    poles_cb.SelectedIndex = pi - 1  # 0=1polo, 1=2polos, 2=3polos
+                count += 1
+
+        if count > 0:
+            self.lbl_Info.Text = u"⚡ Aplicado a {} circuito(s) selecionado(s).".format(count)
+        else:
+            self.lbl_Info.Text = u"Nenhum circuito selecionado para editar."
+
+    def _build_type_filters(self):
+        from System.Windows.Controls import Button
+        from System.Windows import Visibility
+
+        self.wp_TypeFilters.Children.Clear()
+        self._active_type = None
+
+        # Contar por classificação
+        types_count = {}
+        for cb, _, _, _, _, _, classification in self.circuit_rows:
+            if classification:
+                types_count[classification] = types_count.get(classification, 0) + 1
+
+        # Ocultar borda se não houver tipos distintos
+        try:
+            self.border_TypeFilters.Visibility = (
+                Visibility.Visible if types_count else Visibility.Collapsed)
+        except Exception:
+            pass
+
+        if not types_count:
+            return
+
         total = len(self.circuit_rows)
-        self.lbl_Info.Text = "{} de {} selecionado(s).".format(count, total)
+
+        # Botão "Todos"
+        btn_all = Button()
+        btn_all.Content = u"Todos ({})".format(total)
+        btn_all.Style = self.FindResource("BtnChipActive")
+        btn_all.Tag = None
+        btn_all.Click += self._on_type_filter
+        self.wp_TypeFilters.Children.Add(btn_all)
+
+        for ctype in sorted(types_count.keys()):
+            btn = Button()
+            btn.Content = u"{} ({})".format(ctype, types_count[ctype])
+            btn.Style = self.FindResource("BtnChip")
+            btn.Tag = ctype
+            btn.Click += self._on_type_filter
+            self.wp_TypeFilters.Children.Add(btn)
+
+    def _on_type_filter(self, sender, args):
+        new_type = sender.Tag  # None = todos
+        self._active_type = new_type
+
+        for child in self.wp_TypeFilters.Children:
+            try:
+                style_key = "BtnChipActive" if child.Tag == new_type else "BtnChip"
+                child.Style = self.FindResource(style_key)
+            except Exception:
+                pass
+
+        self._apply_filter()
 
     # ── Transferir ──
 
@@ -1839,168 +2133,134 @@ class TransferCircuitsWindow(forms.WPFWindow):
         d_idx = self.cb_DestPanel.SelectedIndex
 
         if s_idx < 0:
-            forms.alert("Escolha o quadro de origem.", title="Transferir Circuitos")
+            forms.alert(u"Escolha o quadro de origem.", title="Transferir Circuitos")
             return
         if d_idx < 0:
-            forms.alert("Escolha o quadro de destino.", title="Transferir Circuitos")
+            forms.alert(u"Escolha o quadro de destino.", title="Transferir Circuitos")
             return
 
-        # Aplicar config de debug do checkbox
         global dbg
         if hasattr(self, "cb_Debug"):
             dbg.enabled = bool(self.cb_Debug.IsChecked)
 
         dest_panel = self.dest_panels[d_idx]["element"]
 
-        # Coletar selecionados + polos desejados + tensao
         selected = []
-        for cb, volt_cb, poles_cb, circ in self.circuit_rows:
+        for cb, volt_cb, poles_cb, circ, status_lbl, _rg, _cls in self.circuit_rows:
             if cb.IsChecked:
                 pi = poles_cb.SelectedIndex
                 target_poles = [1, 2, 3][pi] if 0 <= pi <= 2 else 1
-                
                 vi = volt_cb.SelectedIndex
+                # 0=Manter, 1=127V, 2=220V, 3=380V, 4=440V
                 target_voltage = None
-                if vi == 1: target_voltage = 220.0
-                elif vi == 2: target_voltage = 380.0
-                elif vi == 3: target_voltage = 127.0
-                
-                selected.append((circ, target_poles, target_voltage))
+                if vi == 1: target_voltage = 127.0
+                elif vi == 2: target_voltage = 220.0
+                elif vi == 3: target_voltage = 380.0
+                elif vi == 4: target_voltage = 440.0
+                selected.append((circ, target_poles, target_voltage, status_lbl, cb))
 
         selected = sorted(selected, key=lambda item: _circuit_sort_key(item[0]))
 
         if not selected:
-            forms.alert("Selecione pelo menos um circuito.", title="Transferir Circuitos")
+            forms.alert(u"Selecione pelo menos um circuito.", title="Transferir Circuitos")
             return
 
         dest_name = _safe_name(dest_panel)
-        voltage_changes = []
-        for circ, _, target_voltage in selected:
-            if target_voltage is None:
-                continue
-            curr_voltage = _circuit_voltage_volts(circ)
-            if curr_voltage is None or abs(curr_voltage - target_voltage) > 5:
-                circ_num = _get_circuit_number(circ) or "?"
-                curr_text = "{:.0f}V".format(curr_voltage) if curr_voltage is not None else "?"
-                voltage_changes.append("C{}: {} -> {:.0f}V".format(circ_num, curr_text, target_voltage))
-
-        extra_note = ""
-        if voltage_changes:
-            extra_note = (
-                "\n\nConversão de tensão em tentativa experimental:\n{}\n\n"
-                "Se o Revit criar novamente em 127V ou recusar o quadro, o circuito antigo será preservado."
-            ).format("\n".join(voltage_changes))
-
         confirma = forms.alert(
-            "Transferir {} circuito(s) para '{}'?\n\n"
-            "Os circuitos serão desconectados do quadro atual\n"
-            "e reconectados no destino com os polos escolhidos.{}".format(
-                len(selected), dest_name, extra_note),
+            u"Transferir {} circuito(s) para '{}'?\n\n"
+            u"Cada circuito é transferido individualmente —\n"
+            u"uma falha não cancela os demais.".format(len(selected), dest_name),
             title="Transferir Circuitos",
             yes=True, no=True
         )
         if not confirma:
             return
 
-        self.Close()
+        # ── Uma Transaction por circuito ──
+        dbg.section(u"Transferir Circuitos")
+        dbg.info(u"Destino: {} ({} circuitos)".format(dest_name, len(selected)))
 
-        # ── Executar transferência ──
-        dbg.section("Transferir Circuitos")
-        dbg.info("Destino: {} ({} circuitos)".format(dest_name, len(selected)))
-
+        self.btn_Transfer.IsEnabled = False
         sucessos = 0
-        erros = []
+        n_erros = 0
 
-        from Autodesk.Revit.DB import IFailuresPreprocessor, FailureSeverity, FailureProcessingResult
-        
-        class TransferFailureLogger(IFailuresPreprocessor):
-            def __init__(self):
-                self.messages = []
-
-            def PreprocessFailures(self, failuresAccessor):
-                try:
-                    failures = list(failuresAccessor.GetFailureMessages())
-                    if not failures:
-                        return FailureProcessingResult.Continue
-                    for f in failures:
-                        try:
-                            desc = f.GetDescriptionText()
-                            sev = f.GetSeverity()
-                            self.messages.append("{}: {}".format(sev, desc))
-                            if sev == FailureSeverity.Warning:
-                                failuresAccessor.DeleteWarning(f)
-                        except Exception as inner_e:
-                            self.messages.append("Falha ao ler erro: {}".format(inner_e))
-                except Exception as out_e:
-                    self.messages.append("Falha no preprocessor: {}".format(out_e))
-                return FailureProcessingResult.Continue
-
-        failure_logger = TransferFailureLogger()
-        t = Transaction(doc, "Transferir Circuitos")
-        opts = t.GetFailureHandlingOptions()
-        opts.SetFailuresPreprocessor(failure_logger)
-        t.SetFailureHandlingOptions(opts)
-        t.Start()
-
-        try:
-            for circ, target_poles, target_voltage in selected:
-                circ_num = ""
-                try:
-                    circ_num = circ.CircuitNumber
-                except Exception:
-                    pass
-
-                sub = SubTransaction(doc)
-                sub.Start()
-                try:
-                    ok, msg = transfer_one_circuit(circ, dest_panel, target_poles, target_voltage)
-                except Exception as e:
-                    ok, msg = False, str(e)
-
-                if ok:
-                    sub.Commit()
-                    sucessos += 1
-                    try:
-                        doc.Regenerate()
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        sub.RollBack()
-                    except Exception:
-                        pass
-                    erros.append((circ_num, msg))
-                    dbg.error("C{}: {}".format(circ_num, msg))
-
-            status = t.Commit()
-            if status != TransactionStatus.Committed and failure_logger.messages:
-                erros.append(("GERAL", " | ".join(failure_logger.messages[:3])))
-            if status != TransactionStatus.Committed:
-                erros.append(("GERAL", "Revit cancelou a transação (Rollback silencioso). Status: {}".format(status)))
-                dbg.error("Transação principal falhou: {}".format(status))
-                sucessos = 0
-        except Exception as e:
+        for i, (circ, target_poles, target_voltage, status_lbl, cb) in enumerate(selected):
+            circ_num = u""
             try:
-                if t.GetStatus() == TransactionStatus.Started:
-                    t.RollBack()
+                circ_num = circ.CircuitNumber
             except Exception:
                 pass
-            erros.append(("GERAL", str(e)))
-            dbg.error("Exceção geral: {}".format(e))
 
-        # ── Resumo ──
-        dbg.section("Resultado")
-        dbg.info("Sucesso: {}  |  Falhas: {}".format(sucessos, len(erros)))
+            self.lbl_Info.Text = u"Transferindo C{}… ({}/{})".format(
+                circ_num, i + 1, len(selected))
+            _pump_dispatcher()
 
-        msg = "Transferência Concluída!\n\n"
-        msg += "Circuitos movidos com sucesso: {}\n".format(sucessos)
+            failure_logger = TransferFailureLogger()
+            t = Transaction(doc, u"Transferir C{}".format(circ_num))
+            opts = t.GetFailureHandlingOptions()
+            opts.SetFailuresPreprocessor(failure_logger)
+            t.SetFailureHandlingOptions(opts)
+            t.Start()
 
-        if erros:
-            msg += "\nFalhas: {}\n".format(len(erros))
-            for num, err in erros:
-                msg += " • C{}: {}\n".format(num, err[:120])
+            ok = False
+            msg = u""
+            try:
+                ok, msg = transfer_one_circuit(circ, dest_panel, target_poles, target_voltage)
+            except Exception as e:
+                ok, msg = False, str(e)
 
-        forms.alert(msg, title="Resumo da Transferência")
+            if ok:
+                try:
+                    doc.Regenerate()
+                except Exception:
+                    pass
+                status = t.Commit()
+                if status == TransactionStatus.Committed:
+                    sucessos += 1
+                    _set_row_status(status_lbl, cb, "ok", u"")
+                    self._history.pop(_history_key(self._source_panel_name, circ), None)
+                    dbg.info(u"C{}: OK".format(circ_num))
+                else:
+                    try:
+                        t.RollBack()
+                    except Exception:
+                        pass
+                    fail_msg = (u" | ".join(failure_logger.messages[:2])
+                                if failure_logger.messages
+                                else u"Revit rejeitou (status {})".format(status))
+                    n_erros += 1
+                    _set_row_status(status_lbl, cb, "error", fail_msg)
+                    hkey = _history_key(self._source_panel_name, circ)
+                    prev = self._history.get(hkey, {})
+                    self._history[hkey] = {"error": fail_msg[:200], "count": prev.get("count", 0) + 1}
+                    dbg.error(u"C{}: commit rejeitado — {}".format(circ_num, fail_msg))
+            else:
+                try:
+                    if t.GetStatus() == TransactionStatus.Started:
+                        t.RollBack()
+                except Exception:
+                    pass
+                n_erros += 1
+                _set_row_status(status_lbl, cb, "error", msg)
+                hkey = _history_key(self._source_panel_name, circ)
+                prev = self._history.get(hkey, {})
+                self._history[hkey] = {"error": msg[:200], "count": prev.get("count", 0) + 1}
+                dbg.error(u"C{}: {}".format(circ_num, msg))
+
+            _save_history(self._history)
+            _pump_dispatcher()
+
+        # ── Resumo inline (janela permanece aberta) ──
+        dbg.section(u"Resultado")
+        dbg.info(u"Sucesso: {}  |  Falhas: {}".format(sucessos, n_erros))
+
+        self.btn_Transfer.IsEnabled = True
+        if n_erros == 0:
+            self.lbl_Info.Text = u"✓ {} circuito(s) transferido(s) com sucesso!".format(sucessos)
+        else:
+            self.lbl_Info.Text = (
+                u"Concluído: {} OK  |  {} com erro — passe o mouse sobre ✗ para ver o detalhe."
+            ).format(sucessos, n_erros)
 
 
 # ══════════════════════════════════════════════════════════════

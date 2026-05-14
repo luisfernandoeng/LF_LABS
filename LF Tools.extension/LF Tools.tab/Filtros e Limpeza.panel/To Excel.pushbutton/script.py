@@ -1351,6 +1351,49 @@ def get_param_display_string(el, param_def):
         pass
     return ""
 
+def _get_section_cell_text(section, row, col):
+    """Le texto de celula de uma TableSectionData com fallback."""
+    try:
+        return section.GetCellText(row, col) or ""
+    except:
+        pass
+    try:
+        return section.GetCellText(row, col, False) or ""
+    except:
+        pass
+    return ""
+
+def get_schedule_visual_table(schedule):
+    """Extrai a matriz visual da tabela do Revit (cabecalho + corpo)."""
+    visual_rows = []
+    try:
+        table_data = schedule.GetTableData()
+    except:
+        return visual_rows
+
+    for section_type in [DB.SectionType.Header, DB.SectionType.Body]:
+        try:
+            section = table_data.GetSectionData(section_type)
+            row_count = section.NumberOfRows
+            col_count = section.NumberOfColumns
+        except:
+            continue
+        if row_count <= 0 or col_count <= 0:
+            continue
+
+        for r in range(row_count):
+            row_values = []
+            has_value = False
+            for c in range(col_count):
+                value = _get_section_cell_text(section, r, c)
+                if value not in (None, ""):
+                    has_value = True
+                row_values.append(value)
+            if has_value:
+                visual_rows.append(row_values)
+
+    return visual_rows
+
 
 # ==================== EXPORTAÇÃO OTIMIZADA ====================
 def export_xls(targets, file_path, formatted=False):
@@ -1595,37 +1638,43 @@ def export_xls(targets, file_path, formatted=False):
                         ws_sum.set_column(c, c, w + 2)
 
             elif formatted:
-                # ── Modo formatado: visual idêntico ao Revit, sem ElementId ─────
+                # ── Modo formatado: usa a matriz visual da tabela do Revit ─────
                 ws.set_tab_color("#1F4E78")
                 ws.freeze_panes(1, 0)
-                ws.set_row(0, 18)
+                visual_rows = get_schedule_visual_table(target.get('schedule')) if target.get('schedule') else []
 
-                header_names = [p.name for p in selected_params]
-                widths = [len(n) for n in header_names]
-
-                for i, name in enumerate(header_names):
-                    ws.write(0, i, name, fmt_head_vis)
-
-                for r, el in enumerate(src_elements, 1):
-                    fmt_row = fmt_data_alt if r % 2 == 0 else fmt_data_vis
-                    try:
-                        for c, p in enumerate(selected_params):
-                            if hasattr(el, 'row_data'):
-                                value = str(el.row_data.get(p.name, ""))
-                            else:
-                                value = get_param_display_string(el, p)
+                if visual_rows:
+                    col_count = max([len(r) for r in visual_rows])
+                    widths = [8 for _ in range(col_count)]
+                    for r, row_values in enumerate(visual_rows):
+                        is_header = (r == 0)
+                        fmt_row = fmt_head_vis if is_header else (fmt_data_alt if r % 2 == 0 else fmt_data_vis)
+                        ws.set_row(r, 22 if is_header else 18)
+                        for c in range(col_count):
+                            value = row_values[c] if c < len(row_values) else ""
                             ws.write(r, c, value, fmt_row)
-                            slen = len(value) if value else 0
+                            slen = len(str(value)) if value else 0
                             if slen > widths[c]:
-                                widths[c] = min(slen, 60)
-                    except Exception:
-                        pass
+                                widths[c] = min(slen, 55)
 
-                for i, w in enumerate(widths):
-                    ws.set_column(i, i, w + 3)
-
-                if src_elements:
-                    ws.autofilter(0, 0, len(src_elements), len(selected_params) - 1)
+                    for i, w in enumerate(widths):
+                        ws.set_column(i, i, max(8, w + 2))
+                    if len(visual_rows) > 1 and col_count > 0:
+                        ws.autofilter(0, 0, len(visual_rows) - 1, col_count - 1)
+                else:
+                    # Fallback antigo caso a API nao entregue TableData.
+                    header_names = [p.name for p in selected_params]
+                    widths = [len(n) for n in header_names]
+                    for i, name in enumerate(header_names):
+                        ws.write(0, i, name, fmt_head_vis)
+                    for r, el in enumerate(src_elements, 1):
+                        fmt_row = fmt_data_alt if r % 2 == 0 else fmt_data_vis
+                        for c, p in enumerate(selected_params):
+                            value = get_param_display_string(el, p)
+                            ws.write(r, c, value, fmt_row)
+                            widths[c] = max(widths[c], min(len(value or ""), 55))
+                    for i, w in enumerate(widths):
+                        ws.set_column(i, i, w + 3)
 
             else:
                 # ── Modo padrão: com ElementId, editável/importável ───────────
@@ -2461,6 +2510,7 @@ class ExportImportWindow(forms.WPFWindow):
         self.pnl_FormatWarning.Visibility = (
             Visibility.Visible if checked else Visibility.Collapsed
         )
+        self._update_export_preview()
 
     def _on_checklist_changed(self, sender, args):
         """Chamado quando qualquer checkbox da lista muda."""
@@ -2557,6 +2607,21 @@ class ExportImportWindow(forms.WPFWindow):
                     for j, h in enumerate(headers):
                         row[j] = str(r.get(h, ""))
                     dt.Rows.Add(row)
+            elif bool(self.CheckBox_KeepFormat.IsChecked):
+                visual_rows = get_schedule_visual_table(schedule)
+                if visual_rows:
+                    col_count = max([len(r) for r in visual_rows])
+                    for c in range(col_count):
+                        dt.Columns.Add("C{}".format(c + 1))
+                    for i, values in enumerate(visual_rows):
+                        if i >= max_preview_rows:
+                            break
+                        row = dt.NewRow()
+                        for c in range(col_count):
+                            row[c] = str(values[c]) if c < len(values) and values[c] is not None else ""
+                        dt.Rows.Add(row)
+                else:
+                    self.lbl_PreviewStatus.Text = "Preview visual indisponivel para esta tabela."
             else:
                 elements, param_defs = get_schedule_elements_and_params(schedule)
                 dt.Columns.Add("ElementId")

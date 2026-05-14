@@ -1,4 +1,4 @@
-# coding: utf-8
+﻿# coding: utf-8
 """LF Electrical - Industrial
 Criação de circuitos e interruptores (Industrial)"""
 
@@ -1328,7 +1328,7 @@ def _import_sync_module():
     panel_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..'))
     candidates = [
         os.path.join(panel_dir, 'Circuitos.stack', 'Sincronizar Circuitos.pushbutton', 'script.py'),
-        os.path.join(panel_dir, 'LF Electrical.stack', 'Sincronizar Circuitos.pushbutton', 'script.py'),
+        os.path.join(panel_dir, 'LF Eletrical.pulldown', 'Sincronizar Circuitos.pushbutton', 'script.py'),
         os.path.join(os.path.dirname(__file__), '..', 'Sincronizar Circuitos.pushbutton', 'script.py'),
     ]
     sync_path = candidates[0]
@@ -2299,3 +2299,4 @@ if __name__ == "__main__":
         except Exception as ex:
             dbg.warn("Falha ao abrir janela persistente; usando menu antigo: {}".format(ex))
             main_menu()
+

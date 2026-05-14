@@ -1,0 +1,7 @@
+﻿title: "LF Electrical"
+tooltip: Cria circuitos residenciais, industriais e de dados, com apoio para configuração de quadros.
+icon: icon.png
+layout:
+  - Dados
+  - Industrial
+  - Residencial

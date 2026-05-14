@@ -1,0 +1,3 @@
+﻿title: "Desacoplar"
+tooltip: Desfaz conexões MEP entre os elementos selecionados, mantendo os elementos no modelo.
+icon: icon.png
