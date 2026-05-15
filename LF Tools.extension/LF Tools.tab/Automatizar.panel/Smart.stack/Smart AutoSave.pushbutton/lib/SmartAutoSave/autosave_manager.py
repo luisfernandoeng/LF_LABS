@@ -12,6 +12,11 @@ clr.AddReference('System.Windows.Forms')
 from System.Windows.Threading import DispatcherTimer
 from System import TimeSpan
 from Autodesk.Revit.UI import IExternalEventHandler, ExternalEvent
+from Autodesk.Revit.DB import (
+    RelinquishOptions,
+    SynchronizeWithCentralOptions,
+    TransactWithCentralOptions,
+)
 
 from SmartAutoSave.config_manager import config
 import SmartAutoSave.toast_notification as toast
@@ -326,7 +331,9 @@ class AutoSaveHandler(IExternalEventHandler):
             return
 
         try:
-            if not doc.PathName:
+            is_cloud = self._is_cloud_model(doc)
+
+            if not is_cloud and not doc.PathName:
                 self.manager.log(u"⚠️ Projeto ainda não salvo em disco. Salvamento ignorado.")
                 if self.manager._countdown_toast:
                     try: self.manager._countdown_toast.Close()
@@ -347,8 +354,6 @@ class AutoSaveHandler(IExternalEventHandler):
                 self.manager._countdown_toast = None
                 return
 
-            is_cloud = self._is_cloud_model(doc)
-
             # Reaproveita o toast do countdown; senão cria um novo (trigger_save_now)
             toast_inst = self.manager._countdown_toast
             if show_toast and toast_inst is None:
@@ -361,7 +366,7 @@ class AutoSaveHandler(IExternalEventHandler):
                 duration = 30 if is_cloud else 10
                 toast_inst = toast.show(u"Salvando projeto...", msg, u"💾", duration, hwnd=hwnd)
 
-            doc.Save()
+            self._save_document(doc, is_cloud)
 
             elapsed  = time.time() - start_time
             time_str = datetime.datetime.now().strftime("%H:%M")
@@ -410,6 +415,41 @@ class AutoSaveHandler(IExternalEventHandler):
             return doc.IsModelInCloud
         except:
             return False
+
+    def _is_workshared(self, doc):
+        try:
+            return doc.IsWorkshared
+        except:
+            return False
+
+    def _save_document(self, doc, is_cloud):
+        if is_cloud and self._is_workshared(doc):
+            self._sync_cloud_workshared_model(doc)
+            return
+
+        if is_cloud and hasattr(doc, "SaveCloudModel"):
+            doc.SaveCloudModel()
+            return
+
+        doc.Save()
+
+    def _sync_cloud_workshared_model(self, doc):
+        transact_options = TransactWithCentralOptions()
+        sync_options = SynchronizeWithCentralOptions()
+        try:
+            sync_options.Comment = "Smart AutoSave"
+            # Mantem a posse atual do usuario; o AutoSave nao deve liberar worksets sem acao explicita.
+            sync_options.SetRelinquishOptions(RelinquishOptions(False))
+            doc.SynchronizeWithCentral(transact_options, sync_options)
+        finally:
+            try:
+                sync_options.Dispose()
+            except:
+                pass
+            try:
+                transact_options.Dispose()
+            except:
+                pass
 
     def GetName(self):
         return "AutoSaveHandler"

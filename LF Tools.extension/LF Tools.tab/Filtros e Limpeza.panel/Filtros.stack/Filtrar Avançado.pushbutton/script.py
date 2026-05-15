@@ -24,6 +24,10 @@ from Autodesk.Revit.DB import (
     FilteredElementCollector, BuiltInCategory, ElementId, StorageType,
     BuiltInParameter, Element, UnitUtils, UnitTypeId
 )
+try:
+    from Autodesk.Revit import DB
+except Exception:
+    DB = None
 from System.Collections.Generic import List
 import io
 import traceback
@@ -217,7 +221,7 @@ class SelectionHistory:
     
     def add(self, element_ids, category, criteria_desc, count, state):
         entry = {
-            'element_ids': [eid.IntegerValue for eid in element_ids],
+            'element_ids': [get_id_value(eid) for eid in element_ids if get_id_value(eid) is not None],
             'category': category,
             'criteria': criteria_desc,
             'count': count,
@@ -276,6 +280,70 @@ def save_presets(data):
         return False
 
 # ==================== HELPERS DE ELEVAÇÃO ====================
+def get_id_value(element_id):
+    """Retorna o valor inteiro de ElementId em versoes novas e antigas do Revit."""
+    if element_id is None:
+        return None
+    try:
+        value = getattr(element_id, "Value", None)
+        if value is not None:
+            return int(value)
+    except:
+        pass
+    try:
+        return int(element_id.IntegerValue)
+    except:
+        return None
+
+def get_element_document(element):
+    try:
+        return element.Document
+    except:
+        return doc
+
+def parse_float_smart(value):
+    """Aceita numeros como 1,25, 1.25, 1.234,56 ou textos com unidade."""
+    if value is None:
+        return None
+    text = str(value).strip().replace(u"\u00a0", " ")
+    if not text:
+        return None
+
+    match = re.search(r'-?\d+(?:[.,]\d+)*(?:[.,]\d+)?', text)
+    if not match:
+        return None
+
+    number = match.group(0)
+    if "," in number and "." in number:
+        if number.rfind(",") > number.rfind("."):
+            number = number.replace(".", "").replace(",", ".")
+        else:
+            number = number.replace(",", "")
+    else:
+        number = number.replace(",", ".")
+
+    try:
+        return float(number)
+    except:
+        return None
+
+def compare_numeric(left, condition, right, tolerance=0.000001):
+    if left is None or right is None:
+        return None
+    if condition == u"Igual a":
+        return abs(left - right) <= tolerance
+    if condition == u"Diferente de":
+        return abs(left - right) > tolerance
+    if condition == u"Maior que":
+        return left > right
+    if condition == u"Menor que":
+        return left < right
+    if condition == u"Maior ou igual":
+        return left >= (right - tolerance)
+    if condition == u"Menor ou igual":
+        return left <= (right + tolerance)
+    return None
+
 def get_element_elevation(el):
     """Obtém a elevação Z do elemento convertida de pés para metros."""
     z_feet = None
@@ -349,13 +417,20 @@ def smart_parameter_compare(param, condition, user_text, text_compare_func):
         
     try:
         # Tenta lógica numérica APENAS se for StorageType.Double
-        if param.StorageType == StorageType.Double:
+        if param.StorageType in (StorageType.Double, StorageType.Integer):
+            if param.StorageType == StorageType.Integer:
+                user_val = parse_float_smart(user_text)
+                if user_val is not None:
+                    numeric_result = compare_numeric(float(param.AsInteger()), condition, user_val)
+                    if numeric_result is not None:
+                        return numeric_result
+                return text_compare_func(str(param.AsInteger()), condition, user_text)
+
             internal_val = param.AsDouble()
             
             # Tentar ler o input do usuário (esperando metros se for comprimento)
-            user_val_str = user_text.replace(',', '.').strip()
-            if user_val_str:
-                user_val = float(user_val_str)
+            user_val = parse_float_smart(user_text)
+            if user_val is not None:
                 
                 # Obter o tipo de unidade do parâmetro
                 try:
@@ -523,7 +598,7 @@ class FiltroAvancadoWindow(_WPFWindowCPy):
                         if isinstance(cat, BuiltInCategory):
                             self.ids_mapeados.add(int(cat))
                         elif hasattr(cat, "IntegerValue"):
-                            self.ids_mapeados.add(cat.IntegerValue)
+                            self.ids_mapeados.add(get_id_value(cat))
                         elif hasattr(cat, "Value"):
                             self.ids_mapeados.add(int(cat.Value))
                     except:
@@ -652,9 +727,7 @@ class FiltroAvancadoWindow(_WPFWindowCPy):
                             self.Radio_ProjetoInteiro.Content = "Vínculo Inteiro"
                         
                         if el.Category:
-                            cat_id_val = getattr(el.Category.Id, "Value", None)
-                            if cat_id_val is None:
-                                cat_id_val = el.Category.Id.IntegerValue
+                            cat_id_val = get_id_value(el.Category.Id)
                             
                             if int(cat_id_val) not in self.ids_mapeados:
                                 c_name = el.Category.Name
@@ -684,7 +757,9 @@ class FiltroAvancadoWindow(_WPFWindowCPy):
         
         def _expand(el):
             try:
-                eid = el.Id.IntegerValue
+                eid = get_id_value(el.Id)
+                if eid is None:
+                    return
                 if eid in visited:
                     return
                 visited.add(eid)
@@ -693,8 +768,9 @@ class FiltroAvancadoWindow(_WPFWindowCPy):
                 try:
                     sub_ids = el.GetSubComponentIds()
                     if sub_ids:
+                        sub_doc = get_element_document(el)
                         for sub_id in sub_ids:
-                            sub = doc.GetElement(sub_id)
+                            sub = sub_doc.GetElement(sub_id)
                             if sub:
                                 _expand(sub)
                 except:
@@ -724,7 +800,7 @@ class FiltroAvancadoWindow(_WPFWindowCPy):
             try:
                 type_id = el.GetTypeId()
                 if type_id != ElementId.InvalidElementId:
-                    type_elem = doc.GetElement(type_id)
+                    type_elem = get_element_document(el).GetElement(type_id)
                     if type_elem:
                         for param in type_elem.Parameters:
                             if param.Definition:
@@ -777,6 +853,7 @@ class FiltroAvancadoWindow(_WPFWindowCPy):
         return None
     
     def find_parameter(self, element, param_name):
+        element_doc = get_element_document(element)
         """Encontra parâmetro na instância OU no tipo, ou resolve Parâmetros Virtuais"""
         # Checar se é virtual
         if param_name == u"[VIRTUAL] Elevação Z (m)":
@@ -789,14 +866,16 @@ class FiltroAvancadoWindow(_WPFWindowCPy):
             try:
                 lvl_id = element.LevelId
                 if lvl_id and lvl_id != ElementId.InvalidElementId:
-                    return doc.GetElement(lvl_id).Name
+                    level = element_doc.GetElement(lvl_id)
+                    if level:
+                        return level.Name
             except: pass
             return ""
             
         if param_name == u"[VIRTUAL] Nome do Workset":
             try:
-                if element.WorksetId and element.WorksetId != DB.WorksetId.InvalidWorksetId:
-                    ws_table = doc.GetWorksetTable()
+                if element.WorksetId:
+                    ws_table = element_doc.GetWorksetTable()
                     ws = ws_table.GetWorkset(element.WorksetId)
                     if ws: return ws.Name
             except: pass
@@ -811,7 +890,7 @@ class FiltroAvancadoWindow(_WPFWindowCPy):
         try:
             type_id = element.GetTypeId()
             if type_id != ElementId.InvalidElementId:
-                type_elem = doc.GetElement(type_id)
+                type_elem = element_doc.GetElement(type_id)
                 if type_elem:
                     param = type_elem.LookupParameter(param_name)
                     if param:
@@ -829,6 +908,19 @@ class FiltroAvancadoWindow(_WPFWindowCPy):
             param_value = str(param_value).strip()
         
         value = value.strip() if value else ""
+
+        numeric_conditions = (
+            u"Igual a", u"Diferente de", u"Maior que", u"Menor que",
+            u"Maior ou igual", u"Menor ou igual"
+        )
+        if condition in numeric_conditions:
+            left_num = parse_float_smart(param_value)
+            right_num = parse_float_smart(value)
+            numeric_result = compare_numeric(left_num, condition, right_num, 0.000001)
+            if numeric_result is not None:
+                return numeric_result
+            if condition in (u"Maior que", u"Menor que", u"Maior ou igual", u"Menor ou igual"):
+                return False
         
         p_val_lower = param_value.lower()
         val_lower = value.lower()
@@ -873,10 +965,10 @@ class FiltroAvancadoWindow(_WPFWindowCPy):
     def categoria_selecionada(self, sender, args):
         """⚡ OTIMIZADO: Carregamento lazy de parâmetros"""
         try:
-            if not self.ComboBox_Categoria.SelectedItem:
+            if not self._combo_text(self.ComboBox_Categoria):
                 return
                 
-            categoria_nome = self.ComboBox_Categoria.SelectedItem
+            categoria_nome = self._combo_text(self.ComboBox_Categoria)
             usar_selecao = getattr(self.Radio_SelecaoAtual, 'IsChecked', False)
             
             # ⚡ Verificar cache primeiro
@@ -969,13 +1061,22 @@ class FiltroAvancadoWindow(_WPFWindowCPy):
             self.TextBlock_Status.Text = mensagem
         except:
             pass
+
+    def _combo_text(self, combo):
+        try:
+            selected = combo.SelectedItem
+            if selected is not None:
+                return str(getattr(selected, "Content", selected)).strip()
+            return str(getattr(combo, "Text", "") or "").strip()
+        except:
+            return ""
     
     def validar_campos(self):
         try:
-            if not self.ComboBox_Categoria.SelectedItem:
+            if not self._combo_text(self.ComboBox_Categoria):
                 forms.alert("Selecione uma categoria.")
                 return False
-            if not self.ComboBox_Parametro1.SelectedItem:
+            if not self._combo_text(self.ComboBox_Parametro1):
                 forms.alert("Selecione o parâmetro 1.")
                 return False
             if not self.ComboBox_Condicao1.SelectedItem:
@@ -985,7 +1086,7 @@ class FiltroAvancadoWindow(_WPFWindowCPy):
             cond1 = self.ComboBox_Condicao1.SelectedItem.Content
                 
             if self.CheckBox_UsarSegundoFiltro.IsChecked:
-                if not self.ComboBox_Parametro2.SelectedItem:
+                if not self._combo_text(self.ComboBox_Parametro2):
                     forms.alert("Selecione o parâmetro 2.")
                     return False
                 if not self.ComboBox_Condicao2.SelectedItem:
@@ -1004,20 +1105,20 @@ class FiltroAvancadoWindow(_WPFWindowCPy):
                 return
             
             self.Button_AplicarFiltro.IsEnabled = False
-            self.Button_AplicarFiltro.Content = "PROCESSANDO..."
+            self.Button_AplicarFiltro.Content = "Processando..."
             
-            categoria_nome = self.ComboBox_Categoria.SelectedItem
+            categoria_nome = self._combo_text(self.ComboBox_Categoria)
             
             usar_selecao      = bool(getattr(self.Radio_SelecaoAtual,       'IsChecked', False))
             usar_vista_atual  = bool(self.Radio_VistaAtual.IsChecked)
             incluir_aninhadas = bool(getattr(self.CheckBox_FamiliasAninhadas, 'IsChecked', False))
             
-            p1_nome    = self.ComboBox_Parametro1.SelectedItem
-            c1         = self.ComboBox_Condicao1.SelectedItem.Content
+            p1_nome    = self._combo_text(self.ComboBox_Parametro1)
+            c1         = self._combo_text(self.ComboBox_Condicao1)
             v1         = self.TextBox_Valor1.Text
             usar_f2    = self.CheckBox_UsarSegundoFiltro.IsChecked
-            p2_nome    = self.ComboBox_Parametro2.SelectedItem if usar_f2 else None
-            c2         = self.ComboBox_Condicao2.SelectedItem.Content if usar_f2 else None
+            p2_nome    = self._combo_text(self.ComboBox_Parametro2) if usar_f2 else None
+            c2         = self._combo_text(self.ComboBox_Condicao2) if usar_f2 else None
             v2         = self.TextBox_Valor2.Text if usar_f2 else ""
             operador_e = self.Radio_And.IsChecked
             
@@ -1217,7 +1318,7 @@ class FiltroAvancadoWindow(_WPFWindowCPy):
                     'p1': p1_name_history, 'c1': str(c1) if c1 else "", 'v1': str(v1),
                     'usar_f2': usar_f2, 'p2': p2_name_history, 'c2': str(c2) if c2 else "", 'v2': str(v2),
                     'op_e': operador_e,
-                    'target_link_id': target_link_instance.Id.IntegerValue if target_link_instance else None
+                    'target_link_id': get_id_value(target_link_instance.Id) if target_link_instance else None
                 }
                 
                 self.selection_history.add(ids_selecionados, cat_name_history, desc, len(ids_selecionados), state)
@@ -1228,13 +1329,13 @@ class FiltroAvancadoWindow(_WPFWindowCPy):
                 forms.alert(u"Nenhum elemento atende aos criterios.")
                 
             self.Button_AplicarFiltro.IsEnabled = True
-            self.Button_AplicarFiltro.Content = "APLICAR FILTRO"
+            self.Button_AplicarFiltro.Content = "Aplicar filtro"
                 
         except Exception as e:
             logger.error("Erro em aplicar_filtro_click: {}".format(e))
             forms.alert("Erro durante a filtragem:\n{}".format(e))
             self.Button_AplicarFiltro.IsEnabled = True
-            self.Button_AplicarFiltro.Content = "APLICAR FILTRO"
+            self.Button_AplicarFiltro.Content = "Aplicar filtro"
 
 
 
@@ -1441,7 +1542,7 @@ class FiltroAvancadoWindow(_WPFWindowCPy):
             cat = el.Category
             if not cat: return
             
-            target_cat_id = cat.Id.IntegerValue
+            target_cat_id = get_id_value(cat.Id)
             
             found_cat_name = None
             for name, info in self.categoria_opcoes.items():
@@ -1451,7 +1552,7 @@ class FiltroAvancadoWindow(_WPFWindowCPy):
                         if isinstance(c, BuiltInCategory):
                             cat_list.append(int(c))
                         elif hasattr(c, "IntegerValue"):
-                            cat_list.append(c.IntegerValue)
+                            cat_list.append(get_id_value(c))
                         elif hasattr(c, "Value"):
                             cat_list.append(int(c.Value))
                     except:

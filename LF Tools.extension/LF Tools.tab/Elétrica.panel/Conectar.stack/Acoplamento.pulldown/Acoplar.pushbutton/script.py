@@ -98,10 +98,9 @@ def _level(elem):
 
 
 def _best_conn(conns, ref_pt):
-    """Conector livre mais próximo de ref_pt; fallback para qualquer um."""
+    """Conector livre mais proximo de ref_pt; nao reaproveita conector ocupado."""
     free = [c for c in conns if not c.IsConnected]
-    pool = free if free else list(conns)
-    return min(pool, key=lambda c: c.Origin.DistanceTo(ref_pt)) if pool else None
+    return min(free, key=lambda c: c.Origin.DistanceTo(ref_pt)) if free else None
 
 
 def _conn_by_profile(conns, profile_type):
@@ -116,6 +115,8 @@ def _conn_by_profile(conns, profile_type):
 
 
 def _try_connect(conn_a, conn_b):
+    if not conn_a or not conn_b:
+        return False
     for a, b in [(conn_a, conn_b), (conn_b, conn_a)]:
         try:
             a.ConnectTo(b)
@@ -586,6 +587,8 @@ def _connect_pair(el_a, el_b, sym):
 
     # Caso A: el_b sem CT → adaptador em el_b
     if not c_b:
+        return False, u"Id={}: sem conector real para acoplar".format(
+            el_b.Id.IntegerValue)
         conn_tray = _best_conn(c_a, pt_b)
         try:
             _, connected, _ = _insert_adapter_simple(
@@ -599,6 +602,8 @@ def _connect_pair(el_a, el_b, sym):
 
     # Caso A': el_a sem CT → adaptador em el_a
     if not c_a:
+        return False, u"Id={}: sem conector real para acoplar".format(
+            el_a.Id.IntegerValue)
         conn_tray = _best_conn(c_b, pt_a)
         try:
             _, connected, _ = _insert_adapter_simple(
@@ -613,10 +618,15 @@ def _connect_pair(el_a, el_b, sym):
     # Casos B/C: ambos têm CT → tenta direto
     conn_a = _best_conn(c_a, pt_b)
     conn_b = _best_conn(c_b, pt_a)
+    if not conn_a or not conn_b:
+        return False, u"Id={}: sem conector livre para continuar a corrente".format(
+            el_b.Id.IntegerValue)
     if _connect_direct(conn_a, conn_b):
         return True, None
 
     # Direto falhou — perfis diferentes → adaptador ponte
+    return False, u"Id={}: ConnectTo rejeitado; nada foi apagado".format(
+        el_b.Id.IntegerValue)
     pa, pb = _profile(conn_a), _profile(conn_b)
     if pa != pb:
         if sym is None:
@@ -651,15 +661,7 @@ def main():
         return
 
     # Verifica se algum par precisará de adaptador
-    need_adapter = any(
-        not _ct_connectors(chain[i]) or not _ct_connectors(chain[i + 1])
-        for i in range(len(chain) - 1)
-    )
     sym = None
-    if need_adapter:
-        _, sym = _pick_adapter()
-        if sym is None:
-            return
 
     ok_count = 0
     errors   = []

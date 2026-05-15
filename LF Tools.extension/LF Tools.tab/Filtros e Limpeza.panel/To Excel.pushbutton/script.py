@@ -667,6 +667,36 @@ def _classification_terms(load_classification):
         terms.append(words[:3])
     return terms
 
+def _panel_load_group_label(load_classification):
+    """Agrupa classificacoes eletricas na ordem desejada para quadros."""
+    class_norm = _normalize_text(load_classification)
+    if not class_norm:
+        return u"Outros"
+
+    if "ilumin" in class_norm or class_norm in ("em", "emergencia") or "emerg" in class_norm:
+        return u"Iluminação"
+    if "estabil" in class_norm or "rede" in class_norm:
+        return u"Tomadas estabilizadas"
+    if "tomada" in class_norm or "tug" in class_norm or "tue" in class_norm:
+        return u"Tomadas comuns"
+    if "hvac" in class_norm or "ar condicionado" in class_norm or "climat" in class_norm:
+        return "HVAC"
+    if "motor" in class_norm or "bomba" in class_norm or "elevador" in class_norm:
+        return u"Motores"
+    return str(load_classification or u"Outros")
+
+def _panel_load_group_order(load_classification):
+    label = _panel_load_group_label(load_classification)
+    norm = _normalize_text(label)
+    order = {
+        "iluminacao": 0,
+        "tomadas comuns": 1,
+        "tomadas estabilizadas": 2,
+        "hvac": 3,
+        "motores": 4,
+    }
+    return (order.get(norm, 99), norm)
+
 def _infer_load_classification_from_connected(element, apparent_load):
     """Infere classificacao pela carga conectada que bate com a carga do circuito."""
     target = _parse_excel_number(apparent_load, None)
@@ -822,9 +852,9 @@ def get_excel_format(workbook, properties):
     return _format_pool[key]
 
 # ==================== FUNÇÕES DE EXTRAÇÃO OTIMIZADAS ====================
-def get_panel_schedule_data(schedule_view, use_element_quantity=True):
+def get_panel_schedule_data(schedule_view, use_element_quantity=True, preserve_revit_order=False):
     """Extrai dados dos paineis com cache seguro."""
-    cache_key = ("panel_schedule", schedule_view.Id.IntegerValue, bool(use_element_quantity))
+    cache_key = ("panel_schedule", schedule_view.Id.IntegerValue, bool(use_element_quantity), bool(preserve_revit_order))
     cached = _param_def_cache.get(cache_key)
     if cached:
         return cached
@@ -1010,17 +1040,26 @@ def get_panel_schedule_data(schedule_view, use_element_quantity=True):
                 row_data[u'Carga Dem. (VA)'] = ""
                 row_data[u'Seção do Condutor Adotado'] = conductor
                 row_data[u'Proteção Adotada'] = protection
-                row_data['Classificacao'] = str(load_classification) if load_classification else u'Sem classificacao'
+                row_data['Classificacao Original'] = str(load_classification) if load_classification else u'Sem classificacao'
+                row_data['Classificacao'] = _panel_load_group_label(load_classification)
 
                 data_rows.append(row_data)
             except: 
                 continue
 
-        # Ordenar
-        try:
-            data_rows.sort(key=lambda x: _natural_circuit_sort_key(x.get('Numero do Circuito', x.get(u'Ítem', ''))))
-        except: 
-            pass
+        if preserve_revit_order:
+            try:
+                data_rows.sort(key=lambda x: _natural_circuit_sort_key(x.get('Numero do Circuito', x.get(u'Ítem', ''))))
+            except:
+                pass
+        else:
+            try:
+                data_rows.sort(key=lambda x: (
+                    _panel_load_group_order(x.get('Classificacao', '')),
+                    _natural_circuit_sort_key(x.get('Numero do Circuito', x.get(u'Ítem', '')))
+                ))
+            except:
+                pass
 
         result = data_rows, headers
         _param_def_cache[cache_key] = result
@@ -1545,7 +1584,7 @@ def export_xls(targets, file_path, formatted=False):
 
                 # Linha Excel (1-indexed) de cada classificacao na aba de resumo:
                 # linha 1 = cabecalho, dados comecam na linha 2.
-                cls_sorted = sorted(summary_data.keys())
+                cls_sorted = sorted(summary_data.keys(), key=lambda cls: _panel_load_group_order(cls))
                 cls_excel_row = {cls: (i + 2) for i, cls in enumerate(cls_sorted)}
 
                 # Passagem 2: escreve aba principal com FD referenciando a aba de resumo.
@@ -2591,7 +2630,8 @@ class ExportImportWindow(forms.WPFWindow):
             max_preview_rows = 50
 
             if is_panel:
-                rows, headers = get_panel_schedule_data(schedule)
+                keep_revit_order = bool(self.CheckBox_KeepFormat.IsChecked)
+                rows, headers = get_panel_schedule_data(schedule, preserve_revit_order=keep_revit_order)
                 for h in headers:
                     dt.Columns.Add(h)
                 
@@ -2842,6 +2882,7 @@ class ExportImportWindow(forms.WPFWindow):
                 _pb_ctx.__enter__()
             try:
                 self.update_status("Lendo dados...")
+                formatted = bool(self.CheckBox_KeepFormat.IsChecked)
 
                 for i, sch_dict in enumerate(selected):
                     _pb_update(i)
@@ -2852,7 +2893,7 @@ class ExportImportWindow(forms.WPFWindow):
                     sch     = sch_dict['schedule']
 
                     if is_panel:
-                        rows, headers = get_panel_schedule_data(sch)
+                        rows, headers = get_panel_schedule_data(sch, preserve_revit_order=formatted)
                         class RowObj:
                             def __init__(self, d):
                                 self.row_data = d
@@ -2887,8 +2928,6 @@ class ExportImportWindow(forms.WPFWindow):
                     if skipped_names:
                         msg += "\n\nTabelas vazias ignoradas:\n- " + "\n- ".join(skipped_names)
                     return forms.alert(msg)
-
-                formatted = bool(self.CheckBox_KeepFormat.IsChecked)
 
                 _pb_update(len(selected))
                 self.update_status("Gerando Excel ({} abas)...".format(len(targets)))
