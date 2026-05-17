@@ -1047,12 +1047,7 @@ def get_panel_schedule_data(schedule_view, use_element_quantity=True, preserve_r
             except: 
                 continue
 
-        if preserve_revit_order:
-            try:
-                data_rows.sort(key=lambda x: _natural_circuit_sort_key(x.get('Numero do Circuito', x.get(u'Ítem', ''))))
-            except:
-                pass
-        else:
+        if not preserve_revit_order:
             try:
                 data_rows.sort(key=lambda x: (
                     _panel_load_group_order(x.get('Classificacao', '')),

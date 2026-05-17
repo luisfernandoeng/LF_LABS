@@ -1,15 +1,13 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Transfer Settings — Transferência Cirúrgica"
-        Height="720" Width="600"
+        Height="750" Width="620"
         WindowStartupLocation="CenterScreen"
         ResizeMode="CanResizeWithGrip"
         Background="#F2F2F2"
         FontFamily="Segoe UI" FontSize="13">
 
     <Window.Resources>
-
-        <!-- ═══ Paleta Light v2 ═══ -->
         <SolidColorBrush x:Key="PanelColor"     Color="#FFFFFF"/>
         <SolidColorBrush x:Key="BorderColor"     Color="#C8C8C8"/>
         <SolidColorBrush x:Key="InputColor"      Color="#FFFFFF"/>
@@ -20,13 +18,11 @@
         <SolidColorBrush x:Key="TextSecondary"   Color="#777777"/>
         <SolidColorBrush x:Key="TextMuted"       Color="#999999"/>
 
-        <!-- TextBlock padrão -->
         <Style TargetType="TextBlock">
             <Setter Property="FontFamily" Value="Segoe UI"/>
             <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
         </Style>
 
-        <!-- Section header -->
         <Style x:Key="SectionHeader" TargetType="TextBlock">
             <Setter Property="FontFamily" Value="Segoe UI"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
@@ -35,30 +31,12 @@
             <Setter Property="Margin"     Value="0,0,0,5"/>
         </Style>
 
-        <!-- Category header (dentro de Expanders) -->
-        <Style x:Key="CategoryHeader" TargetType="TextBlock">
-            <Setter Property="FontFamily" Value="Segoe UI"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="FontSize"   Value="12"/>
-            <Setter Property="Foreground" Value="{StaticResource AccentBlue}"/>
-        </Style>
-
-        <!-- Hint text -->
-        <Style x:Key="Hint" TargetType="TextBlock">
-            <Setter Property="Foreground"   Value="#777"/>
-            <Setter Property="FontSize"     Value="11"/>
-            <Setter Property="TextWrapping" Value="Wrap"/>
-            <Setter Property="Margin"       Value="0,2,0,4"/>
-        </Style>
-
-        <!-- ComboBox -->
         <Style TargetType="ComboBox">
             <Setter Property="Height"    Value="28"/>
             <Setter Property="Margin"    Value="0,5,0,0"/>
             <Setter Property="FontSize"  Value="13"/>
         </Style>
 
-        <!-- TextBox -->
         <Style TargetType="TextBox">
             <Setter Property="Height"       Value="28"/>
             <Setter Property="FontSize"     Value="13"/>
@@ -66,67 +44,51 @@
             <Setter Property="BorderBrush"  Value="#AAAAAA"/>
         </Style>
 
-        <!-- CheckBox mínimo (para itens dinâmicos via Python) -->
-        <Style x:Key="ModernCheckBox" TargetType="CheckBox">
-            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
-            <Setter Property="FontSize"   Value="13"/>
-            <Setter Property="Margin"     Value="0,4"/>
-            <Setter Property="Cursor"     Value="Hand"/>
-        </Style>
-
-        <!-- CheckBox de item (sub-nível) -->
-        <Style x:Key="ItemCheckBox" TargetType="CheckBox">
-            <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
-            <Setter Property="FontSize"   Value="11"/>
-            <Setter Property="Margin"     Value="20,2,0,2"/>
-            <Setter Property="Cursor"     Value="Hand"/>
-        </Style>
-
-        <!-- Botão primário (Transferir) -->
         <Style x:Key="BtnPrimary" TargetType="Button">
-            <Setter Property="Background"       Value="#0078D7"/>
-            <Setter Property="Foreground"       Value="White"/>
-            <Setter Property="FontSize"         Value="13"/>
-            <Setter Property="FontWeight"       Value="SemiBold"/>
-            <Setter Property="Padding"          Value="28,7"/>
-            <Setter Property="BorderThickness"  Value="0"/>
-            <Setter Property="Cursor"           Value="Hand"/>
+            <Setter Property="Background"      Value="#0078D7"/>
+            <Setter Property="Foreground"      Value="White"/>
+            <Setter Property="FontSize"        Value="13"/>
+            <Setter Property="FontWeight"      Value="SemiBold"/>
+            <Setter Property="Padding"         Value="28,7"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor"          Value="Hand"/>
         </Style>
 
-        <!-- Botão secundário (Cancelar) -->
         <Style x:Key="BtnCancel" TargetType="Button">
-            <Setter Property="Background"       Value="#E0E0E0"/>
-            <Setter Property="Foreground"       Value="#333"/>
-            <Setter Property="FontSize"         Value="13"/>
-            <Setter Property="Padding"          Value="28,7"/>
-            <Setter Property="BorderThickness"  Value="0"/>
-            <Setter Property="Cursor"           Value="Hand"/>
+            <Setter Property="Background"      Value="#E0E0E0"/>
+            <Setter Property="Foreground"      Value="#333"/>
+            <Setter Property="FontSize"        Value="13"/>
+            <Setter Property="Padding"         Value="28,7"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor"          Value="Hand"/>
         </Style>
 
-        <!-- Botão pequeno (Todos/Nenhum) -->
         <Style x:Key="BtnSmall" TargetType="Button">
-            <Setter Property="Background"       Value="#E0E0E0"/>
-            <Setter Property="Foreground"       Value="#333"/>
-            <Setter Property="FontSize"         Value="11"/>
-            <Setter Property="Padding"          Value="10,3"/>
-            <Setter Property="BorderThickness"  Value="0"/>
-            <Setter Property="Cursor"           Value="Hand"/>
-            <Setter Property="Margin"           Value="0,0,6,0"/>
+            <Setter Property="Background"      Value="#E0E0E0"/>
+            <Setter Property="Foreground"      Value="#333"/>
+            <Setter Property="FontSize"        Value="11"/>
+            <Setter Property="Padding"         Value="10,3"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor"          Value="Hand"/>
+            <Setter Property="Margin"          Value="0,0,6,0"/>
         </Style>
 
+        <Style TargetType="TabItem">
+            <Setter Property="FontSize"   Value="12"/>
+            <Setter Property="Padding"    Value="16,6"/>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="16,14,16,12">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/> <!-- Título -->
-            <RowDefinition Height="Auto"/> <!-- Documento fonte -->
-            <RowDefinition Height="Auto"/> <!-- Pesquisa -->
-            <RowDefinition Height="*"/>    <!-- Lista de standards -->
-            <RowDefinition Height="Auto"/> <!-- Info -->
-            <RowDefinition Height="Auto"/> <!-- Botões -->
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- ═══ TÍTULO ═══ -->
+        <!-- TÍTULO -->
         <StackPanel Grid.Row="0" Margin="0,0,0,12">
             <TextBlock Text="Transfer Settings" FontSize="20" FontWeight="SemiBold"
                        Foreground="{StaticResource AccentBlue}" HorizontalAlignment="Center"/>
@@ -135,56 +97,97 @@
                        HorizontalAlignment="Center" Margin="0,3,0,0"/>
         </StackPanel>
 
-        <!-- ═══ DOCUMENTO FONTE ═══ -->
+        <!-- DOCUMENTO FONTE -->
         <GroupBox Grid.Row="1" Header="Documento Fonte" Margin="0,0,0,8"
                   Padding="10,6,10,10" BorderBrush="#C8C8C8" Background="White">
             <ComboBox x:Name="cb_SourceDoc"/>
         </GroupBox>
 
-        <!-- ═══ PESQUISA ═══ -->
-        <Border Grid.Row="2" BorderBrush="#C8C8C8" BorderThickness="1"
-                Background="White" CornerRadius="4" Padding="6,2" Margin="0,0,0,8">
-            <Grid>
-                <TextBlock x:Name="txt_SearchHint" Text="🔍 Pesquisar standards..."
-                           Foreground="{StaticResource TextMuted}" FontSize="12"
-                           VerticalAlignment="Center" Margin="6,0,0,0" IsHitTestVisible="False"/>
-                <TextBox x:Name="txt_Search" Background="Transparent"
-                         Foreground="{StaticResource TextPrimary}"
-                         BorderThickness="0" FontSize="12"
-                         VerticalAlignment="Center" Height="24"/>
-            </Grid>
-        </Border>
+        <!-- TABS -->
+        <TabControl Grid.Row="2" x:Name="tab_main" Background="Transparent" BorderBrush="#C8C8C8">
 
-        <!-- ═══ LISTA DE STANDARDS ═══ -->
-        <Border Grid.Row="3" BorderBrush="#C8C8C8" BorderThickness="1"
-                Background="White" CornerRadius="4" Padding="10">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                </Grid.RowDefinitions>
+            <!-- ═══ ABA: STANDARDS ═══ -->
+            <TabItem Header="Standards">
+                <Grid Margin="0,8,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
 
-                <Grid Grid.Row="0" Margin="0,0,0,6">
-                    <TextBlock Text="Standards Disponíveis" Style="{StaticResource SectionHeader}"
-                               VerticalAlignment="Center"/>
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button x:Name="btn_SelectAll"  Content="Todos"  Style="{StaticResource BtnSmall}"/>
-                        <Button x:Name="btn_SelectNone" Content="Nenhum" Style="{StaticResource BtnSmall}"/>
-                    </StackPanel>
+                    <!-- Pesquisa -->
+                    <Border Grid.Row="0" BorderBrush="#C8C8C8" BorderThickness="1"
+                            Background="White" CornerRadius="4" Padding="6,2" Margin="0,0,0,8">
+                        <Grid>
+                            <TextBlock x:Name="txt_SearchHint" Text="🔍 Pesquisar standards..."
+                                       Foreground="{StaticResource TextMuted}" FontSize="12"
+                                       VerticalAlignment="Center" Margin="6,0,0,0" IsHitTestVisible="False"/>
+                            <TextBox x:Name="txt_Search" Background="Transparent"
+                                     Foreground="{StaticResource TextPrimary}"
+                                     BorderThickness="0" FontSize="12"
+                                     VerticalAlignment="Center" Height="24"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- Lista -->
+                    <Border Grid.Row="1" BorderBrush="#C8C8C8" BorderThickness="1"
+                            Background="White" CornerRadius="4" Padding="10">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <Grid Grid.Row="0" Margin="0,0,0,6">
+                                <TextBlock Text="Standards Disponíveis" Style="{StaticResource SectionHeader}"
+                                           VerticalAlignment="Center"/>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                    <Button x:Name="btn_SelectAll"  Content="Todos"  Style="{StaticResource BtnSmall}"/>
+                                    <Button x:Name="btn_SelectNone" Content="Nenhum" Style="{StaticResource BtnSmall}"/>
+                                </StackPanel>
+                            </Grid>
+                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                                <StackPanel x:Name="sp_Standards">
+                                    <TextBlock Text="Selecione um documento fonte acima." FontSize="11"
+                                               Foreground="{StaticResource TextMuted}" FontStyle="Italic" Margin="0,10"/>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Grid>
+                    </Border>
                 </Grid>
+            </TabItem>
 
-                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                    <StackPanel x:Name="sp_Standards">
-                        <TextBlock Text="Selecione um documento fonte acima." FontSize="11"
-                                   Foreground="{StaticResource TextMuted}" FontStyle="Italic"
-                                   Margin="0,10"/>
-                    </StackPanel>
-                </ScrollViewer>
-            </Grid>
-        </Border>
+            <!-- ═══ ABA: PARÂMETROS DE FAMÍLIA ═══ -->
+            <TabItem Header="Parâmetros de Família">
+                <Grid Margin="0,8,0,0">
+                    <Border BorderBrush="#C8C8C8" BorderThickness="1"
+                            Background="White" CornerRadius="4" Padding="10">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <Grid Grid.Row="0" Margin="0,0,0,6">
+                                <TextBlock Text="Tipos de Família Disponíveis" Style="{StaticResource SectionHeader}"
+                                           VerticalAlignment="Center"/>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                    <Button x:Name="btn_FamSelectAll"  Content="Todos"  Style="{StaticResource BtnSmall}"/>
+                                    <Button x:Name="btn_FamSelectNone" Content="Nenhum" Style="{StaticResource BtnSmall}"/>
+                                </StackPanel>
+                            </Grid>
+                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                                <StackPanel x:Name="sp_FamilyTypes">
+                                    <TextBlock Text="Selecione um documento fonte acima." FontSize="11"
+                                               Foreground="{StaticResource TextMuted}" FontStyle="Italic" Margin="0,10"/>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </TabItem>
 
-        <!-- ═══ INFO ═══ -->
-        <Border Grid.Row="4" Background="{StaticResource SubtleSurface}"
+        </TabControl>
+
+        <!-- INFO -->
+        <Border Grid.Row="3" Background="{StaticResource SubtleSurface}"
                 BorderBrush="#C8C8C8" BorderThickness="1" CornerRadius="4"
                 Padding="10" Margin="0,8,0,0">
             <TextBlock x:Name="lbl_Info"
@@ -193,8 +196,8 @@
                        FontStyle="Italic" TextWrapping="Wrap"/>
         </Border>
 
-        <!-- ═══ BOTÕES ═══ -->
-        <StackPanel Grid.Row="5" Orientation="Horizontal"
+        <!-- BOTÕES -->
+        <StackPanel Grid.Row="4" Orientation="Horizontal"
                     HorizontalAlignment="Right" Margin="0,12,0,0">
             <Button x:Name="btn_Cancel"   Content="Cancelar"
                     Style="{StaticResource BtnCancel}" Margin="0,0,10,0"/>
