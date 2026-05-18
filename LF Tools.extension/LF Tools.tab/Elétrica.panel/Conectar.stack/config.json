@@ -1,0 +1,14 @@
+{
+  "angle_mode_plan": "90", 
+  "selection_mode": "caixa", 
+  "service_mode": "copy", 
+  "angle_mode_vertical": "90", 
+  "multi_select": false, 
+  "conduit_type_vertical": "(Usar Último Desenhado)", 
+  "service_type": "", 
+  "conduit_type_plan": "(Usar Último Desenhado)", 
+  "debug_mode": false, 
+  "routing_strategy": "auto", 
+  "copy_param": "Tipo de serviço", 
+  "default_diameter": ""
+}

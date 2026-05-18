@@ -191,11 +191,17 @@
                             </StackPanel>
                         </GroupBox>
 
-                        <GroupBox Header="Tipo de Serviço" Style="{StaticResource Gb}">
+                        <GroupBox Header="Tipo de Serviço / Sistema" Style="{StaticResource Gb}">
                             <StackPanel>
                                 <TextBlock Style="{StaticResource Hint}"
-                                    Text="Preenche o parâmetro 'Tipo de Serviço' nos eletrodutos criados. Deixe em branco para não preencher."/>
+                                    Text="Define como preencher o parâmetro 'Tipo de Sistema' / 'Tipo de Serviço' nos eletrodutos criados."/>
+                                <RadioButton x:Name="rb_svc_none"  Content="Não preencher"/>
+                                <RadioButton x:Name="rb_svc_fixed" Content="Texto fixo:"/>
                                 <TextBox x:Name="tb_service"/>
+                                <RadioButton x:Name="rb_svc_copy"  Content="Copiar parâmetro do elemento conectado:"/>
+                                <TextBox x:Name="tb_copy_param" IsEnabled="False"/>
+                                <TextBlock Style="{StaticResource Hint}"
+                                    Text="Nome exato do parâmetro (ex: Tipo de Sistema). O eletroduto precisa ter o mesmo parâmetro."/>
                             </StackPanel>
                         </GroupBox>
 

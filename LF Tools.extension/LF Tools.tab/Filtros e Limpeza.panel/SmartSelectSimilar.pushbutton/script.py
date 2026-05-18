@@ -17,9 +17,10 @@ clr.AddReference('PresentationCore')
 clr.AddReference('PresentationFramework')
 clr.AddReference('WindowsBase')
 
-import System
 from System.Windows import Thickness, Visibility, FontWeights
-from System.Windows.Controls import CheckBox, TextBlock
+from System.Windows.Controls import (CheckBox, TextBlock,
+                                     StackPanel as WpfStackPanel,
+                                     Border as WpfBorder)
 from System.Windows.Media import SolidColorBrush, Color
 from System.Collections.Generic import List
 
@@ -124,6 +125,17 @@ def set_highlight(view, element_ids, apply=True):
 # ── Extração completa de parâmetros (apenas para exibição na UI) ──────────
 
 _BLACKLIST = frozenset([u'mm\xb2', u'Fase ', u'Fase-', u'Neutro', u'Terra', u'Retorno'])
+
+# Parâmetros que sempre aparecem no topo (na ordem definida)
+_PINNED = [
+    u'Category', u'Family', u'Type', u'Level',
+    u'Comments', u'Mark', u'Workset',
+    u'Phase Created', u'Design Option',
+    u'Tipo de Carga',
+    u'Circuito', u'N\xba do Circuito', u'N\xb0 do Circuito',
+    u'N\xfamero do Circuito', u'N_Circuito', u'N_circuito',
+]
+_PINNED_SET = frozenset(_PINNED)
 
 
 def _to_text(value):
@@ -254,6 +266,31 @@ def get_element_parameters(element):
         pass
 
     return params
+
+
+def get_empty_param_names(element):
+    """Retorna set com nomes de parâmetros que existem mas não têm valor."""
+    names = set()
+
+    def _collect(param_set):
+        for p in param_set:
+            try:
+                if not p.HasValue:
+                    names.add(p.Definition.Name)
+            except:
+                continue
+
+    try:
+        _collect(element.Parameters)
+    except:
+        pass
+    try:
+        et = element.Document.GetElement(element.GetTypeId())
+        if et:
+            _collect(et.Parameters)
+    except:
+        pass
+    return names
 
 
 # ── Leitura rápida de valor único (para filtragem) ────────────────────────
@@ -483,11 +520,12 @@ class SmartSelectSimilarWindow(forms.WPFWindow):
         self._target_doc        = target_doc
         self._link_inst         = link_inst
         self._cat_id            = ref_elem.Category.Id if ref_elem.Category else None
-        self._params            = get_element_parameters(ref_elem)
-        self._criteria          = []
-        self._matches           = []
-        self._highlighted       = []
-        self._custom_param_names = set()
+        self._params             = get_element_parameters(ref_elem)
+        self._empty_params       = get_empty_param_names(ref_elem) - set(self._params.keys())
+        self._criteria           = []
+        self._matches            = []
+        self._highlighted        = []
+        self._pinned_param_names = set()
 
         prefix = u'[VÍNCULO] ' if is_linked else u''
         self.ElementNameLabel.Text = u'Objeto: ' + prefix + getattr(ref_elem, 'Name', u'?')
@@ -537,75 +575,111 @@ class SmartSelectSimilarWindow(forms.WPFWindow):
     # ── Parâmetros ─────────────────────────────────────────────────────────
 
     def _populate_params(self):
-        self._custom_param_names = set()
         self.ParametersPanel.Children.Clear()
-        groups = {
-            u'Básicas':      ['Category', 'Family', 'Type', 'Level'],
-            u'Identidade':   ['Comments', 'Mark', 'Workset'],
-            u'Projeto':      ['Phase Created', 'Design Option'],
-            u'Customizados': [],
-        }
-        base = (groups[u'Básicas'] + groups[u'Identidade'] + groups[u'Projeto'])
-        for k in sorted(self._params.keys()):
-            if k not in base:
-                groups[u'Customizados'].append(k)
+        self._pinned_param_names = set()
 
-        ACCENT  = SolidColorBrush(Color.FromRgb(0x00, 0x78, 0xD7))
-        MUTED   = SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA))
+        C_ACCENT = SolidColorBrush(Color.FromRgb(0x00, 0x78, 0xD7))
+        C_LABEL  = SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55))
+        C_MUTED  = SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA))
+        C_NAME   = SolidColorBrush(Color.FromRgb(0x22, 0x22, 0x22))
+        C_VAL    = SolidColorBrush(Color.FromRgb(0x77, 0x77, 0x77))
 
-        for group_name in [u'Básicas', u'Identidade', u'Projeto', u'Customizados']:
-            params = groups[group_name]
-            if not params:
-                continue
-            is_custom = (group_name == u'Customizados')
-            header_added = False
-            for p_name in params:
-                if any(b in p_name for b in _BLACKLIST):
-                    continue
-                if p_name not in self._params:
-                    continue
-                if not header_added:
-                    hdr            = TextBlock()
-                    hdr.Text       = group_name.upper()
-                    hdr.Foreground = ACCENT
-                    hdr.FontWeight = FontWeights.SemiBold
-                    hdr.Margin     = Thickness(0, 14, 0, 4)
-                    hdr.FontSize   = 10
-                    if is_custom:
-                        hdr.Tag        = u'custom_header'
-                        hdr.Visibility = Visibility.Collapsed
-                    self.ParametersPanel.Children.Add(hdr)
-                    header_added = True
+        all_available = set(self._params.keys()) | self._empty_params
 
-                val     = self._params.get(p_name, u'')
-                display = val if (val and str(val).strip()) else u'<vazio>'
-                cb           = CheckBox()
-                cb.Content   = u'{} : {}'.format(p_name, display)
-                cb.Tag       = p_name
-                cb.IsChecked = p_name in ('Category', 'Family', 'Type')
-                cb.Checked   += self._on_criteria
-                cb.Unchecked += self._on_criteria
-                if is_custom:
-                    self._custom_param_names.add(p_name)
-                    cb.Visibility = Visibility.Collapsed
+        pinned_list = [
+            p for p in _PINNED
+            if p in all_available and not any(b in p for b in _BLACKLIST)
+        ]
+        filled_names = sorted(
+            [k for k in self._params if k not in _PINNED_SET and not any(b in k for b in _BLACKLIST)],
+            key=lambda x: x.lower()
+        )
+        empty_names = sorted(
+            [k for k in self._empty_params if k not in _PINNED_SET and not any(b in k for b in _BLACKLIST)],
+            key=lambda x: x.lower()
+        )
+
+        AUTO_CHECKED = {u'Category', u'Family', u'Type'}
+
+        def _add_header(text, color, top_margin=6):
+            hdr            = TextBlock()
+            hdr.Text       = text
+            hdr.Foreground = color
+            hdr.FontWeight = FontWeights.SemiBold
+            hdr.Margin     = Thickness(0, top_margin, 0, 2)
+            hdr.FontSize   = 10
+            self.ParametersPanel.Children.Add(hdr)
+
+        def _add_divider():
+            sep            = WpfBorder()
+            sep.Height     = 1
+            sep.Background = SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0))
+            sep.Margin     = Thickness(0, 10, 0, 0)
+            self.ParametersPanel.Children.Add(sep)
+
+        def _trunc(text, max_len=42):
+            return text if len(text) <= max_len else text[:max_len - 1] + u'…'
+
+        def _make_cb(p_name, is_checked, name_color, val_text=None):
+            cb         = CheckBox()
+            cb.Tag     = p_name
+            cb.IsChecked = is_checked
+            cb.Margin  = Thickness(0, 3, 0, 3)
+            cb.Checked   += self._on_criteria
+            cb.Unchecked += self._on_criteria
+
+            if val_text:
+                sp = WpfStackPanel()
+
+                tb_n           = TextBlock()
+                tb_n.Text      = p_name
+                tb_n.Foreground = name_color
+                tb_n.FontSize  = 13
+                sp.Children.Add(tb_n)
+
+                tb_v           = TextBlock()
+                tb_v.Text      = _trunc(val_text)
+                tb_v.Foreground = C_VAL
+                tb_v.FontSize  = 11
+                tb_v.Margin    = Thickness(0, 0, 0, 2)
+                sp.Children.Add(tb_v)
+
+                cb.Content = sp
+            else:
+                tb            = TextBlock()
+                tb.Text       = p_name
+                tb.Foreground = name_color
+                tb.FontSize   = 13
+                cb.Content    = tb
+
+            return cb
+
+        if pinned_list:
+            _add_header(u'PRINCIPAIS', C_ACCENT, top_margin=4)
+            for p_name in pinned_list:
+                self._pinned_param_names.add(p_name)
+                has_val  = p_name in self._params
+                val_text = _to_text(self._params.get(p_name, u'')).strip() if has_val else None
+                cb = _make_cb(p_name, p_name in AUTO_CHECKED,
+                              C_NAME if has_val else C_MUTED,
+                              val_text=val_text)
                 self.ParametersPanel.Children.Add(cb)
 
-        # Nota sobre parâmetros customizados (só aparece quando não está buscando)
-        custom_count = sum(
-            1 for k in groups[u'Customizados']
-            if k in self._params and not any(b in k for b in _BLACKLIST)
-        )
-        if custom_count > 0:
-            hint = TextBlock()
-            hint.Tag        = u'custom_hint'
-            hint.Text       = u'⋯  {} parâmetro(s) adicional(is) — use a busca acima'.format(custom_count)
-            hint.Foreground = MUTED
-            hint.FontSize   = 10
-            hint.FontStyle  = System.Windows.FontStyles.Italic
-            hint.Margin     = Thickness(0, 10, 0, 2)
-            self.ParametersPanel.Children.Add(hint)
+        if filled_names:
+            _add_divider()
+            _add_header(u'PREENCHIDOS  –  {}'.format(len(filled_names)), C_LABEL)
+            for p_name in filled_names:
+                val_text = _to_text(self._params.get(p_name, u'')).strip() or u'—'
+                cb = _make_cb(p_name, False, C_NAME, val_text=val_text)
+                self.ParametersPanel.Children.Add(cb)
 
-        # Popula critérios iniciais (Category + Family já marcados)
+        if empty_names:
+            _add_divider()
+            _add_header(u'SEM VALOR  –  {}'.format(len(empty_names)), C_MUTED)
+            for p_name in empty_names:
+                cb = _make_cb(p_name, False, C_MUTED)
+                self.ParametersPanel.Children.Add(cb)
+
         self._on_criteria(None, None)
 
     # ── Eventos ────────────────────────────────────────────────────────────
@@ -615,26 +689,36 @@ class SmartSelectSimilarWindow(forms.WPFWindow):
         focused = self.SearchBox.IsKeyboardFocused
         self.SearchHint.Visibility = Visibility.Collapsed if (txt or focused) else Visibility.Visible
 
+    @staticmethod
+    def _cb_text(cb):
+        c = cb.Content
+        if c is None:
+            return u''
+        try:
+            return u' '.join(
+                str(getattr(tb, 'Text', '') or '')
+                for tb in c.Children
+                if isinstance(tb, TextBlock)
+            ).lower()
+        except:
+            pass
+        try:
+            return str(c.Text or '').lower()
+        except:
+            return str(c or '').lower()
+
     def _on_search(self, s, a):
-        txt       = str(self.SearchBox.Text or u'').lower()
-        searching = bool(txt)
-        self.SearchHint.Visibility = Visibility.Collapsed if searching else Visibility.Visible
+        txt = str(self.SearchBox.Text or u'').lower()
+        self.SearchHint.Visibility = Visibility.Collapsed if txt else Visibility.Visible
         for child in self.ParametersPanel.Children:
             if isinstance(child, CheckBox):
-                tag       = str(child.Tag or u'')
-                is_custom = tag in self._custom_param_names
-                if is_custom:
-                    # Parâmetros customizados: visíveis apenas ao buscar
-                    visible = searching and (txt in str(child.Content or u'').lower())
+                if str(child.Tag or u'') in self._pinned_param_names:
+                    child.Visibility = Visibility.Visible
                 else:
-                    visible = (not txt) or (txt in str(child.Content or u'').lower())
-                child.Visibility = Visibility.Visible if visible else Visibility.Collapsed
-            elif isinstance(child, TextBlock):
-                tag = str(child.Tag or u'')
-                if tag == u'custom_header':
-                    child.Visibility = Visibility.Visible if searching else Visibility.Collapsed
-                elif tag == u'custom_hint':
-                    child.Visibility = Visibility.Collapsed if searching else Visibility.Visible
+                    visible = (not txt) or (txt in self._cb_text(child))
+                    child.Visibility = Visibility.Visible if visible else Visibility.Collapsed
+            else:
+                child.Visibility = Visibility.Visible
 
     def _on_scope(self, s, a):
         self._update_preview()
@@ -676,22 +760,9 @@ class SmartSelectSimilarWindow(forms.WPFWindow):
 
     def _batch_checks(self, tags):
         tags_set = set(tags)
-        has_custom_checked = False
         for c in self.ParametersPanel.Children:
             if isinstance(c, CheckBox):
-                tag = str(c.Tag or u'')
-                c.IsChecked = tag in tags_set
-                # Custom param marcado deve ficar visível
-                if tag in self._custom_param_names:
-                    if tag in tags_set:
-                        c.Visibility = Visibility.Visible
-                        has_custom_checked = True
-                    else:
-                        c.Visibility = Visibility.Collapsed
-            elif isinstance(c, TextBlock):
-                tag = str(c.Tag or u'')
-                if tag == u'custom_header':
-                    c.Visibility = Visibility.Visible if has_custom_checked else Visibility.Collapsed
+                c.IsChecked = str(c.Tag or u'') in tags_set
         self._on_criteria(None, None)
 
     def _preset_family_type(self, s, a):

@@ -1521,7 +1521,7 @@ def export_xls(targets, file_path, formatted=False):
 
             ws = workbook.add_worksheet(sheet_name)
 
-            if is_panel_schedule:
+            if is_panel_schedule and formatted:
                 ws.set_tab_color("#70AD47")
                 ws.freeze_panes(5, 0)
                 ws.set_column(0, 0, 3)
@@ -1660,6 +1660,271 @@ def export_xls(targets, file_path, formatted=False):
                         if len(cls_key) > widths_sum[0]:
                             widths_sum[0] = min(len(cls_key), 45)
                     last_data_row = sum_row  # linha do total (1-indexed = sum_row+1)
+                    ws_sum.write(sum_row, 0, "TOTAL", fmt_sum_total)
+                    ws_sum.write(sum_row, 1,
+                        sum(sd['count'] for sd in summary_data.values()), fmt_panel_int)
+                    ws_sum.write_formula(sum_row, 2,
+                        "=SUM(C2:C{})".format(last_data_row), fmt_panel_num)
+                    ws_sum.write(sum_row, 3, "", fmt_sum_total)
+                    ws_sum.write_formula(sum_row, 4,
+                        "=SUM(E2:E{})".format(last_data_row), fmt_panel_num)
+                    for c, w in enumerate(widths_sum):
+                        ws_sum.set_column(c, c, w + 2)
+
+            elif is_panel_schedule:
+                # ── Quadro de cargas agrupado: mesmo visual do formatado + grupos e subtotais ────
+                from collections import OrderedDict
+
+                # Formatos exclusivos deste modo
+                fmt_grp_hdr = get_excel_format(workbook, {
+                    "bold": True, "italic": True,
+                    "bg_color": "#9DC3E6", "border": 1,
+                    "align": "left", "valign": "vcenter", "font_size": 11,
+                })
+                fmt_subtotal_txt = get_excel_format(workbook, {
+                    "bold": True, "bg_color": "#E2EFDA", "border": 1,
+                    "align": "left", "valign": "vcenter",
+                })
+                fmt_subtotal_num = get_excel_format(workbook, {
+                    "bold": True, "bg_color": "#E2EFDA", "border": 1,
+                    "align": "center", "valign": "vcenter",
+                    "num_format": "#,##0.00",
+                })
+                fmt_total_panel_txt = get_excel_format(workbook, {
+                    "bold": True, "bg_color": "#B7E1A1", "border": 1,
+                    "align": "left", "valign": "vcenter",
+                })
+                fmt_total_panel_num = get_excel_format(workbook, {
+                    "bold": True, "bg_color": "#B7E1A1", "border": 1,
+                    "align": "center", "valign": "vcenter",
+                    "num_format": "#,##0.00",
+                })
+                fmt_grand_total_txt = get_excel_format(workbook, {
+                    "bold": True, "bg_color": "#70AD47", "font_color": "white",
+                    "border": 1, "align": "left", "valign": "vcenter",
+                })
+                fmt_grand_total_num = get_excel_format(workbook, {
+                    "bold": True, "bg_color": "#70AD47", "font_color": "white",
+                    "border": 1, "align": "center", "valign": "vcenter",
+                    "num_format": "#,##0.00",
+                })
+
+                # Mesma estrutura de colunas do modo formatado
+                ws.set_tab_color("#70AD47")
+                ws.freeze_panes(5, 0)
+                ws.set_column(0, 0, 3)
+                ws.set_column(1, 1, 8)
+                ws.set_column(2, 5, 12)
+                ws.set_column(6, 6, 8)
+                ws.set_column(7, 7, 13)
+                ws.set_column(8, 8, 12)
+                ws.set_column(9, 9, 12)
+                ws.set_column(10, 10, 12)
+                ws.set_column(11, 11, 12)
+                ws.set_column(12, 12, 22)
+                ws.set_column(13, 13, 18)
+
+                ws.merge_range(0, 1, 0, 13, "ESTUDO DE CARGAS", fmt_panel_title)
+                ws.write(1, 1, "OBRA: " + sanitize_filename(os.path.splitext(os.path.basename(file_path))[0]), fmt_panel_text)
+                ws.write(2, 1, u"Responsável: ", fmt_panel_text)
+                ws.write(3, 1, "Representa a carga total do(a): " + sheet_name, fmt_panel_text)
+
+                headers_panel = [
+                    u"Ítem", u"Descrição equipamento", "Quant.",
+                    u"Carga \nUnitária\n(W)", u"Carga\nTotal\n(W)",
+                    u"Fator de \nDemanda", u"Fator de \nPotência",
+                    u"Carga \nDem.\n(VA)", u"Seção do Condutor\nAdotado",
+                    u"Proteção\nAdotada"
+                ]
+                ws.write(4, 1, headers_panel[0], fmt_panel_header)
+                ws.merge_range(4, 2, 4, 5, headers_panel[1], fmt_panel_header)
+                for col, label in [(6, headers_panel[2]), (7, headers_panel[3]),
+                                   (8, headers_panel[4]), (9, headers_panel[5]),
+                                   (10, headers_panel[6]), (11, headers_panel[7]),
+                                   (12, headers_panel[8]), (13, headers_panel[9])]:
+                    ws.write(4, col, label, fmt_panel_header)
+                ws.set_row(4, 42)
+
+                # Passagem 1: acumular resumo por classificação (para aba Classif. de Cargas)
+                summary_data = {}
+                for el in src_elements:
+                    if not hasattr(el, 'row_data'):
+                        continue
+                    data = el.row_data
+                    cls_name = data.get('Classificacao', '') or u'Sem classificacao'
+                    if cls_name not in summary_data:
+                        summary_data[cls_name] = {'count': 0, 'installed_w': 0.0, 'fds': []}
+                    summary_data[cls_name]['count'] += 1
+                    try:
+                        q = float(_clean_number(data.get('Quant.'), 1) or 1)
+                        uw = float(_clean_number(data.get(u'Carga Unitária (W)'), 0) or 0)
+                        fd = float(_clean_number(data.get('Fator de Demanda'), 1) or 1)
+                        summary_data[cls_name]['installed_w'] += q * uw
+                        summary_data[cls_name]['fds'].append(fd)
+                    except:
+                        pass
+
+                cls_sorted = sorted(summary_data.keys(), key=lambda cls: _panel_load_group_order(cls))
+                cls_excel_row = {cls: (i + 2) for i, cls in enumerate(cls_sorted)}
+
+                # Passagem 2: agrupar circuitos por painel → classificação
+                panels_dict = OrderedDict()
+                for el in src_elements:
+                    if not hasattr(el, 'row_data'):
+                        continue
+                    data = el.row_data
+                    pname = data.get('Nome do Quadro', sheet_name)
+                    cls = data.get('Classificacao', '') or u'Sem classificacao'
+                    if pname not in panels_dict:
+                        panels_dict[pname] = OrderedDict()
+                    if cls not in panels_dict[pname]:
+                        panels_dict[pname][cls] = []
+                    panels_dict[pname][cls].append(data)
+
+                # Passagem 3: escrever na aba principal agrupado
+                row = 5
+                panel_total_rows = []
+
+                for pname, cls_groups in panels_dict.items():
+                    # Sub-cabeçalho do painel (mesmo do modo formatado)
+                    ws.merge_range(row, 2, row, 5, "Painel: " + str(pname), fmt_panel_info)
+                    for col in [1, 6, 7, 8, 9, 10, 11, 12, 13]:
+                        ws.write(row, col, "", fmt_panel_info)
+                    row += 1
+
+                    cls_sorted_local = sorted(
+                        cls_groups.keys(),
+                        key=lambda c: _panel_load_group_order(c)
+                    )
+                    panel_sub_total_rows = []
+
+                    for cls_name in cls_sorted_local:
+                        circuits = cls_groups[cls_name]
+                        fd_row = cls_excel_row.get(cls_name)
+
+                        # Cabeçalho do grupo de classificação
+                        ws.write(row, 1, "", fmt_grp_hdr)
+                        ws.merge_range(row, 2, row, 13,
+                                       u"  " + cls_name.upper(), fmt_grp_hdr)
+                        ws.set_row(row, 20)
+                        row += 1
+
+                        group_first_row = row
+
+                        for data in circuits:
+                            excel_row = row + 1
+                            qty = _clean_number(data.get('Quant.'), 1)
+                            unit_w = _clean_number(data.get(u'Carga Unitária (W)'), "")
+                            demand = _clean_number(data.get('Fator de Demanda'), 1)
+                            power_factor = _clean_number(data.get(u'Fator de Potência'), 1)
+
+                            ws.write(row, 1, data.get(u'Ítem', ""), fmt_panel_text)
+                            ws.merge_range(row, 2, row, 5,
+                                           data.get(u'Descrição equipamento', ""), fmt_panel_text)
+                            ws.write(row, 6, qty, fmt_panel_int)
+                            ws.write(row, 7, unit_w, fmt_panel_num)
+                            ws.write_formula(row, 8, "=H{0}*G{0}".format(excel_row), fmt_panel_num)
+                            if fd_row:
+                                ws.write_formula(row, 9,
+                                    u"='Classif. de Cargas'!D{}".format(fd_row),
+                                    fmt_panel_num, float(demand or 1))
+                            else:
+                                ws.write(row, 9, demand, fmt_panel_num)
+                            ws.write(row, 10, power_factor, fmt_panel_num)
+                            ws.write_formula(row, 11,
+                                "=IF(K{0}=0,0,(G{0}*H{0}*J{0})/K{0})".format(excel_row),
+                                fmt_panel_num)
+                            ws.write(row, 12, data.get(u'Seção do Condutor Adotado', ""), fmt_panel_text)
+                            ws.write(row, 13, data.get(u'Proteção Adotada', ""), fmt_panel_text)
+                            row += 1
+
+                        # Subtotal da classificação
+                        g1 = group_first_row + 1   # 1-indexed
+                        g2 = row                    # 1-indexed (row exclusivo → última linha = row-1+1)
+                        ws.write(row, 1, "", fmt_subtotal_txt)
+                        ws.merge_range(row, 2, row, 7,
+                                       u"Subtotal — " + cls_name, fmt_subtotal_txt)
+                        ws.write_formula(row, 8,
+                            "=SUM(I{0}:I{1})".format(g1, g2), fmt_subtotal_num)
+                        ws.write(row, 9, "", fmt_subtotal_txt)
+                        ws.write(row, 10, "", fmt_subtotal_txt)
+                        ws.write_formula(row, 11,
+                            "=SUM(L{0}:L{1})".format(g1, g2), fmt_subtotal_num)
+                        ws.write(row, 12, "", fmt_subtotal_txt)
+                        ws.write(row, 13, "", fmt_subtotal_txt)
+                        ws.set_row(row, 20)
+                        panel_sub_total_rows.append(row)
+                        row += 1
+
+                    # Total do painel (soma dos subtotais)
+                    if panel_sub_total_rows:
+                        refs_i = "+".join(["I{}".format(r + 1) for r in panel_sub_total_rows])
+                        refs_l = "+".join(["L{}".format(r + 1) for r in panel_sub_total_rows])
+                        ws.write(row, 1, "", fmt_total_panel_txt)
+                        ws.merge_range(row, 2, row, 7,
+                                       u"TOTAL — " + pname, fmt_total_panel_txt)
+                        ws.write_formula(row, 8, "=" + refs_i, fmt_total_panel_num)
+                        ws.write(row, 9, "", fmt_total_panel_txt)
+                        ws.write(row, 10, "", fmt_total_panel_txt)
+                        ws.write_formula(row, 11, "=" + refs_l, fmt_total_panel_num)
+                        ws.write(row, 12, "", fmt_total_panel_txt)
+                        ws.write(row, 13, "", fmt_total_panel_txt)
+                        ws.set_row(row, 22)
+                        panel_total_rows.append(row)
+                        row += 2  # linha de total + linha em branco entre painéis
+
+                # Total geral (apenas quando há mais de um painel)
+                if len(panel_total_rows) > 1:
+                    refs_i = "+".join(["I{}".format(r + 1) for r in panel_total_rows])
+                    refs_l = "+".join(["L{}".format(r + 1) for r in panel_total_rows])
+                    ws.write(row, 1, "", fmt_grand_total_txt)
+                    ws.merge_range(row, 2, row, 7, u"TOTAL GERAL", fmt_grand_total_txt)
+                    ws.write_formula(row, 8, "=" + refs_i, fmt_grand_total_num)
+                    ws.write(row, 9, "", fmt_grand_total_txt)
+                    ws.write(row, 10, "", fmt_grand_total_txt)
+                    ws.write_formula(row, 11, "=" + refs_l, fmt_grand_total_num)
+                    ws.write(row, 12, "", fmt_grand_total_txt)
+                    ws.write(row, 13, "", fmt_grand_total_txt)
+                    ws.set_row(row, 24)
+
+                # Aba "Classif. de Cargas" — idêntica ao modo formatado
+                if summary_data:
+                    ws_sum = workbook.add_worksheet(u"Classif. de Cargas")
+                    ws_sum.set_tab_color("#ED7D31")
+                    ws_sum.freeze_panes(1, 0)
+                    ws_sum.set_row(0, 36)
+                    fmt_sum_total = get_excel_format(workbook, {
+                        "bold": True, "bg_color": "#B7E1A1", "border": 1,
+                        "align": "left", "valign": "vcenter",
+                    })
+                    sum_cols = [
+                        u"Classificação de Carga",
+                        u"Qtd. Circuitos",
+                        u"Pot. Instalada (W)",
+                        u"Fator de Demanda",
+                        u"Pot. Demandada (W)",
+                    ]
+                    for c, h in enumerate(sum_cols):
+                        ws_sum.write(0, c, h, fmt_panel_header)
+                    widths_sum = [len(h) + 2 for h in sum_cols]
+                    sum_row = 1
+                    for cls_key in cls_sorted:
+                        sd = summary_data[cls_key]
+                        inst = round(sd['installed_w'], 2)
+                        fds = sd['fds']
+                        fd_disp = max(set(fds), key=fds.count) if fds else 1.0
+                        excel_sum_row = sum_row + 1
+                        ws_sum.write(sum_row, 0, cls_key, fmt_panel_text)
+                        ws_sum.write(sum_row, 1, sd['count'], fmt_panel_int)
+                        ws_sum.write(sum_row, 2, inst, fmt_panel_num)
+                        ws_sum.write(sum_row, 3, fd_disp, fmt_panel_num)
+                        ws_sum.write_formula(sum_row, 4,
+                            "=C{0}*D{0}".format(excel_sum_row),
+                            fmt_panel_num, round(inst * fd_disp, 2))
+                        sum_row += 1
+                        if len(cls_key) > widths_sum[0]:
+                            widths_sum[0] = min(len(cls_key), 45)
+                    last_data_row = sum_row
                     ws_sum.write(sum_row, 0, "TOTAL", fmt_sum_total)
                     ws_sum.write(sum_row, 1,
                         sum(sd['count'] for sd in summary_data.values()), fmt_panel_int)

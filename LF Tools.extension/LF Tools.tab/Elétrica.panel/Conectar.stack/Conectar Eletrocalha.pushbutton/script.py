@@ -73,6 +73,7 @@ def load_config():
         'default_height': '100',
         'default_offset': '3.00',  # metros
         'use_connector': True,
+        'param_copy': '',
         'debug_mode': False,
     })
 
@@ -89,6 +90,7 @@ class SettingsWindow(forms.WPFWindow):
         self.tb_width.Text = settings.get('default_width', '200')
         self.tb_height.Text = settings.get('default_height', '100')
         self.tb_offset.Text = settings.get('default_offset', '3.00')
+        self.tb_param_copy.Text = settings.get('param_copy', '')
         self.chk_debug.IsChecked = settings.get('debug_mode', False)
         
         if hasattr(self, 'chk_use_connector'):
@@ -123,6 +125,7 @@ class SettingsWindow(forms.WPFWindow):
         s['default_width'] = self.tb_width.Text.strip()
         s['default_height'] = self.tb_height.Text.strip()
         s['default_offset'] = self.tb_offset.Text.strip()
+        s['param_copy'] = self.tb_param_copy.Text.strip()
         try:
             if hasattr(self, 'chk_use_connector'):
                 s['use_connector'] = bool(self.chk_use_connector.IsChecked)
@@ -623,6 +626,36 @@ def execute_connection():
                 else:
                     dbg.debug("Par {}: dist={:.4f} ft > 2.0 ft. Nenhuma curva criada.".format(
                         i + 1, min_dist))
+
+        # ── 6. Copiar parâmetro de texto das eletrocalhas selecionadas ────
+        param_name = settings.get('param_copy', '').strip()
+        if param_name and drawn_trays:
+            param_value = None
+            for el in picked_elements:
+                try:
+                    p = el.LookupParameter(param_name)
+                    if p and p.HasValue:
+                        val = p.AsString()
+                        if val:
+                            param_value = val
+                            dbg.debug("Param '{}' encontrado em Id={}: '{}'".format(
+                                param_name, el.Id, val))
+                            break
+                except Exception:
+                    pass
+            if param_value:
+                for ctray in drawn_trays:
+                    try:
+                        p = ctray.LookupParameter(param_name)
+                        if p and not p.IsReadOnly:
+                            p.Set(param_value)
+                    except Exception:
+                        pass
+                dbg.info("Param '{}' = '{}' copiado para {} eletrocalha(s).".format(
+                    param_name, param_value, len(drawn_trays)))
+            else:
+                dbg.debug("Param '{}' não encontrado ou vazio nos elementos selecionados.".format(
+                    param_name))
 
         # ── Commit ────────────────────────────────────────────────
         t.Commit()

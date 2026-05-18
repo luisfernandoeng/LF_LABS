@@ -84,7 +84,7 @@ def __get_family_name__(obj):
 # =====================================================================
 def load_config():
     return get_script_config(__commandpath__, defaults={
-        'selection_mode':        'conector',
+        'selection_mode':        'caixa',
         'multi_select':          False,
         'angle_mode_plan':       '90',
         'angle_mode_vertical':   '90',
@@ -92,6 +92,8 @@ def load_config():
         'conduit_type_vertical': '',
         'default_diameter':      '',
         'service_type':          '',
+        'service_mode':          'copy',
+        'copy_param':            'Tipo de Sistema',
         'routing_strategy':      'auto',
         'debug_mode':            False,
     })
@@ -133,6 +135,16 @@ class SettingsWindow(object):
         self.rb_sel_caixa    = self.win.FindName("rb_sel_caixa")
         self.tb_diameter     = self.win.FindName("tb_diameter")
         self.tb_service      = self.win.FindName("tb_service")
+        self.rb_svc_none     = self.win.FindName("rb_svc_none")
+        self.rb_svc_fixed    = self.win.FindName("rb_svc_fixed")
+        self.rb_svc_copy     = self.win.FindName("rb_svc_copy")
+        self.tb_copy_param   = self.win.FindName("tb_copy_param")
+        if self.rb_svc_none:
+            self.rb_svc_none.Checked  += self._update_svc_textbox
+        if self.rb_svc_fixed:
+            self.rb_svc_fixed.Checked += self._update_svc_textbox
+        if self.rb_svc_copy:
+            self.rb_svc_copy.Checked  += self._update_svc_textbox
         self.rb_strat_auto   = self.win.FindName("rb_strat_auto")
         self.rb_strat_calc   = self.win.FindName("rb_strat_calc")
         self.chk_debug       = self.win.FindName("chk_debug")
@@ -140,6 +152,12 @@ class SettingsWindow(object):
         # Botões
         self.win.FindName("btn_save").Click   += self.save_click
         self.win.FindName("btn_cancel").Click += self.cancel_click
+
+    def _update_svc_textbox(self, sender, e):
+        is_fixed = bool(self.rb_svc_fixed and self.rb_svc_fixed.IsChecked)
+        is_copy  = bool(self.rb_svc_copy  and self.rb_svc_copy.IsChecked)
+        if self.tb_service:    self.tb_service.IsEnabled   = is_fixed
+        if self.tb_copy_param: self.tb_copy_param.IsEnabled = is_copy
 
     def _load_conduit_types(self):
         collector = FilteredElementCollector(doc).OfClass(clr.GetClrType(ConduitType))
@@ -188,6 +206,14 @@ class SettingsWindow(object):
         # Diâmetro e serviço
         self.tb_diameter.Text = self.settings.get('default_diameter', '')
         self.tb_service.Text  = self.settings.get('service_type', '')
+        svc_mode = self.settings.get('service_mode', 'fixed')
+        if self.rb_svc_none:  self.rb_svc_none.IsChecked  = (svc_mode == 'none')
+        if self.rb_svc_fixed: self.rb_svc_fixed.IsChecked = (svc_mode != 'none' and svc_mode != 'copy')
+        if self.rb_svc_copy:  self.rb_svc_copy.IsChecked  = (svc_mode == 'copy')
+        if self.tb_service:     self.tb_service.IsEnabled     = (svc_mode == 'fixed' or svc_mode == '')
+        if self.tb_copy_param:
+            self.tb_copy_param.Text      = self.settings.get('copy_param', 'Tipo de Sistema')
+            self.tb_copy_param.IsEnabled = (svc_mode == 'copy')
 
         # Estratégia
         strat = self.settings.get('routing_strategy', 'auto')
@@ -222,6 +248,13 @@ class SettingsWindow(object):
         self.settings['selection_mode']   = 'caixa' if self.rb_sel_caixa.IsChecked else 'conector'
         self.settings['default_diameter'] = self.tb_diameter.Text or ''
         self.settings['service_type']     = self.tb_service.Text or ''
+        if self.rb_svc_copy and self.rb_svc_copy.IsChecked:
+            self.settings['service_mode'] = 'copy'
+        elif self.rb_svc_none and self.rb_svc_none.IsChecked:
+            self.settings['service_mode'] = 'none'
+        else:
+            self.settings['service_mode'] = 'fixed'
+        self.settings['copy_param'] = (self.tb_copy_param.Text or '').strip() if self.tb_copy_param else 'Tipo de Sistema'
         self.settings['routing_strategy'] = 'calculado' if self.rb_strat_calc.IsChecked else 'auto'
         self.settings['debug_mode']       = bool(self.chk_debug.IsChecked)
 
@@ -339,6 +372,79 @@ def copy_conduit_parameters(source, target):
                 p_tgt.Set(p_src.AsInteger())
         except Exception as e:
             dbg.debug("copy_conduit_parameters set: {}".format(e))
+
+def _read_param(element, names):
+    """Lê o primeiro valor disponível de uma lista de nomes num elemento.
+    Verifica instância, depois tipo (Symbol)."""
+    if element is None:
+        return ''
+    for p_name in names:
+        try:
+            p = element.LookupParameter(p_name)
+            if p and p.HasValue:
+                val = p.AsString()
+                if val:
+                    return val
+        except Exception:
+            pass
+    try:
+        sym = element.Symbol if hasattr(element, 'Symbol') else None
+        if sym:
+            for p_name in names:
+                try:
+                    p = sym.LookupParameter(p_name)
+                    if p and p.HasValue:
+                        val = p.AsString()
+                        if val:
+                            return val
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return ''
+
+
+def _get_element_system_type(element):
+    """Lê 'Tipo de Sistema' / 'System Type' de um elemento (instância e tipo)."""
+    return _read_param(element, ["Tipo de Sistema", "System Type", "Tipo de sistema"])
+
+
+def _copy_params_from_element(element, conduits, param_name=''):
+    """Lê param_name do elemento (instância ou tipo) e escreve no mesmo parâmetro dos eletrodutos.
+    Retorna True se copiou ao menos um valor."""
+    if element is None or not conduits or not param_name:
+        return False
+    val = _read_param(element, [param_name])
+    if not val:
+        return False
+    copied = False
+    for conduit in conduits:
+        try:
+            p = conduit.LookupParameter(param_name)
+            if p and not p.IsReadOnly:
+                p.Set(val)
+                copied = True
+        except Exception:
+            pass
+    return copied
+
+
+def _apply_service_type(conduits, service_text):
+    """Escreve service_text nos parâmetros de tipo de sistema/serviço dos eletrodutos."""
+    if not service_text or not conduits:
+        return
+    for c_elem in conduits:
+        try:
+            for p_name in ["Tipo de Sistema", "System Type",
+                           "Tipo de serviço", "Service Type",
+                           "Comentários", "Comments"]:
+                p = c_elem.LookupParameter(p_name)
+                if p and not p.IsReadOnly:
+                    p.Set(service_text)
+                    break
+        except Exception:
+            pass
+
 
 # =====================================================================
 #  SELEÇÃO DE ELEMENTOS E CONECTORES
@@ -1352,7 +1458,8 @@ def _place_union_on_cabletray(doc, cable_tray, click_pt, conn_dest, level_id):
     # ── 3. Conectar à eletrocalha: dividir e ligar conectores CT ──
 def _execute_cabletray_connection(doc, settings, cable_tray_el, cable_tray_click,
                                    other_el, other_click, use_connector_mode,
-                                   conduit_type_id, diameter, level_id, last_ref_conduit):
+                                   conduit_type_id, diameter, level_id, last_ref_conduit,
+                                   service_settings=None, ref_element=None):
     """Conecta eletrocalha/perfilado → elemento elétrico via família de união."""
     dbg.section("Eletrocalha — Conexão")
 
@@ -1530,6 +1637,14 @@ def _execute_cabletray_connection(doc, settings, cable_tray_el, cable_tray_click
                 _connect_endpoint_checked(doc, created_conds[-1], pt_dest, conn_other, "ponta-destino")
             else:
                 dbg.warn("ponta-destino: conexão ignorada por incompatibilidade de diâmetro em '{}'.".format(other_name))
+
+            if service_settings is not None:
+                _svc_mode = service_settings.get('service_mode', 'fixed')
+                if _svc_mode == 'copy':
+                    _param_name = service_settings.get('copy_param', 'Tipo de Sistema')
+                    _copy_params_from_element(ref_element or other_el, created_conds, _param_name)
+                elif _svc_mode == 'fixed':
+                    _apply_service_type(created_conds, service_settings.get('service_type', ''))
 
         doc.Regenerate()
         if not created_conds:
@@ -1868,7 +1983,8 @@ def _process_pair(el1, el2, pt_click1, pt_click2, same_box, use_connector_mode, 
                 pass
         _execute_cabletray_connection(
             doc, settings, cable_tray_el, cable_tray_click, other_el, other_click,
-            use_connector_mode, _ct_conduit_id, _ct_diam, _ct_level_id, _ct_ref_for_copy
+            use_connector_mode, _ct_conduit_id, _ct_diam, _ct_level_id, _ct_ref_for_copy,
+            service_settings=settings, ref_element=other_el
         )
         return False
 
@@ -2221,16 +2337,15 @@ def _process_pair(el1, el2, pt_click1, pt_click2, same_box, use_connector_mode, 
             dbg.warn("Stubs curtos nas pontas ({:.3f}/{:.3f} ft): sem ConnectTo nas familias para evitar exclusao no commit.".format(
                 first_stub_len, last_stub_len))
 
-        service_text = settings.get('service_type', '')
-        if service_text:
-            for c_elem in created_conds:
-                try:
-                    for p_name in ["Tipo de serviço", "Service Type", "Comentários", "Comments"]:
-                        p = c_elem.LookupParameter(p_name)
-                        if p and not p.IsReadOnly:
-                            p.Set(service_text)
-                except Exception:
-                    pass
+        _svc_mode = settings.get('service_mode', 'fixed')
+        service_text = ''
+        if _svc_mode == 'copy':
+            _param_name = settings.get('copy_param', 'Tipo de Sistema')
+            for ref_el in [el2, el1]:  # el2 = último clicado
+                if _copy_params_from_element(ref_el, created_conds, _param_name):
+                    break
+        elif _svc_mode == 'fixed':
+            _apply_service_type(created_conds, settings.get('service_type', ''))
 
         doc.Regenerate()
         if not created_conds:

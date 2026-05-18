@@ -1,4 +1,4 @@
 {
   "scope": "active_view", 
-  "criteria": "Category,Family,Type"
+  "criteria": "Category,Family,Type,Tipo de serviço"
 }

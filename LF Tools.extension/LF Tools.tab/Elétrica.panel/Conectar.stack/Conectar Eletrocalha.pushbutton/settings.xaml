@@ -96,6 +96,14 @@
                                 <CheckBox x:Name="chk_use_connector" Content="Ler dimensoes do conector automaticamente"/>
                             </StackPanel>
                         </GroupBox>
+
+                        <GroupBox Header="Copiar Parametro de Texto" Style="{StaticResource Gb}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource Hint}"
+                                    Text="Nome exato do parametro de texto (ex: Tipo de Servico). Quando uma eletrocalha selecionada tiver este parametro preenchido, o valor sera copiado automaticamente para as novas eletrocalhas criadas. Deixe em branco para desativar."/>
+                                <TextBox x:Name="tb_param_copy"/>
+                            </StackPanel>
+                        </GroupBox>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>

@@ -205,7 +205,7 @@
         <Grid Grid.Row="4">
             <TextBox x:Name="SearchBox"/>
             <TextBlock x:Name="SearchHint"
-                       Text="🔍  Buscar parâmetros adicionais..."
+                       Text="🔍  Filtrar parâmetros..."
                        Foreground="#AAAAAA"
                        FontSize="12"
                        FontStyle="Italic"
